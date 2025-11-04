@@ -1,7 +1,10 @@
+
+
+
 import { createClient } from '@supabase/supabase-js'
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string
+const supabaseUrl = (import.meta.env.VITE_SUPABASE_URL as string) || 'https://qupsgxpaotpotvxpcppn.supabase.co'
+const supabaseAnonKey = (import.meta.env.VITE_SUPABASE_ANON_KEY as string) || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InF1cHNneHBhb3Rwb3R2eHBjcHBuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjE4MzUxMDYsImV4cCI6MjA3NzQxMTEwNn0.LZKCrZKQN3UM96EZFnnQzd4mHuHz4qBef4anHtnQ2pk'
 
 // Create a singleton client to avoid multiple GoTrueClient instances under HMR
 declare global {

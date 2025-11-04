@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { Plus, Package, Box, Factory, LineChart, Inbox, Landmark, CheckCircle, X, Tag, User, Scale, DollarSign, ClipboardList } from 'lucide-react'
+import { supabase } from '../lib/supabase'
 
 interface InventoryItem {
   id: number
@@ -14,6 +15,7 @@ const Inventory: React.FC = () => {
   const [isSupplierOpen, setIsSupplierOpen] = useState(false)
   const [isUomOpen, setIsUomOpen] = useState(false)
   const [isAddRawOpen, setIsAddRawOpen] = useState(false)
+  const [isSavingRaw, setIsSavingRaw] = useState(false)
   const [rawForm, setRawForm] = useState({
     name: '',
     category: '',
@@ -235,7 +237,34 @@ const Inventory: React.FC = () => {
               </div>
 
               <div className="flex-1 overflow-y-auto">
-                <form onSubmit={(e)=>{e.preventDefault(); setIsAddRawOpen(false)}} className="p-8 space-y-6">
+                <form
+                  onSubmit={async (e) => {
+                    e.preventDefault()
+                    if (isSavingRaw) return
+                    setIsSavingRaw(true)
+                    try {
+                      const category = (rawForm.newCategory || '').trim() || rawForm.category || null
+                      const payload: any = {
+                        name: rawForm.name || null,
+                        category,
+                        supplier: rawForm.supplier || null,
+                        uom: rawForm.uom || null,
+                        unit_weight: rawForm.unitWeight ? Number(rawForm.unitWeight) : null,
+                        cost_per_unit: rawForm.costPerUnit ? Number(rawForm.costPerUnit) : null,
+                        total_available: rawForm.totalAvailable ? Number(rawForm.totalAvailable) : null,
+                      }
+                      const { error } = await supabase.from('inventory_materials').insert(payload)
+                      if (error) throw error
+                      setIsAddRawOpen(false)
+                      setRawForm({ name: '', category: '', newCategory: '', supplier: '', uom: 'Kilograms (kg)', unitWeight: '', costPerUnit: '', totalAvailable: '' })
+                    } catch (err) {
+                      console.error('Failed to insert inventory material', err)
+                    } finally {
+                      setIsSavingRaw(false)
+                    }
+                  }}
+                  className="p-8 space-y-6"
+                >
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     <div className="space-y-2">
                       <label className="flex items-center text-sm font-medium text-neutral-dark"><Package className="h-4 w-4 mr-2 text-primary-medium"/>Product Name</label>
@@ -362,7 +391,13 @@ const Inventory: React.FC = () => {
                   </div>
 
                   <div className="flex items-center justify-end gap-3 pt-2">
-                    <button type="submit" className="px-5 py-2.5 rounded-lg bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white shadow">Create Material</button>
+                    <button
+                      type="submit"
+                      disabled={isSavingRaw}
+                      className={`px-5 py-2.5 rounded-lg bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white shadow ${isSavingRaw ? 'opacity-60 cursor-not-allowed' : ''}`}
+                    >
+                      {isSavingRaw ? 'Creating…' : 'Create Material'}
+                    </button>
                   </div>
                 </form>
               </div>

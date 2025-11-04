@@ -1,5 +1,6 @@
-import React, { useState } from 'react'
-import { Plus, Search, Filter, Truck, Building2, MapPin, Phone, Star, User, Mail, Globe, CreditCard, X } from 'lucide-react'
+import React, { useState, useEffect } from 'react'
+import { Plus, Search, Filter, Truck, Building2, MapPin, Phone, Star, User, Mail, Globe, CreditCard, X, Eye, Edit, Trash2, CheckCircle2 } from 'lucide-react'
+import { supabase } from '../lib/supabase'
 
 interface Supplier {
   id: string
@@ -7,7 +8,10 @@ interface Supplier {
   contact: string
   email: string
   phone: string
+  website: string
   address: string
+  payment_terms?: string
+  materials_supplied?: string
   category: string
   rating: number
   status: string
@@ -15,9 +19,28 @@ interface Supplier {
 
 const Suppliers: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState<string>('')
-  const [suppliers] = useState<Supplier[]>([]) // Empty for now, will be populated from backend
+  const [suppliers, setSuppliers] = useState<Supplier[]>([])
   const [isAddOpen, setIsAddOpen] = useState<boolean>(false)
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false)
+  const [isViewOpen, setIsViewOpen] = useState<boolean>(false)
+  const [viewData, setViewData] = useState<Supplier | null>(null)
+  const [isEditOpen, setIsEditOpen] = useState<boolean>(false)
+  const [isEditing, setIsEditing] = useState<boolean>(false)
+  const [editId, setEditId] = useState<string | null>(null)
+  const [editForm, setEditForm] = useState({
+    company_name: '',
+    contact_person: '',
+    email: '',
+    phone: '',
+    website: '',
+    payment_terms: '',
+    address: '',
+    materials_supplied: '',
+  })
+  const [isDeleteOpen, setIsDeleteOpen] = useState<boolean>(false)
+  const [deleteTarget, setDeleteTarget] = useState<Supplier | null>(null)
+  const [deleting, setDeleting] = useState<boolean>(false)
+  const [toast, setToast] = useState<{ show: boolean; message: string }>({ show: false, message: '' })
   const [addForm, setAddForm] = useState({
     company_name: '',
     contact_person: '',
@@ -26,19 +49,87 @@ const Suppliers: React.FC = () => {
     website: '',
     payment_terms: '',
     address: '',
-    materials: '',
+    materials_supplied: '',
   })
 
-  const filteredSuppliers = suppliers.filter(supplier =>
-    supplier.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    supplier.contact.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    supplier.category.toLowerCase().includes(searchTerm.toLowerCase())
-  )
+  const filteredSuppliers = suppliers.filter(supplier => {
+    const q = searchTerm.toLowerCase()
+    return (
+      supplier.name.toLowerCase().includes(q) ||
+      supplier.contact.toLowerCase().includes(q) ||
+      supplier.email.toLowerCase().includes(q) ||
+      supplier.phone.toLowerCase().includes(q) ||
+      supplier.website.toLowerCase().includes(q)
+    )
+  })
 
   const totalSuppliers = suppliers.length
   const activeSuppliers = suppliers.filter(s => s.status === 'Active').length
   const averageRating = suppliers.length ? suppliers.reduce((sum, s) => sum + s.rating, 0) / suppliers.length : 0
   const categories = [...new Set(suppliers.map(s => s.category))].length
+
+  const refresh = async () => {
+    const { data, error } = await supabase
+      .from('suppliers')
+      .select('*')
+      .order('company_name', { ascending: true })
+    if (error) {
+      console.error('Failed to load suppliers', error)
+      return
+    }
+    const rows = (data ?? []) as any[]
+    const mapped: Supplier[] = rows.map((r) => ({
+      id: String(r.id ?? ''),
+      name: String(r.company_name ?? r.name ?? ''),
+      contact: String(r.contact_person ?? r.contact ?? ''),
+      email: r.email ? String(r.email) : '',
+      phone: r.phone ? String(r.phone) : '',
+      website: r.website ? String(r.website) : '',
+      address: r.address ? String(r.address) : '',
+      payment_terms: r.payment_terms ? String(r.payment_terms) : '',
+      materials_supplied: r.materials_supplied ? String(r.materials_supplied) : '',
+      category: r.category ? String(r.category) : '',
+      rating: typeof r.rating === 'number' ? r.rating : 0,
+      status: r.status ? String(r.status) : '',
+    }))
+    setSuppliers(mapped)
+  }
+
+  useEffect(() => {
+    refresh()
+  }, [])
+
+  useEffect(() => {
+    if (toast.show) {
+      const t = setTimeout(() => setToast({ show: false, message: '' }), 3000)
+      return () => clearTimeout(t)
+    }
+  }, [toast.show])
+
+  const handleView = (s: Supplier) => {
+    setViewData(s)
+    setIsViewOpen(true)
+  }
+
+  const handleEdit = (s: Supplier) => {
+    setEditId(s.id)
+    setEditForm({
+      company_name: s.name || '',
+      contact_person: s.contact || '',
+      email: s.email || '',
+      phone: s.phone || '',
+      website: s.website || '',
+      payment_terms: s.payment_terms || '',
+      address: s.address || '',
+      materials_supplied: s.materials_supplied || '',
+    })
+    setIsEditOpen(true)
+  }
+
+  const handleDelete = (s: Supplier) => {
+    setDeleteTarget(s)
+    setIsDeleteOpen(true)
+  }
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-neutral-light/30 to-neutral-soft/20">
@@ -56,6 +147,18 @@ const Suppliers: React.FC = () => {
             </button>
           </div>
         </div>
+
+        {/* Success Toast */}
+        {toast.show && (
+          <div className="fixed top-6 left-1/2 -translate-x-1/2 z-[70]">
+            <div className="flex items-center gap-3 bg-white rounded-xl shadow-2xl border border-neutral-soft/40 px-4 py-3 animate-fade-in">
+              <div className="w-8 h-8 bg-accent-success/15 rounded-full flex items-center justify-center">
+                <CheckCircle2 className="h-5 w-5 text-accent-success" />
+              </div>
+              <span className="text-sm font-semibold text-neutral-dark">{toast.message}</span>
+            </div>
+          </div>
+        )}
 
         {/* Add Supplier Modal */}
         {isAddOpen && (
@@ -78,9 +181,25 @@ const Suppliers: React.FC = () => {
                     if (isSubmitting) return
                     setIsSubmitting(true)
                     try {
-                      // Placeholder: integrate with backend later
+                      // Map to your suppliers table columns
+                      const payload: any = {
+                        company_name: addForm.company_name,
+                        contact_person: addForm.contact_person || null,
+                        email: addForm.email || null,
+                        phone: addForm.phone || null,
+                        website: addForm.website || null,
+                        payment_terms: addForm.payment_terms || null,
+                        address: addForm.address || null,
+                        materials_supplied: addForm.materials_supplied || null,
+                      }
+                      const { error } = await supabase.from('suppliers').insert(payload)
+                      if (error) throw error
+                      await refresh()
                       setIsAddOpen(false)
-                      setAddForm({ company_name: '', contact_person: '', email: '', phone: '', website: '', payment_terms: '', address: '', materials: '' })
+                      setAddForm({ company_name: '', contact_person: '', email: '', phone: '', website: '', payment_terms: '', address: '', materials_supplied: '' })
+                      setToast({ show: true, message: 'Supplier added successfully' })
+                    } catch (err: any) {
+                      console.error('Failed to add supplier', err?.message || err, err)
                     } finally {
                       setIsSubmitting(false)
                     }
@@ -171,11 +290,10 @@ const Suppliers: React.FC = () => {
                         className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark hover:border-neutral-medium"
                       >
                         <option value="">Select Payment Terms</option>
-                        <option>Prepaid</option>
-                        <option>COD</option>
+                        <option>50% Deposits 50% Upon Completion </option>
+                        <option>100% Upfront</option>
                         <option>Net 15</option>
                         <option>Net 30</option>
-                        <option>Net 45</option>
                       </select>
                     </div>
                   </div>
@@ -199,8 +317,8 @@ const Suppliers: React.FC = () => {
                       Materials Supplied
                     </label>
                     <textarea
-                      value={addForm.materials}
-                      onChange={(e) => setAddForm({ ...addForm, materials: e.target.value })}
+                      value={addForm.materials_supplied}
+                      onChange={(e) => setAddForm({ ...addForm, materials_supplied: e.target.value })}
                       placeholder="Hold Ctrl/Cmd to select multiple materials (for now, list materials)"
                       className="w-full min-h-[100px] px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium resize-none hover:border-neutral-medium"
                     />
@@ -212,7 +330,7 @@ const Suppliers: React.FC = () => {
                       className="px-6 py-3 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold shadow-md disabled:opacity-60"
                       disabled={isSubmitting}
                     >
-                      {isSubmitting ? 'Saving...' : 'Save Supplier'}
+                      {isSubmitting ? 'Adding...' : 'Add Supplier'}
                     </button>
                   </div>
                 </form>
@@ -369,9 +487,9 @@ const Suppliers: React.FC = () => {
                       </div>
                     </th>
                     <th className="px-8 py-6 text-left text-sm font-bold text-neutral-dark uppercase tracking-wider">Contact</th>
-                    <th className="px-8 py-6 text-left text-sm font-bold text-neutral-dark uppercase tracking-wider">Category</th>
-                    <th className="px-8 py-6 text-left text-sm font-bold text-neutral-dark uppercase tracking-wider">Rating</th>
-                    <th className="px-8 py-6 text-left text-sm font-bold text-neutral-dark uppercase tracking-wider">Status</th>
+                    <th className="px-8 py-6 text-left text-sm font-bold text-neutral-dark uppercase tracking-wider">Email</th>
+                    <th className="px-8 py-6 text-left text-sm font-bold text-neutral-dark uppercase tracking-wider">Phone</th>
+                    <th className="px-8 py-6 text-left text-sm font-bold text-neutral-dark uppercase tracking-wider">Website</th>
                     <th className="px-8 py-6 text-center text-sm font-bold text-neutral-dark uppercase tracking-wider">Actions</th>
                   </tr>
                 </thead>
@@ -385,34 +503,36 @@ const Suppliers: React.FC = () => {
                           </div>
                           <div className="min-w-0">
                             <div className="text-sm font-semibold text-neutral-dark truncate max-w-[260px]">{supplier.name}</div>
-                            <div className="text-xs text-neutral-medium truncate max-w-[260px]">{supplier.address}</div>
+                            <div className="text-xs text-neutral-medium truncate max-w-[260px]">{supplier.website}</div>
                           </div>
                         </div>
                       </td>
                       <td className="px-8 py-6">
                         <div className="text-sm font-medium text-neutral-dark">{supplier.contact}</div>
-                        <div className="text-xs text-neutral-medium">{supplier.email}</div>
                       </td>
                       <td className="px-8 py-6">
-                        <span className="inline-flex items-center px-3 py-1.5 rounded-xl text-xs font-semibold bg-primary-light/10 text-primary-dark border border-primary-light/30">{supplier.category}</span>
+                        <a href={`mailto:${supplier.email}`} className="text-sm text-primary-medium hover:underline">{supplier.email || '—'}</a>
                       </td>
                       <td className="px-8 py-6">
-                        <div className="flex items-center">
-                          <Star className="h-4 w-4 text-accent-warning mr-1" />
-                          <span className="text-sm font-medium text-neutral-dark">{supplier.rating.toFixed(1)}</span>
-                        </div>
+                        <div className="text-sm text-neutral-dark">{supplier.phone || '—'}</div>
                       </td>
                       <td className="px-8 py-6">
-                        <span className={`inline-flex items-center px-3 py-1.5 rounded-xl text-xs font-semibold border ${
-                          supplier.status === 'Active' 
-                            ? 'bg-accent-success/10 text-accent-success border-accent-success/30'
-                            : 'bg-accent-danger/10 text-accent-danger border-accent-danger/30'
-                        }`}>{supplier.status}</span>
+                        {supplier.website ? (
+                          <a href={supplier.website} target="_blank" rel="noreferrer" className="text-sm text-primary-medium hover:underline truncate inline-block max-w-[220px]">{supplier.website}</a>
+                        ) : (
+                          <span className="text-sm text-neutral-medium">—</span>
+                        )}
                       </td>
                       <td className="px-8 py-6">
                         <div className="flex items-center justify-center space-x-2">
-                          <button className="group/btn p-3 text-primary-medium hover:text-white hover:bg-primary-medium rounded-xl transition-all duration-300 hover:shadow-lg hover:scale-105 border border-primary-light/30 hover:border-primary-medium">
-                            <Phone className="h-5 w-5" />
+                          <button type="button" onClick={() => handleView(supplier)} className="group/btn p-3 text-primary-medium hover:text-white hover:bg-primary-medium rounded-xl transition-all duration-300 hover:shadow-lg hover:scale-105 border border-primary-light/30 hover:border-primary-medium">
+                            <Eye className="h-5 w-5" />
+                          </button>
+                          <button type="button" onClick={() => handleEdit(supplier)} className="group/btn p-3 text-neutral-medium hover:text-white hover:bg-neutral-medium rounded-xl transition-all duration-300 hover:shadow-lg hover:scale-105 border border-neutral-soft hover:border-neutral-medium">
+                            <Edit className="h-5 w-5" />
+                          </button>
+                          <button type="button" onClick={() => handleDelete(supplier)} className="group/btn p-3 text-accent-danger hover:text-white hover:bg-accent-danger rounded-xl transition-all duration-300 hover:shadow-lg hover:scale-105 border border-accent-danger/30 hover:border-accent-danger">
+                            <Trash2 className="h-5 w-5" />
                           </button>
                         </div>
                       </td>
@@ -420,6 +540,275 @@ const Suppliers: React.FC = () => {
                   ))}
                 </tbody>
               </table>
+            </div>
+          </div>
+        )}
+
+        {/* View Supplier Modal */}
+        {isViewOpen && viewData && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-black/50" onClick={() => setIsViewOpen(false)}></div>
+            <div className="relative z-10 w-full max-w-3xl bg-white rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden flex flex-col">
+              <div className="flex items-center justify-between px-8 py-6 bg-gradient-to-r from-neutral-light to-neutral-light/80 border-b border-neutral-soft/50">
+                <div>
+                  <h2 className="text-2xl font-semibold text-neutral-dark">View Supplier</h2>
+                  <p className="text-sm text-neutral-medium mt-1">Supplier information overview</p>
+                </div>
+                <button onClick={() => setIsViewOpen(false)} className="p-3 text-neutral-medium hover:text-neutral-dark hover:bg-white/60 rounded-xl transition-all duration-200 hover:shadow-sm">✕</button>
+              </div>
+              <div className="p-8 space-y-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div>
+                    <div className="text-xs font-semibold text-neutral-medium uppercase tracking-wide">Name</div>
+                    <div className="text-neutral-dark font-semibold">{viewData.name}</div>
+                  </div>
+                  <div>
+                    <div className="text-xs font-semibold text-neutral-medium uppercase tracking-wide">Contact</div>
+                    <div className="text-neutral-dark">{viewData.contact || '—'}</div>
+                  </div>
+                  <div>
+                    <div className="text-xs font-semibold text-neutral-medium uppercase tracking-wide">Email</div>
+                    <div className="text-neutral-dark break-words">{viewData.email || '—'}</div>
+                  </div>
+                  <div>
+                    <div className="text-xs font-semibold text-neutral-medium uppercase tracking-wide">Phone</div>
+                    <div className="text-neutral-dark">{viewData.phone || '—'}</div>
+                  </div>
+                  <div>
+                    <div className="text-xs font-semibold text-neutral-medium uppercase tracking-wide">Website</div>
+                    <div className="text-neutral-dark break-words">{viewData.website || '—'}</div>
+                  </div>
+                  <div>
+                    <div className="text-xs font-semibold text-neutral-medium uppercase tracking-wide">Address</div>
+                    <div className="text-neutral-dark break-words">{viewData.address || '—'}</div>
+                  </div>
+                </div>
+                <div className="flex justify-end">
+                  <button onClick={() => setIsViewOpen(false)} className="px-5 py-2.5 rounded-xl border border-neutral-soft text-neutral-dark hover:bg-neutral-light/60 transition-all">Close</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Edit Supplier Modal */}
+        {isEditOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-black/50" onClick={() => !isEditing && setIsEditOpen(false)}></div>
+            <div className="relative z-10 w-full max-w-5xl h-[80vh] bg-white rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden flex flex-col">
+              <div className="flex items-center justify-between px-8 py-6 bg-gradient-to-r from-neutral-light to-neutral-light/80 border-b border-neutral-soft/50">
+                <div>
+                  <h2 className="text-2xl font-semibold text-neutral-dark">Edit Supplier</h2>
+                  <p className="text-sm text-neutral-medium mt-1">Update supplier information</p>
+                </div>
+                <button onClick={() => !isEditing && setIsEditOpen(false)} className="p-3 text-neutral-medium hover:text-neutral-dark hover:bg-white/60 rounded-xl transition-all duration-200 hover:shadow-sm">✕</button>
+              </div>
+              <div className="flex-1 overflow-y-auto">
+                <form
+                  onSubmit={async (e) => {
+                    e.preventDefault()
+                    if (isEditing || !editId) return
+                    setIsEditing(true)
+                    try {
+                      const payload: any = {
+                        company_name: editForm.company_name,
+                        contact_person: editForm.contact_person || null,
+                        email: editForm.email || null,
+                        phone: editForm.phone || null,
+                        website: editForm.website || null,
+                        payment_terms: editForm.payment_terms || null,
+                        address: editForm.address || null,
+                        materials_supplied: editForm.materials_supplied || null,
+                      }
+                      const { error } = await supabase.from('suppliers').update(payload).eq('id', editId)
+                      if (error) throw error
+                      await refresh()
+                      setIsEditOpen(false)
+                      setToast({ show: true, message: 'Supplier updated successfully' })
+                    } catch (e: any) {
+                      console.error(e?.message || e)
+                    } finally {
+                      setIsEditing(false)
+                    }
+                  }}
+                  className="p-8 space-y-6"
+                >
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div className="space-y-2">
+                      <label className="flex items-center text-sm font-semibold text-neutral-dark">
+                        <Building2 className="h-4 w-4 mr-2 text-primary-medium" />
+                        Company Name<span className="text-accent-danger ml-1">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        value={editForm.company_name}
+                        onChange={(e) => setEditForm({ ...editForm, company_name: e.target.value })}
+                        placeholder="e.g., Premium Peanut Co."
+                        className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="flex items-center text-sm font-semibold text-neutral-dark">
+                        <User className="h-4 w-4 mr-2 text-primary-medium" />
+                        Contact Person
+                      </label>
+                      <input
+                        type="text"
+                        value={editForm.contact_person}
+                        onChange={(e) => setEditForm({ ...editForm, contact_person: e.target.value })}
+                        placeholder="e.g., John Smith"
+                        className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div className="space-y-2">
+                      <label className="flex items-center text-sm font-semibold text-neutral-dark">
+                        <Mail className="h-4 w-4 mr-2 text-primary-medium" />
+                        Email
+                      </label>
+                      <input
+                        type="email"
+                        value={editForm.email}
+                        onChange={(e) => setEditForm({ ...editForm, email: e.target.value })}
+                        placeholder="contact@supplier.com"
+                        className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="flex items-center text-sm font-semibold text-neutral-dark">
+                        <Phone className="h-4 w-4 mr-2 text-primary-medium" />
+                        Phone
+                      </label>
+                      <input
+                        type="text"
+                        value={editForm.phone}
+                        onChange={(e) => setEditForm({ ...editForm, phone: e.target.value })}
+                        placeholder="555-0123"
+                        className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div className="space-y-2">
+                      <label className="flex items-center text-sm font-semibold text-neutral-dark">
+                        <Globe className="h-4 w-4 mr-2 text-primary-medium" />
+                        Website
+                      </label>
+                      <input
+                        type="url"
+                        value={editForm.website}
+                        onChange={(e) => setEditForm({ ...editForm, website: e.target.value })}
+                        placeholder="https://example.com"
+                        className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="flex items-center text-sm font-semibold text-neutral-dark">
+                        <CreditCard className="h-4 w-4 mr-2 text-primary-medium" />
+                        Payment Terms
+                      </label>
+                      <select
+                        value={editForm.payment_terms}
+                        onChange={(e) => setEditForm({ ...editForm, payment_terms: e.target.value })}
+                        className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark hover:border-neutral-medium"
+                      >
+                        <option value="">Select Payment Terms</option>
+                        <option>50% Deposits 50% Upon Completion </option>
+                        <option>100% Upfront</option>
+                        <option>Net 15</option>
+                        <option>Net 30</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="flex items-center text-sm font-semibold text-neutral-dark">
+                      <MapPin className="h-4 w-4 mr-2 text-primary-medium" />
+                      Address
+                    </label>
+                    <textarea
+                      value={editForm.address}
+                      onChange={(e) => setEditForm({ ...editForm, address: e.target.value })}
+                      placeholder="Full business address including city, state, ZIP"
+                      className="w-full min-h-[80px] px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium resize-none hover:border-neutral-medium"
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="flex items-center text-sm font-semibold text-neutral-dark">
+                      <Truck className="h-4 w-4 mr-2 text-primary-medium" />
+                      Materials Supplied
+                    </label>
+                    <textarea
+                      value={editForm.materials_supplied}
+                      onChange={(e) => setEditForm({ ...editForm, materials_supplied: e.target.value })}
+                      placeholder="List materials supplied"
+                      className="w-full min-h-[100px] px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium resize-none hover:border-neutral-medium"
+                    />
+                  </div>
+
+                  <div className="flex items-center justify-end gap-3 pt-2">
+                    <button
+                      type="submit"
+                      className="px-6 py-3 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold shadow-md disabled:opacity-60"
+                      disabled={isEditing}
+                    >
+                      {isEditing ? 'Updating...' : 'Update'}
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Delete Confirmation Modal */}
+        {isDeleteOpen && deleteTarget && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-black/50" onClick={() => !deleting && setIsDeleteOpen(false)}></div>
+            <div className="relative z-10 w-full max-w-lg bg-white rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden">
+              <div className="px-8 py-6 bg-gradient-to-r from-neutral-light to-neutral-light/80 border-b border-neutral-soft/50">
+                <h2 className="text-2xl font-semibold text-neutral-dark">Delete Supplier</h2>
+                <p className="text-sm text-neutral-medium mt-1">This action cannot be undone.</p>
+              </div>
+              <div className="p-8">
+                <p className="text-neutral-dark">Are you sure you want to delete "<span className="font-semibold">{deleteTarget.name}</span>"?</p>
+                <div className="mt-8 flex justify-end gap-3">
+                  <button
+                    className="px-5 py-2.5 rounded-xl border border-neutral-soft text-neutral-dark hover:bg-neutral-light/60 transition-all disabled:opacity-60"
+                    onClick={() => !deleting && setIsDeleteOpen(false)}
+                    disabled={deleting}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    className="px-5 py-2.5 rounded-xl bg-accent-danger text-white font-semibold hover:opacity-90 shadow-md disabled:opacity-60"
+                    onClick={async () => {
+                      if (!deleteTarget?.id || deleting) return
+                      setDeleting(true)
+                      try {
+                        const { error } = await supabase.from('suppliers').delete().eq('id', deleteTarget.id)
+                        if (error) throw error
+                        await refresh()
+                        setIsDeleteOpen(false)
+                        setDeleteTarget(null)
+                        setToast({ show: true, message: 'Supplier deleted successfully' })
+                      } catch (e: any) {
+                        console.error(e?.message || e)
+                      } finally {
+                        setDeleting(false)
+                      }
+                    }}
+                    disabled={deleting}
+                  >
+                    {deleting ? 'Deleting…' : 'Delete'}
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
         )}

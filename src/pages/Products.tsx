@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react'
-import { Plus, Search, Filter, Edit, Trash2, Eye, X, User, Package, Box, Scale, Calendar, FileText, Upload } from 'lucide-react'
+import { Plus, Search, Filter, Edit, Trash2, Eye, X, User, Package, Box, Scale, Calendar, FileText, Upload, CheckCircle2 } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 
 interface Product {
@@ -69,6 +69,7 @@ const Products: React.FC = () => {
   const [customersLoading, setCustomersLoading] = useState(true)
   const [customersError, setCustomersError] = useState<string | null>(null)
   const [imagePreviews, setImagePreviews] = useState<string[]>([])
+  const [toast, setToast] = useState<{ show: boolean; message: string }>({ show: false, message: '' })
 
   const customerRef = useRef<HTMLDivElement>(null)
   const productTypeRef = useRef<HTMLDivElement>(null)
@@ -97,6 +98,14 @@ const Products: React.FC = () => {
     document.addEventListener('mousedown', handleClickOutside)
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [])
+
+  // Auto-hide toast after a short delay
+  useEffect(() => {
+    if (toast.show) {
+      const t = setTimeout(() => setToast({ show: false, message: '' }), 3000)
+      return () => clearTimeout(t)
+    }
+  }, [toast.show])
 
   // Manage body scroll lock and set title when editing
   useEffect(() => {
@@ -293,6 +302,18 @@ const Products: React.FC = () => {
           </div>
         </div>
 
+        {/* Success Toast */}
+        {toast.show && (
+          <div className="fixed top-6 left-1/2 -translate-x-1/2 z-[70]">
+            <div className="flex items-center gap-3 bg-white rounded-xl shadow-2xl border border-neutral-soft/40 px-4 py-3 animate-fade-in">
+              <div className="w-8 h-8 bg-accent-success/15 rounded-full flex items-center justify-center">
+                <CheckCircle2 className="h-5 w-5 text-accent-success" />
+              </div>
+              <span className="text-sm font-semibold text-neutral-dark">{toast.message}</span>
+            </div>
+          </div>
+        )}
+
         {/* Enhanced Search and Filter Section */}
         <div className="bg-white rounded-2xl shadow-md border border-neutral-soft/20 p-8 mb-8">
           <div className="flex flex-col lg:flex-row gap-6">
@@ -324,63 +345,63 @@ const Products: React.FC = () => {
           </div>
         </div>
 
-      {isAddOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/50" onClick={() => setIsAddOpen(false)}></div>
-          <div className="relative z-10 w-full max-w-5xl h-[80vh] bg-white rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden flex flex-col">
-            <div className="flex items-center justify-between px-8 py-6 bg-gradient-to-r from-neutral-light to-neutral-light/80 border-b border-neutral-soft/50">
-              <div>
-                <h2 className="text-2xl font-semibold text-neutral-dark">Add New Product</h2>
-                <p className="text-sm text-neutral-medium mt-1">Create a new product for your inventory</p>
+        {isAddOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-black/50" onClick={() => setIsAddOpen(false)}></div>
+            <div className="relative z-10 w-full max-w-5xl h-[80vh] bg-white rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden flex flex-col">
+              <div className="flex items-center justify-between px-8 py-6 bg-gradient-to-r from-neutral-light to-neutral-light/80 border-b border-neutral-soft/50">
+                <div>
+                  <h2 className="text-2xl font-semibold text-neutral-dark">Add New Product</h2>
+                  <p className="text-sm text-neutral-medium mt-1">Create a new product for your inventory</p>
+                </div>
+                <button onClick={() => setIsAddOpen(false)} className="p-3 text-neutral-medium hover:text-neutral-dark hover:bg-white/60 rounded-xl transition-all duration-200 hover:shadow-sm">
+                  <X className="h-6 w-6" />
+                </button>
               </div>
-              <button onClick={() => setIsAddOpen(false)} className="p-3 text-neutral-medium hover:text-neutral-dark hover:bg-white/60 rounded-xl transition-all duration-200 hover:shadow-sm">
-                <X className="h-6 w-6" />
-              </button>
-            </div>
-            <div className="flex-1 overflow-y-auto">
-              <form
-                onSubmit={async (e) => {
-                  e.preventDefault()
-                  if (isSubmitting) return
-                  setIsSubmitting(true)
-                  try {
-                    const id = (window.crypto && 'randomUUID' in window.crypto)
-                      ? (window.crypto as any).randomUUID()
-                      : `prod_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+              <div className="flex-1 overflow-y-auto">
+                <form
+                  onSubmit={async (e) => {
+                    e.preventDefault()
+                    if (isSubmitting) return
+                    setIsSubmitting(true)
+                    try {
+                      const id = (window.crypto && 'randomUUID' in window.crypto)
+                        ? (window.crypto as any).randomUUID()
+                        : `prod_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
 
-                    // Upload images to Supabase Storage and collect public URLs
-                    let imageUrls: string[] = []
-                    if (supabase && productForm.images?.length) {
-                      const bucket = 'ERP_storage'
-                      const folder = `products/${id}`
-                      const uploads = await Promise.all(
-                        productForm.images.map(async (file) => {
-                          const safeName = `${Date.now()}-${file.name}`.replace(/[^a-zA-Z0-9._-]/g, '-').slice(-180)
-                          const filePath = `${folder}/${safeName}`
-                          const { error: uploadError } = await supabase.storage.from(bucket).upload(filePath, file, {
-                            upsert: true,
-                            contentType: file.type || 'application/octet-stream',
+                      // Upload images to Supabase Storage and collect public URLs
+                      let imageUrls: string[] = []
+                      if (supabase && productForm.images?.length) {
+                        const bucket = 'ERP_storage'
+                        const folder = `products/${id}`
+                        const uploads = await Promise.all(
+                          productForm.images.map(async (file) => {
+                            const safeName = `${Date.now()}-${file.name}`.replace(/[^a-zA-Z0-9._-]/g, '-').slice(-180)
+                            const filePath = `${folder}/${safeName}`
+                            const { error: uploadError } = await supabase.storage.from(bucket).upload(filePath, file, {
+                              upsert: true,
+                              contentType: file.type || 'application/octet-stream',
+                            })
+                            if (uploadError) {
+                              console.error('Supabase upload error:', uploadError.message, { bucket, filePath })
+                              return null
+                            }
+                            // Try public URL first (requires bucket to be public)
+                            const { data: pub } = supabase.storage.from(bucket).getPublicUrl(filePath)
+                            let url = pub?.publicUrl || ''
+                            // Fallback to a long-lived signed URL when bucket is private or public url fails
+                            if (!url) {
+                              const { data: signed } = await supabase.storage.from(bucket).createSignedUrl(filePath, 60 * 60 * 24 * 365) // 1 year
+                              url = signed?.signedUrl || ''
+                            }
+                            return url || null
                           })
-                          if (uploadError) {
-                            console.error('Supabase upload error:', uploadError.message, { bucket, filePath })
-                            return null
-                          }
-                          // Try public URL first (requires bucket to be public)
-                          const { data: pub } = supabase.storage.from(bucket).getPublicUrl(filePath)
-                          let url = pub?.publicUrl || ''
-                          // Fallback to a long-lived signed URL when bucket is private or public url fails
-                          if (!url) {
-                            const { data: signed } = await supabase.storage.from(bucket).createSignedUrl(filePath, 60 * 60 * 24 * 365) // 1 year
-                            url = signed?.signedUrl || ''
-                          }
-                          return url || null
-                        })
-                      )
-                      imageUrls = uploads.filter((u): u is string => !!u)
-                      if (productForm.images.length && imageUrls.length === 0) {
-                        throw new Error('All image uploads failed. Please check Storage bucket name, policies, and CORS.')
+                        )
+                        imageUrls = uploads.filter((u): u is string => !!u)
+                        if (productForm.images.length && imageUrls.length === 0) {
+                          throw new Error('All image uploads failed. Please check Storage bucket name, policies, and CORS.')
+                        }
                       }
-                    }
 
                     const payload = {
                       id,
@@ -402,7 +423,42 @@ const Products: React.FC = () => {
                       body: JSON.stringify(payload),
                     })
 
+                    // Also persist to Supabase and optimistically update UI
+                    try {
+                      await supabase.from('products').insert({
+                        id,
+                        product_name: productForm.name,
+                        customer_name: productForm.customer || null,
+                        product_type: productForm.productType || null,
+                        packaging_type: productForm.packagingType || null,
+                        unit_of_measure: productForm.uom || null,
+                        shelf_life_days: Number(productForm.shelfLife) || 0,
+                        description: productForm.description || null,
+                        product_image_url: imageUrls,
+                      })
+                    } catch (dbErr) {
+                      console.error('Supabase insert failed (products)', dbErr)
+                    }
+
+                    // Optimistic UI update
+                    setProducts((prev) => [
+                      {
+                        id,
+                        product_name: productForm.name,
+                        customer_name: productForm.customer || '',
+                        product_type: productForm.productType || '',
+                        packaging_type: productForm.packagingType || '',
+                        unit_of_measure: productForm.uom || '',
+                        shelf_life_days: Number(productForm.shelfLife) || 0,
+                        created_at: new Date().toISOString(),
+                        product_image_url: imageUrls,
+                        description: productForm.description || '',
+                      },
+                      ...prev,
+                    ])
+
                     setIsAddOpen(false)
+                    setToast({ show: true, message: 'Product created successfully' })
                   } catch (err) {
                     console.error('Failed to send product to webhook', err)
                   } finally {
@@ -1123,6 +1179,7 @@ const Products: React.FC = () => {
                     } else {
                       setProducts((p) => p.filter((x) => x.id !== id))
                       setConfirmDelete({ open: false, product: null, loading: false, error: null })
+                      setToast({ show: true, message: 'Product deleted successfully' })
                     }
                   }}
                   className="px-5 py-2 rounded-lg bg-accent-danger text-white hover:opacity-95 shadow transition disabled:opacity-60"
@@ -1203,6 +1260,7 @@ const Products: React.FC = () => {
                         console.error('Webhook failed', werr)
                       }
                       setIsEditOpen(false)
+                      setToast({ show: true, message: 'Product updated successfully' })
                     } else {
                       console.error('Failed to update product', error)
                     }

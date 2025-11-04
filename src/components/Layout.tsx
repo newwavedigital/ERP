@@ -17,7 +17,7 @@ import {
   Menu,
   LucideIcon
 } from 'lucide-react'
-
+//james
 interface NavigationItem {
   name: string
   path: string

@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react'
-import { Plus, X, User, Package, Calendar, FileText, Eye, Pencil, Trash2, MapPin } from 'lucide-react'
+import { Plus, X, User, Package, Calendar, FileText, Eye, Pencil, Trash2, MapPin, BadgeCheck, Search, Filter, CheckCircle2 } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 import { Status } from '../domain/enums'
 
@@ -18,12 +18,20 @@ const PurchaseOrders: React.FC = () => {
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState<string>('All')
   const [rushFilter, setRushFilter] = useState<string>('All')
+  const [isStatusOpen, setIsStatusOpen] = useState(false)
+  const [isRushOpen, setIsRushOpen] = useState(false)
   const [packagingTypes, setPackagingTypes] = useState<string[]>(['Jars','Squeeze packs','Sachets'])
   const [packagingReady, setPackagingReady] = useState<boolean>(true)
   const [showManagePackaging, setShowManagePackaging] = useState(false)
   const [newPackaging, setNewPackaging] = useState('')
   const [selectedPackagingTypes, setSelectedPackagingTypes] = useState<string[]>([])
   const [extraLines, setExtraLines] = useState<Array<{ id: string; product: string; qty: number }>>([])
+  const [toast, setToast] = useState<{ show: boolean; message: string }>({ show: false, message: '' })
+  const [isAllocOpen, setIsAllocOpen] = useState(false)
+  const [allocSummary, setAllocSummary] = useState<any | null>(null)
+  const [isDeleteOpen, setIsDeleteOpen] = useState(false)
+  const [deleteTarget, setDeleteTarget] = useState<any | null>(null)
+  const [deleting, setDeleting] = useState(false)
   const [form, setForm] = useState({
     date: '',
     customer: '',
@@ -42,14 +50,25 @@ const PurchaseOrders: React.FC = () => {
   const customerRef = useRef<HTMLDivElement>(null)
   
   const locationRef = useRef<HTMLDivElement>(null)
+  const statusRef = useRef<HTMLDivElement>(null)
+  const rushRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     const handle = (e: MouseEvent) => {
       if (customerRef.current && !customerRef.current.contains(e.target as Node)) setIsCustomerOpen(false)
       if (locationRef.current && !locationRef.current.contains(e.target as Node)) setIsLocationOpen(false)
+      if (statusRef.current && !statusRef.current.contains(e.target as Node)) setIsStatusOpen(false)
+      if (rushRef.current && !rushRef.current.contains(e.target as Node)) setIsRushOpen(false)
     }
     document.addEventListener('mousedown', handle)
     return () => document.removeEventListener('mousedown', handle)
   }, [])
+
+  useEffect(() => {
+    if (toast.show) {
+      const t = setTimeout(() => setToast({ show: false, message: '' }), 3000)
+      return () => clearTimeout(t)
+    }
+  }, [toast.show])
   
   useEffect(() => {
     const load = async () => {
@@ -124,6 +143,7 @@ const PurchaseOrders: React.FC = () => {
 
   const saveOrder = async () => {
     setError(null)
+    const wasEdit = !!isEditOpen?.id
     const v = validate()
     if (!v.ok) { setError(v.msg || 'Validation failed'); return }
     const isRush = (() => {
@@ -193,8 +213,8 @@ const PurchaseOrders: React.FC = () => {
     try {
       if (newOrderId) {
         await supabase.from('purchase_orders').update({ packaging_types: selectedPackagingTypes.length ? selectedPackagingTypes : null }).eq('id', newOrderId)
-        // Reset PO items for simplicity
-        await supabase.from('purchase_order_items').delete().eq('purchase_order_id', newOrderId)
+        // Reset PO lines for simplicity
+        await supabase.from('purchase_order_lines').delete().eq('purchase_order_id', newOrderId)
         const mainQty = Number(form.quantity || 0)
         const items: any[] = []
         if (form.product && mainQty > 0) {
@@ -203,7 +223,7 @@ const PurchaseOrders: React.FC = () => {
         extraLines.forEach(l => {
           if (l.product && l.qty > 0) items.push({ purchase_order_id: newOrderId, product_name: l.product, quantity: l.qty })
         })
-        if (items.length) await supabase.from('purchase_order_items').insert(items)
+        if (items.length) await supabase.from('purchase_order_lines').insert(items)
       }
     } catch {}
 
@@ -212,6 +232,7 @@ const PurchaseOrders: React.FC = () => {
     resetForm()
     setIsAddOpen(false)
     setIsEditOpen(null)
+    setToast({ show: true, message: wasEdit ? 'Purchase order updated' : 'Purchase order created' })
 
     // Auto-allocation workflow when PO is Approved
     try {
@@ -266,40 +287,195 @@ const PurchaseOrders: React.FC = () => {
     const { error } = await supabase.from('purchase_orders').delete().eq('id', id)
     if (error) { setError('Failed to delete order'); return }
     setOrders(orders.filter(o => o.id !== id))
+    setToast({ show: true, message: 'Purchase order deleted' })
+  }
+
+  // Approve + Allocate for a single PO
+  const approveAndAllocate = async (poId: string) => {
+    try {
+      setError(null)
+      // 1) Mark PO approved
+      const { error: upErr } = await supabase
+        .from('purchase_orders')
+        .update({ status: 'approved' })
+        .eq('id', poId)
+      if (upErr) throw upErr
+
+      // 2) Call RPC allocate_stock
+      const { data: summary, error: rpcErr } = await supabase.rpc('allocate_stock', { p_po_id: poId })
+      if (rpcErr) throw rpcErr
+      if (summary?.status === 'error') {
+        const msg = Array.isArray(summary?.errors) && summary.errors.length > 0
+          ? (summary.errors[0]?.error || summary.errors[0])
+          : 'Allocation RPC returned error'
+        setToast({ show: true, message: `Allocation failed: ${String(msg)}` })
+        return
+      }
+
+      // 3) Refresh purchase orders
+      const { data: poRows } = await supabase
+        .from('purchase_orders')
+        .select('*')
+        .order('created_at', { ascending: false })
+      setOrders(poRows ?? [])
+
+      // 4) Show summary modal and toast
+      setAllocSummary(summary)
+      setIsAllocOpen(true)
+      setToast({ show: true, message: `Allocation: ${summary?.status ?? 'done'}` })
+    } catch (e: any) {
+      setError(e?.message || 'Failed to approve and allocate')
+    }
   }
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-neutral-light/30 to-neutral-soft/20">
       <div className="p-8">
+        {toast.show && (
+          <div className="fixed top-6 left-1/2 -translate-x-1/2 z-[70]">
+            <div className="flex items-center gap-3 bg-white rounded-xl shadow-2xl border border-neutral-soft/40 px-4 py-3 animate-fade-in">
+              <div className="w-8 h-8 bg-accent-success/15 rounded-full flex items-center justify-center">
+                <CheckCircle2 className="h-5 w-5 text-accent-success" />
+              </div>
+              <span className="text-sm font-semibold text-neutral-dark">{toast.message}</span>
+            </div>
+          </div>
+        )}
+
+        {isAllocOpen && allocSummary && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-black/50" onClick={() => setIsAllocOpen(false)}></div>
+            <div className="relative z-10 w-full max-w-2xl bg-white rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden">
+              <div className="px-8 py-6 bg-gradient-to-r from-neutral-light to-neutral-light/80 border-b border-neutral-soft/50">
+                <h2 className="text-2xl font-semibold text-neutral-dark">Allocation Summary</h2>
+                <p className="text-sm text-neutral-medium mt-1">Status: {String(allocSummary?.status || '')}</p>
+              </div>
+              <div className="p-6">
+                {Array.isArray(allocSummary?.errors) && allocSummary.errors.length > 0 && (
+                  <div className="mb-4 p-3 rounded-lg border border-accent-danger/30 bg-accent-danger/5 text-accent-danger text-sm">
+                    {allocSummary.errors.map((e: any, i: number) => (
+                      <div key={i}>{typeof e === 'string' ? e : (e?.error || JSON.stringify(e))}</div>
+                    ))}
+                  </div>
+                )}
+                <div className="overflow-x-auto">
+                  <table className="min-w-full">
+                    <thead>
+                      <tr className="bg-gradient-to-r from-neutral-light/60 via-neutral-light/40 to-neutral-soft/30 border-b-2 border-neutral-soft/50">
+                        <th className="px-6 py-3 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">Product</th>
+                        <th className="px-6 py-3 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">Line</th>
+                        <th className="px-6 py-3 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">Ordered</th>
+                        <th className="px-6 py-3 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">Allocated</th>
+                        <th className="px-6 py-3 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">Shortfall</th>
+                        <th className="px-6 py-3 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-neutral-soft/20">
+                      {(Array.isArray(allocSummary?.lines) ? allocSummary.lines : []).map((ln: any, idx: number) => (
+                        <tr key={ln.id || idx} className="group">
+                          <td className="px-6 py-3 text-sm text-neutral-dark">{ln.product_name || '—'}</td>
+                          <td className="px-6 py-3 text-sm text-neutral-dark">{ln.id}</td>
+                          <td className="px-6 py-3 text-sm">{ln.ordered_qty}</td>
+                          <td className="px-6 py-3 text-sm">{ln.allocated_qty}</td>
+                          <td className="px-6 py-3 text-sm">{ln.shortfall_qty}</td>
+                          <td className="px-6 py-3 text-sm">{ln.status}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="mt-6 flex justify-end">
+                  <button className="px-5 py-2.5 rounded-xl border border-neutral-soft text-neutral-dark hover:bg-neutral-light/60 transition-all" onClick={() => setIsAllocOpen(false)}>Close</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+        {/* Header */}
         <div className="bg-white rounded-2xl shadow-md border border-neutral-soft/20 p-8 mb-8">
           <div className="flex justify-between items-center">
             <div>
               <h1 className="text-3xl font-bold text-neutral-dark mb-2">Purchase Orders</h1>
               <p className="text-neutral-medium text-lg">Manage inbound customer purchase orders</p>
             </div>
-            <button onClick={() => setIsAddOpen(true)} className="px-8 py-4 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold transition-all duration-300 shadow-lg hover:shadow-xl transform hover:-translate-y-0.5 flex items-center">
+            <button onClick={() => { setIsEditOpen(null); resetForm(); setSelectedPackagingTypes([]); setExtraLines([]); setIsAddOpen(true) }} className="px-8 py-4 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold transition-all duration-300 shadow-lg hover:shadow-xl transform hover:-translate-y-0.5 flex items-center">
               <Plus className="h-5 w-5 mr-3" />
               Add Purchase Order
             </button>
           </div>
         </div>
 
-        <div className="bg-white rounded-2xl shadow-md border border-neutral-soft/20 p-6">
-          <div className="flex flex-col md:flex-row gap-3 mb-4">
-            <input
-              type="text"
-              placeholder="Search customer or product"
-              className="flex-1 px-4 py-2 border border-neutral-soft rounded-lg"
-              value={search}
-              onChange={(e)=>setSearch(e.target.value)}
-            />
-            <select className="px-3 py-2 border border-neutral-soft rounded-lg" value={statusFilter} onChange={(e)=>setStatusFilter(e.target.value)}>
-              {['All', ...Object.values(Status)].map(s=> <option key={s} value={s}>{s}</option>)}
-            </select>
-            <select className="px-3 py-2 border border-neutral-soft rounded-lg" value={rushFilter} onChange={(e)=>setRushFilter(e.target.value)}>
-              {['All','Rush Only','Non-Rush'].map(s=> <option key={s} value={s}>{s}</option>)}
-            </select>
+        {/* Search and Filter */}
+        <div className="bg-white rounded-2xl shadow-md border border-neutral-soft/20 p-8 mb-8">
+          <div className="flex flex-col md:flex-row gap-6">
+            <div className="w-full md:w-1/2">
+              <label className="flex items-center text-sm font-semibold text-neutral-dark mb-3">Search POs</label>
+              <div className="relative">
+                <Search className="absolute left-4 top-1/2 transform -translate-y-1/2 h-5 w-5 text-neutral-medium" />
+                <input
+                  type="text"
+                  placeholder="Search customer or product..."
+                  className="w-full pl-12 pr-4 py-4 border border-neutral-soft rounded-xl focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all duration-200 bg-white text-neutral-dark placeholder-neutral-medium shadow-sm hover:shadow-md hover:border-neutral-medium"
+                  value={search}
+                  onChange={(e)=>setSearch(e.target.value)}
+                />
+              </div>
+            </div>
+            <div className="w-full md:flex-1 flex flex-col gap-4">
+              <label className="flex items-center text-sm font-semibold text-neutral-dark">
+                <Filter className="h-5 w-5 mr-3 text-primary-medium" />
+                Filter & Sort
+              </label>
+              <div className="flex gap-3">
+                <div className="relative w-1/2" ref={statusRef}>
+                  <button
+                    type="button"
+                    onClick={()=>setIsStatusOpen(v=>!v)}
+                    className="w-full flex items-center justify-between px-4 py-3 border border-neutral-soft rounded-xl text-left bg-white transition-all shadow-sm hover:border-neutral-medium focus:ring-2 focus:ring-primary-light focus:border-primary-light hover:shadow-md"
+                  >
+                    <span className={statusFilter==='All' ? 'text-neutral-medium' : 'text-neutral-dark'}>
+                      {statusFilter === 'All' ? 'All Statuses' : statusFilter}
+                    </span>
+                    <span className="ml-2 text-neutral-medium">▼</span>
+                  </button>
+                  {isStatusOpen && (
+                    <div className="absolute left-0 right-0 z-[100] mt-2 w-full bg-white border border-neutral-soft rounded-xl shadow-xl max-h-56 overflow-auto">
+                      {(['All', ...Object.values(Status)] as string[]).map((opt) => (
+                        <button key={opt} type="button" className={`block w-full text-left px-4 py-2 hover:bg-neutral-light ${statusFilter===opt ? 'bg-neutral-light' : ''}`} onClick={()=>{ setStatusFilter(opt); setIsStatusOpen(false) }}>
+                          {opt}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <div className="relative w-1/2" ref={rushRef}>
+                  <button
+                    type="button"
+                    onClick={()=>setIsRushOpen(v=>!v)}
+                    className="w-full flex items-center justify-between px-4 py-3 border border-neutral-soft rounded-xl text-left bg-white transition-all shadow-sm hover:border-neutral-medium focus:ring-2 focus:ring-primary-light focus:border-primary-light hover:shadow-md"
+                  >
+                    <span className={rushFilter==='All' ? 'text-neutral-medium' : 'text-neutral-dark'}>
+                      {rushFilter}
+                    </span>
+                    <span className="ml-2 text-neutral-medium">▼</span>
+                  </button>
+                  {isRushOpen && (
+                    <div className="absolute left-0 right-0 z-[100] mt-2 w-full bg-white border border-neutral-soft rounded-xl shadow-xl max-h-56 overflow-auto">
+                      {['All','Rush Only','Non-Rush'].map(opt => (
+                        <button key={opt} type="button" className={`block w-full text-left px-4 py-2 hover:bg-neutral-light ${rushFilter===opt ? 'bg-neutral-light' : ''}`} onClick={()=>{ setRushFilter(opt); setIsRushOpen(false) }}>
+                          {opt}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
           </div>
+        </div>
+
+        {/* Table */}
+        <div className="bg-white rounded-2xl shadow-md border border-neutral-soft/20 p-6">
           {error && <div className="mb-4 text-sm text-red-600">{error}</div>}
           {loading ? (
             <div className="p-12 text-center text-neutral-medium">Loading…</div>
@@ -307,20 +483,45 @@ const PurchaseOrders: React.FC = () => {
             <div className="p-12 text-center text-neutral-medium">No purchase orders yet</div>
           ) : (
             <div className="overflow-x-auto">
-              <table className="min-w-full text-sm">
+              <table className="min-w-full">
                 <thead>
-                  <tr className="text-left text-neutral-medium border-b">
-                    <th className="py-3 pr-4">Date</th>
-                    <th className="py-3 pr-4">Customer</th>
-                    <th className="py-3 pr-4">Product</th>
-                    <th className="py-3 pr-4">Qty</th>
-                    <th className="py-3 pr-4">Ship Date</th>
-                    <th className="py-3 pr-4">Status</th>
-                    <th className="py-3 pr-4">Rush</th>
-                    <th className="py-3 pr-4">Actions</th>
+                  <tr className="bg-gradient-to-r from-neutral-light/60 via-neutral-light/40 to-neutral-soft/30 border-b-2 border-neutral-soft/50">
+                    <th className="px-8 py-6 text-left text-sm font-bold text-neutral-dark uppercase tracking-wider">
+                      <div className="flex items-center space-x-2">
+                        <Calendar className="h-4 w-4 text-primary-medium" />
+                        <span>Date</span>
+                      </div>
+                    </th>
+                    <th className="px-8 py-6 text-left text-sm font-bold text-neutral-dark uppercase tracking-wider">
+                      <div className="flex items-center space-x-2">
+                        <User className="h-4 w-4 text-primary-medium" />
+                        <span>Customer</span>
+                      </div>
+                    </th>
+                    <th className="px-8 py-6 text-left text-sm font-bold text-neutral-dark uppercase tracking-wider">
+                      <div className="flex items-center space-x-2">
+                        <Package className="h-4 w-4 text-primary-medium" />
+                        <span>Product</span>
+                      </div>
+                    </th>
+                    <th className="px-8 py-6 text-left text-sm font-bold text-neutral-dark uppercase tracking-wider">Qty</th>
+                    <th className="px-8 py-6 text-left text-sm font-bold text-neutral-dark uppercase tracking-wider">
+                      <div className="flex items-center space-x-2">
+                        <Calendar className="h-4 w-4 text-primary-medium" />
+                        <span>Ship Date</span>
+                      </div>
+                    </th>
+                    <th className="px-8 py-6 text-left text-sm font-bold text-neutral-dark uppercase tracking-wider">
+                      <div className="flex items-center space-x-2">
+                        <BadgeCheck className="h-4 w-4 text-primary-medium" />
+                        <span>Status</span>
+                      </div>
+                    </th>
+                    <th className="px-8 py-6 text-left text-sm font-bold text-neutral-dark uppercase tracking-wider">Rush</th>
+                    <th className="px-8 py-6 text-center text-sm font-bold text-neutral-dark uppercase tracking-wider">Actions</th>
                   </tr>
                 </thead>
-                <tbody>
+                <tbody className="divide-y divide-neutral-soft/20">
                   {orders
                     .filter((o:any)=>{
                       const hit = (o.customer_name||'').toLowerCase().includes(search.toLowerCase()) || (o.product_name||'').toLowerCase().includes(search.toLowerCase())
@@ -328,53 +529,144 @@ const PurchaseOrders: React.FC = () => {
                       const rushOk = rushFilter==='All' ? true : rushFilter==='Rush Only' ? !!o.is_rush : !o.is_rush
                       return hit && statusOk && rushOk
                     })
-                    .map((o:any) => (
-                    <tr key={o.id} className="border-b hover:bg-neutral-light/30">
-                      <td className="py-3 pr-4">{o.date || '-'}</td>
-                      <td className="py-3 pr-4">{o.customer_name || o.customer_id}</td>
-                      <td className="py-3 pr-4">{o.product_name || o.product_id}</td>
-                      <td className="py-3 pr-4">{o.quantity}</td>
-                      <td className="py-3 pr-4">{o.requested_ship_date || '-'}</td>
-                      <td className="py-3 pr-4">{o.status}</td>
-                      <td className="py-3 pr-4">{o.is_rush ? 'Yes' : 'No'}</td>
-                      <td className="py-3 pr-4">
-                        <div className="flex gap-2">
-                          <button className="p-2 rounded-md hover:bg-neutral-light" onClick={() => setIsViewOpen(o)} title="View"><Eye className="h-4 w-4" /></button>
-                          <button className="p-2 rounded-md hover:bg-neutral-light" onClick={() => { setIsEditOpen(o); setIsAddOpen(true); setForm({
-                            date: o.date || '',
-                            customer: o.customer_name || '',
-                            product: o.product_name || '',
-                            packagingType: o.packaging_type || '',
-                            requestedShipDate: o.requested_ship_date || '',
-                            quantity: String(o.quantity),
-                            caseQty: o.case_qty ? String(o.case_qty) : '',
-                            notes: o.notes || '',
-                            invoice: o.invoice || '',
-                            paymentTerms: o.payment_terms || '',
-                            status: o.status || 'Open',
-                            comments: o.comments || '',
-                            location: o.location || ''
-                          }) }} title="Edit"><Pencil className="h-4 w-4" /></button>
-                          <button className="p-2 rounded-md hover:bg-red-50 text-red-600" onClick={() => removeOrder(o.id)} title="Delete"><Trash2 className="h-4 w-4" /></button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
+                    .map((o:any) => {
+                      const st = String(o.status || '').toLowerCase()
+                      const statusClass = (st === 'on hold' || st === 'canceled')
+                        ? 'bg-accent-danger/10 text-accent-danger border-accent-danger/30'
+                        : (st === 'approved' || st === 'allocated')
+                          ? 'bg-accent-success/10 text-accent-success border-accent-success/30'
+                          : 'bg-neutral-light/40 text-neutral-dark border-neutral-soft/60'
+                      return (
+                        <tr key={o.id} className="group hover:bg-gradient-to-r hover:from-primary-light/5 hover:to-primary-medium/5 transition-all duration-300 hover:shadow-sm">
+                          <td className="px-8 py-6">{o.date || '-'}</td>
+                          <td className="px-8 py-6">
+                            <div className="text-sm font-medium text-neutral-dark truncate max-w-[260px]">{o.customer_name || o.customer_id}</div>
+                          </td>
+                          <td className="px-8 py-6">
+                            <div className="text-sm text-neutral-dark truncate max-w-[260px]">{o.product_name || o.product_id}</div>
+                          </td>
+                          <td className="px-8 py-6">{o.quantity}</td>
+                          <td className="px-8 py-6">{o.requested_ship_date || '-'}</td>
+                          <td className="px-8 py-6">
+                            <span className={`inline-flex items-center px-3 py-1.5 rounded-xl text-xs font-semibold border ${statusClass}`}>
+                              {o.status}
+                            </span>
+                          </td>
+                          <td className="px-8 py-6">{o.is_rush ? 'Yes' : 'No'}</td>
+                          <td className="px-8 py-6">
+                            <div className="flex items-center justify-center space-x-2">
+                              <button
+                                className="group/btn px-3 py-3 text-primary-medium hover:text-white hover:bg-primary-medium rounded-xl transition-all duration-300 hover:shadow-lg hover:scale-105 border border-primary-light/30 hover:border-primary-medium"
+                                onClick={() => approveAndAllocate(o.id)}
+                                title="Approve & Allocate"
+                              >
+                                Approve
+                              </button>
+                              <button className="group/btn p-3 text-primary-medium hover:text-white hover:bg-primary-medium rounded-xl transition-all duration-300 hover:shadow-lg hover:scale-105 border border-primary-light/30 hover:border-primary-medium" onClick={() => setIsViewOpen(o)} title="View">
+                                <Eye className="h-5 w-5" />
+                              </button>
+                              <button className="group/btn p-3 text-neutral-medium hover:text-white hover:bg-neutral-medium rounded-xl transition-all duration-300 hover:shadow-lg hover:scale-105 border border-neutral-soft hover:border-neutral-medium" onClick={async () => {
+                                setIsEditOpen(o)
+                                setIsAddOpen(true)
+                                // Prefill base form values
+                                setForm({
+                                  date: o.date || '',
+                                  customer: o.customer_name || '',
+                                  product: o.product_name || '',
+                                  packagingType: o.packaging_type || '',
+                                  requestedShipDate: o.requested_ship_date || '',
+                                  quantity: String(o.quantity),
+                                  caseQty: o.case_qty ? String(o.case_qty) : '',
+                                  notes: o.notes || '',
+                                  invoice: o.invoice || '',
+                                  paymentTerms: o.payment_terms || '',
+                                  status: o.status || 'Open',
+                                  comments: o.comments || '',
+                                  location: o.location || ''
+                                })
+                                // Prefill packaging types (array)
+                                if (Array.isArray(o.packaging_types)) {
+                                  setSelectedPackagingTypes(o.packaging_types as string[])
+                                } else if (o.packaging_type) {
+                                  setSelectedPackagingTypes([String(o.packaging_type)])
+                                } else {
+                                  setSelectedPackagingTypes([])
+                                }
+                                // Load additional items from purchase_order_items
+                                try {
+                                  const { data: items } = await supabase
+                                    .from('purchase_order_items')
+                                    .select('product_name, quantity')
+                                    .eq('purchase_order_id', o.id)
+                                  const extras = (items ?? [])
+                                    .filter((it: any) => !(String(it.product_name || '') === String(o.product_name || '') && Number(it.quantity || 0) === Number(o.quantity || 0)))
+                                    .map((it: any) => ({ id: (crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`), product: String(it.product_name || ''), qty: Number(it.quantity || 0) }))
+                                  setExtraLines(extras)
+                                } catch {}
+                              }} title="Edit">
+                                <Pencil className="h-5 w-5" />
+                              </button>
+                              <button className="group/btn p-3 text-accent-danger hover:text-white hover:bg-accent-danger rounded-xl transition-all duration-300 hover:shadow-lg hover:scale-105 border border-accent-danger/30 hover:border-accent-danger" onClick={() => { setDeleteTarget(o); setIsDeleteOpen(true) }} title="Delete">
+                                <Trash2 className="h-5 w-5" />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      )
+                    })}
                 </tbody>
               </table>
             </div>
           )}
         </div>
 
+        {isDeleteOpen && deleteTarget && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-black/50" onClick={() => { if (!deleting) { setIsDeleteOpen(false); setDeleteTarget(null) } }}></div>
+            <div className="relative z-10 w-full max-w-lg bg-white rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden">
+              <div className="px-8 py-6 bg-gradient-to-r from-neutral-light to-neutral-light/80 border-b border-neutral-soft/50">
+                <h2 className="text-2xl font-semibold text-neutral-dark">Delete Purchase Order</h2>
+                <p className="text-sm text-neutral-medium mt-1">This action cannot be undone.</p>
+              </div>
+              <div className="p-8">
+                <p className="text-neutral-dark">Are you sure you want to delete this order{deleteTarget?.customer_name ? ` for "${deleteTarget.customer_name}"` : ''}{deleteTarget?.product_name ? ` - ${deleteTarget.product_name}` : ''}?</p>
+                <div className="mt-8 flex justify-end gap-3">
+                  <button
+                    className="px-5 py-2.5 rounded-xl border border-neutral-soft text-neutral-dark hover:bg-neutral-light/60 transition-all disabled:opacity-60"
+                    onClick={() => { if (!deleting) { setIsDeleteOpen(false); setDeleteTarget(null) } }}
+                    disabled={deleting}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    className="px-5 py-2.5 rounded-xl bg-accent-danger text-white font-semibold hover:opacity-90 shadow-md disabled:opacity-60"
+                    onClick={async () => {
+                      if (!deleteTarget?.id || deleting) return
+                      setDeleting(true)
+                      await removeOrder(deleteTarget.id)
+                      setIsDeleteOpen(false)
+                      setDeleteTarget(null)
+                      setDeleting(false)
+                    }}
+                    disabled={deleting}
+                  >
+                    {deleting ? 'Deleting…' : 'Delete'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
         {isAddOpen && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-            <div className="absolute inset-0 bg-black/50" onClick={() => setIsAddOpen(false)}></div>
+            <div className="absolute inset-0 bg-black/50" onClick={() => { setIsAddOpen(false); setIsEditOpen(null); setSelectedPackagingTypes([]); setExtraLines([]); }}></div>
             <div className="relative z-10 w-full max-w-3xl h-[80vh] bg-white rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden flex flex-col">
               <div className="flex items-center justify-between px-8 py-6 bg-gradient-to-r from-neutral-light to-neutral-light/80 border-b border-neutral-soft/50">
                 <div>
-                  <h2 className="text-2xl font-semibold text-neutral-dark">Add Purchase Order</h2>
+                  <h2 className="text-2xl font-semibold text-neutral-dark">{isEditOpen ? 'Update Purchase Order' : 'Add Purchase Order'}</h2>
                 </div>
-                <button onClick={() => setIsAddOpen(false)} className="p-3 text-neutral-medium hover:text-neutral-dark hover:bg-white/60 rounded-xl transition-all duration-200 hover:shadow-sm">
+                <button onClick={() => { setIsAddOpen(false); setIsEditOpen(null); setSelectedPackagingTypes([]); setExtraLines([]); }} className="p-3 text-neutral-medium hover:text-neutral-dark hover:bg-white/60 rounded-xl transition-all duration-200 hover:shadow-sm">
                   <X className="h-6 w-6" />
                 </button>
               </div>
@@ -560,20 +852,107 @@ const PurchaseOrders: React.FC = () => {
         {isViewOpen && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
             <div className="absolute inset-0 bg-black/50" onClick={() => setIsViewOpen(null)}></div>
-            <div className="relative z-10 w-full max-w-xl bg-white rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden">
-              <div className="flex items-center justify-between px-6 py-4 border-b">
-                <h3 className="text-lg font-semibold">Purchase Order</h3>
-                <button onClick={() => setIsViewOpen(null)} className="p-2"><X className="h-5 w-5" /></button>
+            <div className="relative z-10 w-full max-w-3xl bg-white rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden flex flex-col">
+              <div className="flex items-center justify-between px-8 py-6 bg-gradient-to-r from-neutral-light to-neutral-light/80 border-b border-neutral-soft/50">
+                <div>
+                  <h2 className="text-2xl font-semibold text-neutral-dark">Purchase Order Details</h2>
+                  <p className="text-sm text-neutral-medium mt-1">Order information overview</p>
+                </div>
+                <button onClick={() => setIsViewOpen(null)} className="p-3 text-neutral-medium hover:text-neutral-dark hover:bg-white/60 rounded-xl transition-all duration-200 hover:shadow-sm">
+                  <X className="h-6 w-6" />
+                </button>
               </div>
-              <div className="p-6 space-y-2 text-sm">
-                <div><strong>Customer:</strong> {isViewOpen.customer_name || isViewOpen.customer_id}</div>
-                <div><strong>Product:</strong> {isViewOpen.product_name || isViewOpen.product_id}</div>
-                <div><strong>Quantity:</strong> {isViewOpen.quantity}</div>
-                <div><strong>Requested Ship Date:</strong> {isViewOpen.requested_ship_date || '-'}</div>
-                <div><strong>Status:</strong> {isViewOpen.status}</div>
-                <div><strong>Location:</strong> {isViewOpen.location || '-'}</div>
-                <div><strong>Rush:</strong> {isViewOpen.is_rush ? 'Yes' : 'No'}</div>
-                <div><strong>Comments:</strong> {isViewOpen.comments || '-'}</div>
+              <div className="p-8 space-y-6">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div className="space-y-1">
+                    <label className="flex items-center text-xs font-semibold text-neutral-medium uppercase tracking-wide">
+                      <User className="h-4 w-4 mr-2 text-primary-medium" /> Customer
+                    </label>
+                    <div className="text-neutral-dark font-semibold">{isViewOpen.customer_name || isViewOpen.customer_id || '—'}</div>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="flex items-center text-xs font-semibold text-neutral-medium uppercase tracking-wide">
+                      <Package className="h-4 w-4 mr-2 text-primary-medium" /> Product
+                    </label>
+                    <div className="text-neutral-dark">{isViewOpen.product_name || isViewOpen.product_id || '—'}</div>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="flex items-center text-xs font-semibold text-neutral-medium uppercase tracking-wide">
+                      <Package className="h-4 w-4 mr-2 text-primary-medium" /> Quantity
+                    </label>
+                    <div className="text-neutral-dark font-medium">{isViewOpen.quantity || '—'}</div>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="flex items-center text-xs font-semibold text-neutral-medium uppercase tracking-wide">
+                      <Calendar className="h-4 w-4 mr-2 text-primary-medium" /> Ship Date
+                    </label>
+                    <div className="text-neutral-dark">{isViewOpen.requested_ship_date || '—'}</div>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="flex items-center text-xs font-semibold text-neutral-medium uppercase tracking-wide">
+                      <BadgeCheck className="h-4 w-4 mr-2 text-primary-medium" /> Status
+                    </label>
+                    <div>
+                      {(() => {
+                        const st = String(isViewOpen.status || '').toLowerCase()
+                        const statusClass = (st === 'on hold' || st === 'canceled')
+                          ? 'bg-accent-danger/10 text-accent-danger border-accent-danger/30'
+                          : (st === 'approved' || st === 'allocated')
+                            ? 'bg-accent-success/10 text-accent-success border-accent-success/30'
+                            : 'bg-neutral-light/40 text-neutral-dark border-neutral-soft/60'
+                        return (
+                          <span className={`inline-flex items-center px-3 py-1.5 rounded-xl text-xs font-semibold border ${statusClass}`}>
+                            {isViewOpen.status || '—'}
+                          </span>
+                        )
+                      })()}
+                    </div>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="flex items-center text-xs font-semibold text-neutral-medium uppercase tracking-wide">
+                      <MapPin className="h-4 w-4 mr-2 text-primary-medium" /> Location
+                    </label>
+                    <div className="text-neutral-dark">{isViewOpen.location || '—'}</div>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="flex items-center text-xs font-semibold text-neutral-medium uppercase tracking-wide">
+                      Rush Order
+                    </label>
+                    <div>
+                      <span className={`inline-flex items-center px-3 py-1.5 rounded-xl text-xs font-semibold border ${
+                        isViewOpen.is_rush 
+                          ? 'bg-orange-50 text-orange-600 border-orange-200' 
+                          : 'bg-neutral-light/40 text-neutral-dark border-neutral-soft/60'
+                      }`}>
+                        {isViewOpen.is_rush ? 'Yes' : 'No'}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="flex items-center text-xs font-semibold text-neutral-medium uppercase tracking-wide">
+                      <Calendar className="h-4 w-4 mr-2 text-primary-medium" /> Order Date
+                    </label>
+                    <div className="text-neutral-dark">{isViewOpen.date || '—'}</div>
+                  </div>
+                </div>
+                
+                {(isViewOpen.notes || isViewOpen.comments) && (
+                  <div className="space-y-1">
+                    <label className="flex items-center text-xs font-semibold text-neutral-medium uppercase tracking-wide">
+                      <FileText className="h-4 w-4 mr-2 text-primary-medium" /> Notes & Comments
+                    </label>
+                    <div className="bg-neutral-light/30 rounded-lg p-4 text-neutral-dark">
+                      {isViewOpen.notes && <div><strong>Notes:</strong> {isViewOpen.notes}</div>}
+                      {isViewOpen.comments && <div><strong>Comments:</strong> {isViewOpen.comments}</div>}
+                    </div>
+                  </div>
+                )}
+                
+                <div className="flex justify-end">
+                  <button onClick={() => setIsViewOpen(null)} className="px-5 py-2.5 rounded-xl border border-neutral-soft text-neutral-dark hover:bg-neutral-light/60 transition-all">
+                    Close
+                  </button>
+                </div>
               </div>
             </div>
           </div>

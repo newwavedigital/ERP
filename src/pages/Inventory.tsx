@@ -1,33 +1,69 @@
 import React, { useState, useEffect, useRef } from 'react'
-import { Plus, Package, Box, Factory, LineChart, Inbox, Landmark, CheckCircle, X, Tag, User, Scale, DollarSign, ClipboardList } from 'lucide-react'
+import { Plus, Package, Box, Factory, LineChart, Inbox, Landmark, CheckCircle, X, Tag, User, Scale, DollarSign, ClipboardList, Eye, Edit, Trash2, CheckCircle2 } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 
-interface InventoryItem {
-  id: number
+interface Supplier {
+  id: string
   name: string
+}
+
+interface RawMaterial {
+  id: string
+  product_name: string
+  category: string
+  supplier_id?: string | null
+  supplier_name?: string | null
+  unit_of_measure?: string | null
+  unit_weight?: string | null
+  cost_per_unit?: string | null
+  total_available?: string | null
+  created_at?: string | null
 }
 
 const Inventory: React.FC = () => {
   const [mainTab, setMainTab] = useState<'raw' | 'packaging' | 'finished'>('raw')
   const [subTab, setSubTab] = useState<'list' | 'forecast'>('list')
-  const [items] = useState<InventoryItem[]>([])
   const [isCategoryOpen, setIsCategoryOpen] = useState(false)
   const [isSupplierOpen, setIsSupplierOpen] = useState(false)
   const [isUomOpen, setIsUomOpen] = useState(false)
   const [isAddRawOpen, setIsAddRawOpen] = useState(false)
   const [isSavingRaw, setIsSavingRaw] = useState(false)
+  const [materials, setMaterials] = useState<RawMaterial[]>([])
+  const [materialsLoading, setMaterialsLoading] = useState<boolean>(true)
+  const [isViewOpen, setIsViewOpen] = useState<boolean>(false)
+  const [viewData, setViewData] = useState<RawMaterial | null>(null)
+  const [isEditOpen, setIsEditOpen] = useState<boolean>(false)
+  const [editId, setEditId] = useState<string | null>(null)
+  const [isUpdating, setIsUpdating] = useState<boolean>(false)
+  const [editForm, setEditForm] = useState({
+    product_name: '',
+    category: '',
+    supplier_id: '',
+    supplier_name: '',
+    unit_of_measure: '',
+    unit_weight: '',
+    cost_per_unit: '',
+    total_available: '',
+  })
+  const [isDeleteOpen, setIsDeleteOpen] = useState<boolean>(false)
+  const [deleteTarget, setDeleteTarget] = useState<RawMaterial | null>(null)
+  const [deleting, setDeleting] = useState<boolean>(false)
+  const [toast, setToast] = useState<{ show: boolean; message: string }>({ show: false, message: '' })
   const [rawForm, setRawForm] = useState({
     name: '',
     category: '',
     newCategory: '',
     supplier: '',
+    supplierId: '',
     uom: 'Kilograms (kg)',
     unitWeight: '',
     costPerUnit: '',
     totalAvailable: '',
   })
   const rawCategories = ['Ingredient', 'Packaging', 'Additive']
-  const suppliers: string[] = []
+  const [suppliers, setSuppliers] = useState<Supplier[]>([])
+  const [suppliersLoading, setSuppliersLoading] = useState<boolean>(true)
+  const [suppliersError, setSuppliersError] = useState<string | null>(null)
   const uoms = ['Kilograms (kg)', 'Grams (g)', 'Pounds (lbs)', 'Ounces (oz)', 'Pieces', 'Bottles', 'Boxes', 'Liters (L)']
   const categoryRef = useRef<HTMLDivElement>(null)
   const supplierRef = useRef<HTMLDivElement>(null)
@@ -41,6 +77,93 @@ const Inventory: React.FC = () => {
     }
     document.addEventListener('mousedown', handleClickOutside)
     return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
+
+  useEffect(() => {
+    if (toast.show) {
+      const t = setTimeout(() => setToast({ show: false, message: '' }), 2500)
+      return () => clearTimeout(t)
+    }
+  }, [toast.show])
+
+  // Load suppliers from Supabase on mount (reference: Products.tsx customer select)
+  useEffect(() => {
+    const loadSuppliers = async () => {
+      if (!supabase) {
+        setSuppliersLoading(false)
+        setSuppliersError('Supabase not configured')
+        return
+      }
+      setSuppliersLoading(true)
+      setSuppliersError(null)
+      const { data, error } = await supabase
+        .from('suppliers')
+        .select('id, company_name')
+        .order('company_name', { ascending: true })
+
+      if (error) {
+        console.error('Failed to fetch suppliers', error)
+        setSuppliersError('Cannot load suppliers')
+        setSuppliersLoading(false)
+        return
+      }
+      const rows = (data ?? []) as Array<{ id: string; company_name: string | null }>
+      const items: Supplier[] = rows
+        .map((r) => ({ id: String(r.id), name: String(r.company_name ?? '').trim() }))
+        .filter((r) => r.id && r.name.length > 0)
+      setSuppliers(items)
+      setSuppliersLoading(false)
+    }
+    loadSuppliers()
+  }, [])
+
+  // Load raw materials and subscribe to realtime updates
+  useEffect(() => {
+    const loadMaterials = async () => {
+      if (!supabase) return
+      setMaterialsLoading(true)
+      const { data, error } = await supabase
+        .from('inventory_materials')
+        .select('id, product_name, category, supplier_id, supplier_name, unit_of_measure, unit_weight, cost_per_unit, total_available, created_at')
+
+      if (error) {
+        console.error('Failed to fetch materials', error)
+        setMaterialsLoading(false)
+        return
+      }
+      const rows = (data ?? []) as Array<any>
+      rows.sort((a, b) => {
+        const ta = a.created_at ? Date.parse(a.created_at as string) : 0
+        const tb = b.created_at ? Date.parse(b.created_at as string) : 0
+        return tb - ta
+      })
+      const mapped: RawMaterial[] = rows.map((r) => ({
+        id: String(r.id),
+        product_name: String(r.product_name ?? ''),
+        category: String(r.category ?? ''),
+        supplier_id: r.supplier_id ?? null,
+        supplier_name: r.supplier_name ?? null,
+        unit_of_measure: r.unit_of_measure ?? null,
+        unit_weight: r.unit_weight ?? null,
+        cost_per_unit: r.cost_per_unit ?? null,
+        total_available: r.total_available ?? null,
+        created_at: r.created_at ?? null,
+      }))
+      setMaterials(mapped)
+      setMaterialsLoading(false)
+    }
+
+    loadMaterials()
+    const channel = supabase
+      ?.channel('realtime-inventory-materials')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'inventory_materials' }, () => {
+        loadMaterials()
+      })
+      .subscribe()
+
+    return () => {
+      if (channel) supabase?.removeChannel(channel)
+    }
   }, [])
 
   const titleByTab = {
@@ -114,7 +237,7 @@ const Inventory: React.FC = () => {
                 className={`${subTab === 'list' ? 'border-primary-medium text-primary-medium' : 'border-transparent text-neutral-medium hover:text-neutral-dark'} border-b-2 px-2 py-2 text-sm font-semibold`}
                 onClick={() => setSubTab('list')}
               >
-                Raw Materials ({items.length})
+                Raw Materials ({materials.length})
               </button>
               <button
                 className={`${subTab === 'forecast' ? 'border-primary-medium text-primary-medium' : 'border-transparent text-neutral-medium hover:text-neutral-dark'} border-b-2 px-2 py-2 text-sm font-semibold`}
@@ -208,18 +331,262 @@ const Inventory: React.FC = () => {
                 </button>
               </div>
             ) : (
-              <div className="bg-white rounded-2xl border border-neutral-soft/20 shadow-md p-12 flex flex-col items-center justify-center">
-                <div className="mx-auto w-16 h-16 bg-primary-light/20 rounded-full flex items-center justify-center mb-4">
-                  <Inbox className="h-8 w-8 text-primary-medium" />
+              materialsLoading || materials.length === 0 ? (
+                <div className="bg-white rounded-2xl border border-neutral-soft/20 shadow-md p-12 flex flex-col items-center justify-center">
+                  <div className="mx-auto w-16 h-16 bg-primary-light/20 rounded-full flex items-center justify-center mb-4">
+                    <Inbox className="h-8 w-8 text-primary-medium" />
+                  </div>
+                  <div className="text-neutral-dark font-semibold mb-1">{materialsLoading ? 'Loading raw materials...' : 'No raw materials found'}</div>
+                  {!materialsLoading && (
+                    <>
+                      <p className="text-sm text-neutral-medium mb-6">Add a new item to track your inventory.</p>
+                      <button onClick={() => { if (mainTab==='raw') setIsAddRawOpen(true) }} className="inline-flex items-center gap-2 rounded-xl px-5 py-2.5 text-sm text-white bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light shadow">
+                        <Plus className="h-4 w-4" /> Add Your First Raw Material
+                      </button>
+                    </>
+                  )}
                 </div>
-                <div className="text-neutral-dark font-semibold mb-1">No {titleByTab[mainTab].toLowerCase()} found</div>
-                <p className="text-sm text-neutral-medium mb-6">Add a new item to track your inventory.</p>
-                <button onClick={() => { if (mainTab==='raw') setIsAddRawOpen(true) }} className="inline-flex items-center gap-2 rounded-xl px-5 py-2.5 text-sm text-white bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light shadow">
-                  <Plus className="h-4 w-4" /> Add Your First {titleByTab[mainTab].slice(0, -1)}
-                </button>
-              </div>
+              ) : (
+                <div className="bg-white rounded-2xl shadow-md border border-neutral-soft/20 overflow-hidden">
+                  <div className="px-6 py-4 bg-gradient-to-r from-neutral-light/60 via-neutral-light/40 to-neutral-soft/30 border-b border-neutral-soft/40">
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-lg font-semibold text-neutral-dark">Raw Materials Inventory</h3>
+                    </div>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full">
+                      <thead>
+                        <tr className="bg-gradient-to-r from-neutral-light/60 via-neutral-light/40 to-neutral-soft/30 border-b-2 border-neutral-soft/50">
+                          <th className="px-6 py-4 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">Product</th>
+                          <th className="px-6 py-4 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">Category</th>
+                          <th className="px-6 py-4 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">Supplier</th>
+                          <th className="px-6 py-4 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">UoM</th>
+                          <th className="px-6 py-4 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">Unit Weight</th>
+                          <th className="px-6 py-4 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">Cost/Unit</th>
+                          <th className="px-6 py-4 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">Total Available</th>
+                          <th className="px-6 py-4 text-center text-xs font-bold text-neutral-dark uppercase tracking-wider">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-neutral-soft/20">
+                        {materials.map((m) => (
+                          <tr key={m.id} className="hover:bg-neutral-light/20 transition">
+                            <td className="px-6 py-4 text-sm text-neutral-dark font-medium">{m.product_name}</td>
+                            <td className="px-6 py-4 text-sm text-neutral-dark">{m.category || '—'}</td>
+                            <td className="px-6 py-4 text-sm text-neutral-dark">{m.supplier_name || '—'}</td>
+                            <td className="px-6 py-4 text-sm text-neutral-dark">{m.unit_of_measure || '—'}</td>
+                            <td className="px-6 py-4 text-sm text-neutral-dark">{m.unit_weight || '—'}</td>
+                            <td className="px-6 py-4 text-sm text-neutral-dark">{m.cost_per_unit || '—'}</td>
+                            <td className="px-6 py-4 text-sm text-neutral-dark">{m.total_available || '—'}</td>
+                            <td className="px-6 py-4">
+                              <div className="flex items-center justify-center gap-2">
+                                <button type="button" onClick={() => { setViewData(m); setIsViewOpen(true) }} className="p-2 text-primary-medium hover:text-white hover:bg-primary-medium rounded-lg border border-primary-light/30">
+                                  <Eye className="h-4 w-4" />
+                                </button>
+                                <button type="button" onClick={() => { setEditId(m.id); setEditForm({
+                                  product_name: m.product_name || '',
+                                  category: m.category || '',
+                                  supplier_id: m.supplier_id || '',
+                                  supplier_name: m.supplier_name || '',
+                                  unit_of_measure: m.unit_of_measure || '',
+                                  unit_weight: m.unit_weight || '',
+                                  cost_per_unit: m.cost_per_unit || '',
+                                  total_available: m.total_available || '',
+                                }); setIsEditOpen(true) }} className="p-2 text-neutral-medium hover:text-white hover:bg-neutral-medium rounded-lg border border-neutral-soft">
+                                  <Edit className="h-4 w-4" />
+                                </button>
+                                <button type="button" onClick={() => { setDeleteTarget(m); setIsDeleteOpen(true) }} className="p-2 text-accent-danger hover:text-white hover:bg-accent-danger rounded-lg border border-accent-danger/30">
+                                  <Trash2 className="h-4 w-4" />
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )
             )}
           </>
+        )}
+
+        {toast.show && (
+          <div className="fixed top-6 left-1/2 -translate-x-1/2 z-[70]">
+            <div className="flex items-center gap-3 bg-white rounded-xl shadow-2xl border border-neutral-soft/40 px-4 py-3 animate-fade-in">
+              <div className="w-8 h-8 bg-accent-success/15 rounded-full flex items-center justify-center">
+                <CheckCircle2 className="h-5 w-5 text-accent-success" />
+              </div>
+              <span className="text-sm font-semibold text-neutral-dark">{toast.message}</span>
+            </div>
+          </div>
+        )}
+
+        {/* View Material Modal */}
+        {isViewOpen && viewData && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-black/50" onClick={() => setIsViewOpen(false)}></div>
+            <div className="relative z-10 w-full max-w-3xl bg-white rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden flex flex-col">
+              <div className="flex items-center justify-between px-8 py-6 bg-gradient-to-r from-neutral-light to-neutral-light/80 border-b border-neutral-soft/50">
+                <div>
+                  <h2 className="text-2xl font-semibold text-neutral-dark">View Material</h2>
+                  <p className="text-sm text-neutral-medium mt-1">Material information overview</p>
+                </div>
+                <button onClick={() => setIsViewOpen(false)} className="p-3 text-neutral-medium hover:text-neutral-dark hover:bg-white/60 rounded-xl transition-all">✕</button>
+              </div>
+              <div className="p-8 space-y-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div>
+                    <div className="text-xs font-semibold text-neutral-medium uppercase tracking-wide">Product</div>
+                    <div className="text-neutral-dark font-semibold">{viewData.product_name}</div>
+                  </div>
+                  <div>
+                    <div className="text-xs font-semibold text-neutral-medium uppercase tracking-wide">Category</div>
+                    <div className="text-neutral-dark">{viewData.category || '—'}</div>
+                  </div>
+                  <div>
+                    <div className="text-xs font-semibold text-neutral-medium uppercase tracking-wide">Supplier</div>
+                    <div className="text-neutral-dark">{viewData.supplier_name || '—'}</div>
+                  </div>
+                  <div>
+                    <div className="text-xs font-semibold text-neutral-medium uppercase tracking-wide">UoM</div>
+                    <div className="text-neutral-dark">{viewData.unit_of_measure || '—'}</div>
+                  </div>
+                  <div>
+                    <div className="text-xs font-semibold text-neutral-medium uppercase tracking-wide">Unit Weight</div>
+                    <div className="text-neutral-dark">{viewData.unit_weight || '—'}</div>
+                  </div>
+                  <div>
+                    <div className="text-xs font-semibold text-neutral-medium uppercase tracking-wide">Cost/Unit</div>
+                    <div className="text-neutral-dark">{viewData.cost_per_unit || '—'}</div>
+                  </div>
+                  <div>
+                    <div className="text-xs font-semibold text-neutral-medium uppercase tracking-wide">Total Available</div>
+                    <div className="text-neutral-dark">{viewData.total_available || '—'}</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Edit Material Modal */}
+        {isEditOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-black/50" onClick={() => !isUpdating && setIsEditOpen(false)}></div>
+            <div className="relative z-10 w-full max-w-4xl bg-white rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden flex flex-col">
+              <div className="flex items-center justify-between px-8 py-6 bg-gradient-to-r from-neutral-light to-neutral-light/80 border-b border-neutral-soft/50">
+                <div>
+                  <h2 className="text-2xl font-semibold text-neutral-dark">Edit Material</h2>
+                  <p className="text-sm text-neutral-medium mt-1">Update material details</p>
+                </div>
+                <button onClick={() => !isUpdating && setIsEditOpen(false)} className="p-3 text-neutral-medium hover:text-neutral-dark hover:bg-white/60 rounded-xl transition-all">✕</button>
+              </div>
+              <div className="flex-1 overflow-y-auto">
+                <form
+                  onSubmit={async (e) => {
+                    e.preventDefault()
+                    if (!editId || isUpdating) return
+                    setIsUpdating(true)
+                    try {
+                      const payload: any = {
+                        product_name: editForm.product_name || null,
+                        category: editForm.category || null,
+                        supplier_id: editForm.supplier_id || null,
+                        supplier_name: editForm.supplier_name || null,
+                        unit_of_measure: editForm.unit_of_measure || null,
+                        unit_weight: editForm.unit_weight || null,
+                        cost_per_unit: editForm.cost_per_unit || null,
+                        total_available: editForm.total_available || null,
+                      }
+                      const { error } = await supabase.from('inventory_materials').update(payload).eq('id', editId)
+                      if (error) throw error
+                      setIsEditOpen(false)
+                      setToast({ show: true, message: 'Material updated' })
+                    } catch (err) {
+                      console.error('Failed to update material', err)
+                    } finally {
+                      setIsUpdating(false)
+                    }
+                  }}
+                  className="p-8 space-y-6"
+                >
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div className="space-y-2">
+                      <label className="flex items-center text-sm font-medium text-neutral-dark"><Package className="h-4 w-4 mr-2 text-primary-medium"/>Product Name</label>
+                      <input type="text" className="w-full px-4 py-3 border border-neutral-soft rounded-lg" value={editForm.product_name} onChange={(e)=>setEditForm({ ...editForm, product_name: e.target.value })} required />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="flex items-center text-sm font-medium text-neutral-dark"><Tag className="h-4 w-4 mr-2 text-primary-medium"/>Category</label>
+                      <input type="text" className="w-full px-4 py-3 border border-neutral-soft rounded-lg" value={editForm.category} onChange={(e)=>setEditForm({ ...editForm, category: e.target.value })} />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="flex items-center text-sm font-medium text-neutral-dark"><User className="h-4 w-4 mr-2 text-primary-medium"/>Supplier Name</label>
+                      <input type="text" className="w-full px-4 py-3 border border-neutral-soft rounded-lg" value={editForm.supplier_name} onChange={(e)=>setEditForm({ ...editForm, supplier_name: e.target.value })} />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="flex items-center text-sm font-medium text-neutral-dark"><Scale className="h-4 w-4 mr-2 text-primary-medium"/>Unit of Measure</label>
+                      <input type="text" className="w-full px-4 py-3 border border-neutral-soft rounded-lg" value={editForm.unit_of_measure} onChange={(e)=>setEditForm({ ...editForm, unit_of_measure: e.target.value })} />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="flex items-center text-sm font-medium text-neutral-dark"><ClipboardList className="h-4 w-4 mr-2 text-primary-medium"/>Unit Weight</label>
+                      <input type="text" className="w-full px-4 py-3 border border-neutral-soft rounded-lg" value={editForm.unit_weight} onChange={(e)=>setEditForm({ ...editForm, unit_weight: e.target.value })} />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="flex items-center text-sm font-medium text-neutral-dark"><DollarSign className="h-4 w-4 mr-2 text-primary-medium"/>Cost per Unit</label>
+                      <input type="text" className="w-full px-4 py-3 border border-neutral-soft rounded-lg" value={editForm.cost_per_unit} onChange={(e)=>setEditForm({ ...editForm, cost_per_unit: e.target.value })} />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="flex items-center text-sm font-medium text-neutral-dark"><Inbox className="h-4 w-4 mr-2 text-primary-medium"/>Total Available</label>
+                      <input type="text" className="w-full px-4 py-3 border border-neutral-soft rounded-lg" value={editForm.total_available} onChange={(e)=>setEditForm({ ...editForm, total_available: e.target.value })} />
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-end gap-3 pt-2">
+                    <button type="submit" className="px-6 py-3 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold shadow-md disabled:opacity-60" disabled={isUpdating}>
+                      {isUpdating ? 'Saving...' : 'Save Changes'}
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Delete Confirm Modal */}
+        {isDeleteOpen && deleteTarget && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-black/50" onClick={() => !deleting && setIsDeleteOpen(false)}></div>
+            <div className="relative z-10 w-full max-w-md bg-white rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden">
+              <div className="px-6 py-5 border-b border-neutral-soft/40">
+                <div className="text-lg font-semibold text-neutral-dark">Delete Material</div>
+              </div>
+              <div className="p-6 text-sm text-neutral-dark">
+                Are you sure you want to delete "{deleteTarget.product_name}"? This action cannot be undone.
+              </div>
+              <div className="px-6 py-4 flex items-center justify-end gap-3 border-t border-neutral-soft/40">
+                <button onClick={() => !deleting && setIsDeleteOpen(false)} className="px-4 py-2 rounded-lg border border-neutral-soft text-neutral-dark">Cancel</button>
+                <button
+                  onClick={async () => {
+                    if (deleting) return
+                    setDeleting(true)
+                    try {
+                      const { error } = await supabase.from('inventory_materials').delete().eq('id', deleteTarget.id)
+                      if (error) throw error
+                      setIsDeleteOpen(false)
+                      setToast({ show: true, message: 'Material deleted' })
+                    } catch (err) {
+                      console.error('Failed to delete material', err)
+                    } finally {
+                      setDeleting(false)
+                    }
+                  }}
+                  className="px-4 py-2 rounded-lg bg-accent-danger text-white"
+                  disabled={deleting}
+                >
+                  {deleting ? 'Deleting...' : 'Delete'}
+                </button>
+              </div>
+            </div>
+          </div>
         )}
         {/* Add Raw Material Modal */}
         {isAddRawOpen && mainTab==='raw' && (
@@ -245,18 +612,19 @@ const Inventory: React.FC = () => {
                     try {
                       const category = (rawForm.newCategory || '').trim() || rawForm.category || null
                       const payload: any = {
-                        name: rawForm.name || null,
+                        product_name: rawForm.name || null,
                         category,
-                        supplier: rawForm.supplier || null,
-                        uom: rawForm.uom || null,
-                        unit_weight: rawForm.unitWeight ? Number(rawForm.unitWeight) : null,
-                        cost_per_unit: rawForm.costPerUnit ? Number(rawForm.costPerUnit) : null,
-                        total_available: rawForm.totalAvailable ? Number(rawForm.totalAvailable) : null,
+                        supplier_id: rawForm.supplierId || null,
+                        supplier_name: rawForm.supplier || null,
+                        unit_of_measure: rawForm.uom || null,
+                        unit_weight: rawForm.unitWeight ? String(rawForm.unitWeight) : null,
+                        cost_per_unit: rawForm.costPerUnit ? String(rawForm.costPerUnit) : null,
+                        total_available: rawForm.totalAvailable ? String(rawForm.totalAvailable) : null,
                       }
                       const { error } = await supabase.from('inventory_materials').insert(payload)
                       if (error) throw error
                       setIsAddRawOpen(false)
-                      setRawForm({ name: '', category: '', newCategory: '', supplier: '', uom: 'Kilograms (kg)', unitWeight: '', costPerUnit: '', totalAvailable: '' })
+                      setRawForm({ name: '', category: '', newCategory: '', supplier: '', supplierId: '', uom: 'Kilograms (kg)', unitWeight: '', costPerUnit: '', totalAvailable: '' })
                     } catch (err) {
                       console.error('Failed to insert inventory material', err)
                     } finally {
@@ -312,16 +680,19 @@ const Inventory: React.FC = () => {
                       <label className="flex items-center text-sm font-medium text-neutral-dark"><User className="h-4 w-4 mr-2 text-primary-medium"/>Supplier</label>
                       <button
                         type="button"
-                        onClick={() => { if (suppliers.length>0) setIsSupplierOpen((v)=>!v) }}
-                        disabled={suppliers.length===0}
-                        className={`w-full flex items-center justify-between px-4 py-3 border border-neutral-soft rounded-lg text-left bg-white transition-all ${suppliers.length===0 ? 'opacity-60 cursor-not-allowed' : 'hover:border-neutral-medium focus:ring-2 focus:ring-primary-light focus:border-primary-light'}`}
+                        onClick={() => { if (!suppliersLoading && suppliers.length>0) setIsSupplierOpen((v)=>!v) }}
+                        disabled={suppliersLoading || suppliers.length===0}
+                        className={`w-full flex items-center justify-between px-4 py-3 border border-neutral-soft rounded-lg text-left bg-white transition-all ${(suppliersLoading || suppliers.length===0) ? 'opacity-60 cursor-not-allowed' : 'hover:border-neutral-medium focus:ring-2 focus:ring-primary-light focus:border-primary-light'}`}
                       >
                         <span className={rawForm.supplier ? 'text-neutral-dark' : 'text-neutral-medium'}>
-                          {rawForm.supplier || 'Select Supplier'}
+                          {suppliersLoading ? 'Loading suppliers...' : (rawForm.supplier || 'Select Supplier')}
                         </span>
                         <span className="ml-2 text-neutral-medium">▼</span>
                       </button>
-                      {suppliers.length===0 && (
+                      {suppliersError && (
+                        <p className="text-xs text-accent-danger">{suppliersError}</p>
+                      )}
+                      {(!suppliersLoading && suppliers.length===0 && !suppliersError) && (
                         <p className="text-xs text-accent-danger">No suppliers found. Add suppliers first in the Suppliers section.</p>
                       )}
                       {isSupplierOpen && (
@@ -330,12 +701,12 @@ const Inventory: React.FC = () => {
                             <div className="px-3 py-2 text-xs text-neutral-medium">Select Supplier</div>
                             {suppliers.map((s) => (
                               <button
-                                key={s}
+                                key={s.id}
                                 type="button"
-                                className={`block w-full text-left px-4 py-2 hover:bg-neutral-light ${rawForm.supplier===s ? 'bg-neutral-light' : ''}`}
-                                onClick={() => { setRawForm({ ...rawForm, supplier: s }); setIsSupplierOpen(false) }}
+                                className={`block w-full text-left px-4 py-2 hover:bg-neutral-light ${rawForm.supplier===s.name ? 'bg-neutral-light' : ''}`}
+                                onClick={() => { setRawForm({ ...rawForm, supplier: s.name, supplierId: s.id }); setIsSupplierOpen(false) }}
                               >
-                                {s}
+                                {s.name}
                               </button>
                             ))}
                           </div>

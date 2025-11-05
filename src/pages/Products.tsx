@@ -54,7 +54,7 @@ const Products: React.FC = () => {
   })
   type Customer = { id: string; name: string }
   const [customers, setCustomers] = useState<Customer[]>([])
-  const [productTypes, setProductTypes] = useState<string[]>(['Peanut Butter', 'Dog Treat'])
+  const [productTypes, setProductTypes] = useState<string[]>([])
   const [packagingTypes, setPackagingTypes] = useState<string[]>(['Jars', 'Squeeze Packs', 'Sachets', 'Bottles', 'Boxes'])
   const uoms = ['Grams (g)', 'Pieces', 'Bottles', 'Jars', 'Boxes']
 
@@ -275,6 +275,37 @@ const Products: React.FC = () => {
       setCustomersLoading(false)
     }
     loadCustomers()
+  }, [])
+
+  // Load Product Types from inventory_materials (distinct product_name) and subscribe to realtime updates
+  useEffect(() => {
+    const loadProductTypes = async () => {
+      if (!supabase) return
+      const { data, error } = await supabase
+        .from('inventory_materials')
+        .select('product_name')
+      if (error) {
+        console.error('Failed to fetch product types from inventory_materials', error)
+        return
+      }
+      const names = (data ?? [])
+        .map((r: any) => String(r.product_name ?? '').trim())
+        .filter((n: string) => n.length > 0)
+      const uniqueSorted = Array.from(new Set(names)).sort((a, b) => a.localeCompare(b))
+      setProductTypes(uniqueSorted)
+    }
+    loadProductTypes()
+
+    const channel = supabase
+      ?.channel('realtime-inventory-materials-types')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'inventory_materials' }, () => {
+        loadProductTypes()
+      })
+      .subscribe()
+
+    return () => {
+      if (channel) supabase?.removeChannel(channel)
+    }
   }, [])
 
   const filteredProducts = products.filter(product =>

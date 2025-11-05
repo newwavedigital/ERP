@@ -1,5 +1,5 @@
 import React, { useRef, useState } from 'react'
-import { Calendar, X, Plus } from 'lucide-react'
+import { Calendar, X, Plus, Eye, Pencil, Trash2 } from 'lucide-react'
 import { evaluateRules } from '../rules/engine'
 import { productionRules } from '../rules/production.rules'
 import { RULES_CONFIG } from '../config/rules-config'
@@ -216,6 +216,12 @@ const ProductionSchedule: React.FC = () => {
   }
 
   const filtered = activeTab === 'All' ? items : items.filter((i) => (i.assignedTo || '').toLowerCase() === activeTab.toLowerCase())
+
+  // CRUD: view/edit/delete states
+  const [viewItem, setViewItem] = useState<ScheduleItem | null>(null)
+  const [editItem, setEditItem] = useState<ScheduleItem | null>(null)
+  const [editSaving, setEditSaving] = useState(false)
+  const [delItem, setDelItem] = useState<ScheduleItem | null>(null)
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-neutral-light/30 to-neutral-soft/20">
@@ -468,6 +474,13 @@ const ProductionSchedule: React.FC = () => {
                       <td className="px-6 py-4 whitespace-nowrap">
                         <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${getStatusColor(item.status)}`}>{item.status}</span>
                       </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm">
+                        <div className="flex items-center gap-2">
+                          <button className="p-2 rounded-md hover:bg-neutral-light" onClick={()=>setViewItem(item)} title="View"><Eye className="h-4 w-4"/></button>
+                          <button className="p-2 rounded-md hover:bg-neutral-light" onClick={()=>setEditItem(item)} title="Edit"><Pencil className="h-4 w-4"/></button>
+                          <button className="p-2 rounded-md hover:bg-red-50 text-accent-danger" onClick={()=>setDelItem(item)} title="Delete"><Trash2 className="h-4 w-4"/></button>
+                        </div>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -475,6 +488,102 @@ const ProductionSchedule: React.FC = () => {
             </div>
           </div>
         )}
+
+      {/* View Modal */}
+      {viewItem && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/50" onClick={()=>setViewItem(null)}></div>
+          <div className="relative z-10 w-full max-w-xl bg-white rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden">
+            <div className="flex items-center justify-between px-6 py-4 border-b">
+              <h3 className="text-lg font-semibold">Production Batch</h3>
+              <button onClick={()=>setViewItem(null)} className="p-2"><X className="h-5 w-5"/></button>
+            </div>
+            <div className="p-6 text-sm space-y-2">
+              <div><strong>Product:</strong> {viewItem.product}</div>
+              <div><strong>Qty:</strong> {viewItem.quantity}</div>
+              <div><strong>Room:</strong> {viewItem.assignedTo}</div>
+              <div><strong>Start:</strong> {viewItem.startDate}</div>
+              <div><strong>Status:</strong> {viewItem.status}</div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Modal */}
+      {editItem && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/50" onClick={()=>!editSaving && setEditItem(null)}></div>
+          <div className="relative z-10 w-full max-w-2xl bg-white rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden">
+            <div className="flex items-center justify-between px-6 py-4 border-b">
+              <h3 className="text-lg font-semibold">Edit Production Batch</h3>
+              <button onClick={()=>!editSaving && setEditItem(null)} className="p-2"><X className="h-5 w-5"/></button>
+            </div>
+            <div className="p-6">
+              <form onSubmit={async (e)=>{
+                e.preventDefault(); if(!editItem) return; setEditSaving(true)
+                try{
+                  const payload:any = {
+                    product_sku: editItem.product,
+                    qty: editItem.quantity,
+                    room: editItem.assignedTo,
+                    start_date: editItem.startDate,
+                    end_date: editItem.endDate,
+                    status: editItem.status,
+                    assigned_line: editItem.assignedTo,
+                  }
+                  const { error } = await supabase.from('production_batches').update(payload).eq('id', editItem.id)
+                  if (error) throw error
+                  await loadItems()
+                  setEditItem(null)
+                }catch(err){ console.warn(err) } finally { setEditSaving(false) }
+              }} className="space-y-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="text-sm font-medium">Product</label>
+                    <input value={editItem.product} onChange={(e)=>setEditItem({...editItem, product: e.target.value})} className="w-full px-3 py-2 border rounded-lg"/>
+                  </div>
+                  <div>
+                    <label className="text-sm font-medium">Quantity</label>
+                    <input type="number" value={editItem.quantity} onChange={(e)=>setEditItem({...editItem, quantity: Number(e.target.value||0)})} className="w-full px-3 py-2 border rounded-lg"/>
+                  </div>
+                  <div>
+                    <label className="text-sm font-medium">Room</label>
+                    <input value={editItem.assignedTo} onChange={(e)=>setEditItem({...editItem, assignedTo: e.target.value})} className="w-full px-3 py-2 border rounded-lg"/>
+                  </div>
+                  <div>
+                    <label className="text-sm font-medium">Start Date</label>
+                    <input type="date" value={editItem.startDate} onChange={(e)=>setEditItem({...editItem, startDate: e.target.value})} className="w-full px-3 py-2 border rounded-lg"/>
+                  </div>
+                  <div>
+                    <label className="text-sm font-medium">Status</label>
+                    <select value={editItem.status} onChange={(e)=>setEditItem({...editItem, status: e.target.value})} className="w-full px-3 py-2 border rounded-lg">
+                      {['Scheduled','In Progress','Completed','Delayed'].map(s=> <option key={s} value={s}>{s}</option>)}
+                    </select>
+                  </div>
+                </div>
+                <div className="flex justify-end">
+                  <button type="submit" className="px-5 py-2.5 rounded-lg bg-primary-dark hover:bg-primary-medium text-white text-sm font-semibold" disabled={editSaving}>{editSaving? 'Saving…':'Save'}</button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Confirm */}
+      {delItem && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/50" onClick={()=>setDelItem(null)}></div>
+          <div className="relative z-10 w-full max-w-md bg-white rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden">
+            <div className="px-6 py-4 border-b"><div className="text-lg font-semibold">Delete Batch</div></div>
+            <div className="p-6 text-sm">Are you sure you want to delete "{delItem.product}"?</div>
+            <div className="px-6 py-4 flex justify-end gap-3 border-t">
+              <button className="px-4 py-2 rounded-lg border" onClick={()=>setDelItem(null)}>Cancel</button>
+              <button className="px-4 py-2 rounded-lg bg-accent-danger text-white" onClick={async()=>{ try{ await supabase.from('production_batches').delete().eq('id', delItem.id); await loadItems(); setDelItem(null) }catch(e){ console.warn(e) } }}>Delete</button>
+            </div>
+          </div>
+        </div>
+      )}
       </div>
     </div>
   )

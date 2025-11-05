@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react'
-import { Plus, Package, Box, Factory, LineChart, Inbox, Landmark, CheckCircle, X, Tag, User, Scale, DollarSign, ClipboardList, Eye, Edit, Trash2, CheckCircle2 } from 'lucide-react'
+import { Plus, Package, Box, Factory, LineChart, Inbox, Landmark, X, Tag, User, Scale, DollarSign, ClipboardList, Eye, Edit, Trash2, CheckCircle2 } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 
 interface Supplier {
@@ -49,6 +49,11 @@ const Inventory: React.FC = () => {
   const [deleteTarget, setDeleteTarget] = useState<RawMaterial | null>(null)
   const [deleting, setDeleting] = useState<boolean>(false)
   const [toast, setToast] = useState<{ show: boolean; message: string }>({ show: false, message: '' })
+  // Finished goods state
+  const [fg, setFg] = useState<Array<{ id: string; product_name: string; available_qty: number; location?: string | null }>>([])
+  const [fgLoading, setFgLoading] = useState<boolean>(false)
+  const [fgError, setFgError] = useState<string | null>(null)
+  const [allocatedMap, setAllocatedMap] = useState<Record<string, number>>({})
   const [rawForm, setRawForm] = useState({
     name: '',
     category: '',
@@ -77,6 +82,43 @@ const Inventory: React.FC = () => {
     }
     document.addEventListener('mousedown', handleClickOutside)
     return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
+
+  // Load finished goods and allocated summary
+  useEffect(() => {
+    const loadFinished = async () => {
+      if (!supabase) return
+      setFgLoading(true)
+      setFgError(null)
+      // finished_goods
+      const { data: fData, error: fErr } = await supabase
+        .from('finished_goods')
+        .select('id, product_name, available_qty, location')
+        .order('product_name', { ascending: true })
+      if (fErr) {
+        setFgError('Cannot load finished goods')
+        setFgLoading(false)
+        return
+      }
+      const items = (fData ?? []).map((r: any) => ({ id: String(r.id), product_name: String(r.product_name ?? ''), available_qty: Number(r.available_qty ?? 0), location: r.location ?? null }))
+      setFg(items)
+      // allocated from open POs (exclude Canceled/Closed)
+      const { data: poData } = await supabase
+        .from('purchase_orders')
+        .select('product_name, allocated_qty, status')
+      const map: Record<string, number> = {}
+      ;(poData ?? []).forEach((r: any) => {
+        const st = String(r.status || '')
+        if (st === 'Canceled' || st === 'Closed') return
+        const key = String(r.product_name || '')
+        const val = Number(r.allocated_qty ?? 0)
+        if (!key) return
+        map[key] = (map[key] || 0) + val
+      })
+      setAllocatedMap(map)
+      setFgLoading(false)
+    }
+    loadFinished()
   }, [])
 
   useEffect(() => {
@@ -289,33 +331,48 @@ const Inventory: React.FC = () => {
             </button>
           </div>
         ) : mainTab === 'finished' ? (
-          <div className="bg-white rounded-2xl border border-neutral-soft/20 shadow-md p-14 flex flex-col items-center justify-center">
-            <div className="mx-auto w-16 h-16 bg-primary-light/20 rounded-full flex items-center justify-center mb-5">
-              <Factory className="h-8 w-8 text-primary-medium" />
+          <div className="bg-white rounded-2xl shadow-md border border-neutral-soft/20 overflow-hidden">
+            <div className="px-6 py-4 bg-gradient-to-r from-neutral-light/60 via-neutral-light/40 to-neutral-soft/30 border-b border-neutral-soft/40">
+              <div className="flex items-center justify-between">
+                <h3 className="text-lg font-semibold text-neutral-dark">Finished Goods Inventory</h3>
+              </div>
             </div>
-            <div className="text-neutral-dark font-semibold mb-2">Finished Goods Inventory</div>
-            <p className="text-sm text-neutral-medium mb-8 text-center">Track your completed products ready for shipment.</p>
-            <div className="w-full max-w-xl bg-neutral-light/60 border border-neutral-soft rounded-xl p-6">
-              <p className="text-sm text-neutral-medium mb-4 text-center">This section will display your finished goods inventory including:</p>
-              <ul className="space-y-3 mx-auto max-w-md">
-                <li className="flex items-start gap-3">
-                  <CheckCircle className="h-5 w-5 text-accent-success mt-0.5" />
-                  <span className="text-neutral-dark text-sm">Completed product quantities by SKU</span>
-                </li>
-                <li className="flex items-start gap-3">
-                  <CheckCircle className="h-5 w-5 text-accent-success mt-0.5" />
-                  <span className="text-neutral-dark text-sm">Storage location and batch information</span>
-                </li>
-                <li className="flex items-start gap-3">
-                  <CheckCircle className="h-5 w-5 text-accent-success mt-0.5" />
-                  <span className="text-neutral-dark text-sm">Quality control status and certifications</span>
-                </li>
-                <li className="flex items-start gap-3">
-                  <CheckCircle className="h-5 w-5 text-accent-success mt-0.5" />
-                  <span className="text-neutral-dark text-sm">Available vs allocated stock levels</span>
-                </li>
-              </ul>
-            </div>
+            {fgLoading ? (
+              <div className="p-10 text-center text-neutral-medium">Loading…</div>
+            ) : fgError ? (
+              <div className="p-10 text-center text-accent-danger">{fgError}</div>
+            ) : fg.length === 0 ? (
+              <div className="p-10 text-center text-neutral-medium">No finished goods found</div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="min-w-full">
+                  <thead>
+                    <tr className="bg-gradient-to-r from-neutral-light/60 via-neutral-light/40 to-neutral-soft/30 border-b-2 border-neutral-soft/50">
+                      <th className="px-6 py-4 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">Product</th>
+                      <th className="px-6 py-4 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">Location</th>
+                      <th className="px-6 py-4 text-right text-xs font-bold text-neutral-dark uppercase tracking-wider">Available</th>
+                      <th className="px-6 py-4 text-right text-xs font-bold text-neutral-dark uppercase tracking-wider">Allocated (POs)</th>
+                      <th className="px-6 py-4 text-right text-xs font-bold text-neutral-dark uppercase tracking-wider">Net Available</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-neutral-soft/20">
+                    {fg.map(item => {
+                      const allocated = allocatedMap[item.product_name] || 0
+                      const net = item.available_qty - allocated
+                      return (
+                        <tr key={item.id} className="hover:bg-neutral-light/20 transition">
+                          <td className="px-6 py-4 text-sm text-neutral-dark font-medium">{item.product_name}</td>
+                          <td className="px-6 py-4 text-sm text-neutral-dark">{item.location || '—'}</td>
+                          <td className="px-6 py-4 text-sm text-neutral-dark text-right">{item.available_qty}</td>
+                          <td className="px-6 py-4 text-sm text-neutral-dark text-right">{allocated}</td>
+                          <td className="px-6 py-4 text-sm text-neutral-dark text-right">{net}</td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         ) : (
           <>

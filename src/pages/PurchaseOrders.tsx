@@ -8,7 +8,7 @@ const PurchaseOrders: React.FC = () => {
   const [isViewOpen, setIsViewOpen] = useState<any>(null)
   const [isEditOpen, setIsEditOpen] = useState<any>(null)
   const [isCustomerOpen, setIsCustomerOpen] = useState(false)
-  const [isProductOpen, setIsProductOpen] = useState(false)
+  
   const [isLocationOpen, setIsLocationOpen] = useState(false)
   const [customers, setCustomers] = useState<Array<{id:string; name:string; credit_hold?: boolean; overdue_balance?: number}>>([])
   const [products, setProducts] = useState<Array<{id:string; name:string; sku?:string; is_discontinued?: boolean; substitute_sku?: string | null}>>([])
@@ -18,6 +18,12 @@ const PurchaseOrders: React.FC = () => {
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState<string>('All')
   const [rushFilter, setRushFilter] = useState<string>('All')
+  const [packagingTypes, setPackagingTypes] = useState<string[]>(['Jars','Squeeze packs','Sachets'])
+  const [packagingReady, setPackagingReady] = useState<boolean>(true)
+  const [showManagePackaging, setShowManagePackaging] = useState(false)
+  const [newPackaging, setNewPackaging] = useState('')
+  const [selectedPackagingTypes, setSelectedPackagingTypes] = useState<string[]>([])
+  const [extraLines, setExtraLines] = useState<Array<{ id: string; product: string; qty: number }>>([])
   const [form, setForm] = useState({
     date: '',
     customer: '',
@@ -34,12 +40,11 @@ const PurchaseOrders: React.FC = () => {
     location: ''
   })
   const customerRef = useRef<HTMLDivElement>(null)
-  const productRef = useRef<HTMLDivElement>(null)
+  
   const locationRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     const handle = (e: MouseEvent) => {
       if (customerRef.current && !customerRef.current.contains(e.target as Node)) setIsCustomerOpen(false)
-      if (productRef.current && !productRef.current.contains(e.target as Node)) setIsProductOpen(false)
       if (locationRef.current && !locationRef.current.contains(e.target as Node)) setIsLocationOpen(false)
     }
     document.addEventListener('mousedown', handle)
@@ -63,6 +68,23 @@ const PurchaseOrders: React.FC = () => {
       setLoading(false)
     }
     load()
+  }, [])
+
+  useEffect(() => {
+    const loadPackagingTypes = async () => {
+      try {
+        const { data, error } = await supabase.from('packaging_types').select('name').order('name', { ascending: true })
+        if (error) {
+          setPackagingReady(false)
+          return
+        }
+        if (data && Array.isArray(data)) setPackagingTypes(data.map((r: any)=> String(r.name)))
+        setPackagingReady(true)
+      } catch {
+        setPackagingReady(false)
+      }
+    }
+    loadPackagingTypes()
   }, [])
 
   const validate = (): { ok: boolean; msg?: string } => {
@@ -133,12 +155,15 @@ const PurchaseOrders: React.FC = () => {
       flags: isRush ? ['RushOrder'] : null,
       hold_reason: willHold ? 'Credit hold or overdue balance' : null,
     }
+    let newOrderId: string | null = null
     if (isEditOpen?.id) {
       const { error } = await supabase.from('purchase_orders').update(row).eq('id', isEditOpen.id)
       if (error) { setError('Failed to update order'); return }
+      newOrderId = String(isEditOpen.id)
     } else {
-      const { error } = await supabase.from('purchase_orders').insert(row)
+      const { data, error } = await supabase.from('purchase_orders').insert(row).select('*').single()
       if (error) { setError('Failed to create order'); return }
+      newOrderId = data?.id ? String(data.id) : null
     }
     // Notify Finance and Sales if order is placed on hold
     try {
@@ -164,11 +189,76 @@ const PurchaseOrders: React.FC = () => {
         }
       }
     } catch {}
+    // Persist packaging types (array) and line items
+    try {
+      if (newOrderId) {
+        await supabase.from('purchase_orders').update({ packaging_types: selectedPackagingTypes.length ? selectedPackagingTypes : null }).eq('id', newOrderId)
+        // Reset PO items for simplicity
+        await supabase.from('purchase_order_items').delete().eq('purchase_order_id', newOrderId)
+        const mainQty = Number(form.quantity || 0)
+        const items: any[] = []
+        if (form.product && mainQty > 0) {
+          items.push({ purchase_order_id: newOrderId, product_name: form.product, quantity: mainQty })
+        }
+        extraLines.forEach(l => {
+          if (l.product && l.qty > 0) items.push({ purchase_order_id: newOrderId, product_name: l.product, quantity: l.qty })
+        })
+        if (items.length) await supabase.from('purchase_order_items').insert(items)
+      }
+    } catch {}
+
     const { data } = await supabase.from('purchase_orders').select('*').order('created_at', { ascending: false })
     setOrders(data ?? [])
     resetForm()
     setIsAddOpen(false)
     setIsEditOpen(null)
+
+    // Auto-allocation workflow when PO is Approved
+    try {
+      const shouldAllocate = (row.status === Status.Approved)
+      if (shouldAllocate && newOrderId) {
+        // Lookup available finished goods for the product
+        const { data: fgRows } = await supabase
+          .from('finished_goods')
+          .select('id, product_name, available_qty')
+          .eq('product_name', row.product_name)
+          .limit(1)
+        const available = Number(fgRows?.[0]?.available_qty ?? 0)
+        const allocateQty = Math.min(available, row.quantity)
+        const shortfall = Math.max(0, row.quantity - allocateQty)
+
+        // Update finished goods stock
+        if (allocateQty > 0 && fgRows && fgRows[0]?.id) {
+          await supabase.from('finished_goods')
+            .update({ available_qty: available - allocateQty })
+            .eq('id', fgRows[0].id)
+        }
+
+        // Update PO with allocation outcome
+        const nextStatus = shortfall === 0 ? Status.Allocated : Status.Backordered
+        await supabase.from('purchase_orders')
+          .update({ allocated_qty: allocateQty, backorder_qty: shortfall, status: nextStatus })
+          .eq('id', newOrderId)
+
+        // If shortfall, create a production batch suggestion
+        if (shortfall > 0) {
+          await supabase.from('production_batches').insert({
+            product_sku: row.product_name,
+            qty: shortfall,
+            room: row.location || 'Main Room',
+            start_date: row.requested_ship_date || new Date().toISOString().slice(0,10),
+            status: Status.Scheduled,
+            required_capacity: shortfall,
+            assigned_line: row.location || 'Main Room',
+            flags: ['AutoCreatedFromPO'],
+          })
+        }
+
+        // Refresh orders again to reflect status change
+        const { data: refreshed } = await supabase.from('purchase_orders').select('*').order('created_at', { ascending: false })
+        setOrders(refreshed ?? [])
+      }
+    } catch { /* swallow allocation errors to not block UI */ }
   }
 
   const removeOrder = async (id: string) => {
@@ -324,31 +414,62 @@ const PurchaseOrders: React.FC = () => {
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     <div className="space-y-2">
-                      <label className="flex items-center text-sm font-medium text-neutral-dark">
-                        <Package className="h-4 w-4 mr-2 text-primary-medium" />
-                        Product
-                      </label>
-                      <div className="relative" ref={productRef}>
-                        <button type="button" onClick={()=>setIsProductOpen(v=>!v)} className="w-full flex items-center justify-between px-4 py-3 border border-neutral-soft rounded-lg text-left bg-white hover:border-neutral-medium focus:ring-2 focus:ring-primary-light focus:border-primary-light">
-                          <span className={form.product? 'text-neutral-dark':'text-neutral-medium'}>{form.product || 'Select Product'}</span>
-                          <span className="ml-2 text-neutral-medium">▼</span>
-                        </button>
-                        {isProductOpen && (
-                          <div className="absolute z-[100] mt-2 w-full bg-white border border-neutral-soft rounded-xl shadow-xl max-h-56 overflow-auto">
-                            {products.map(p => (
-                              <button key={p.id} type="button" className={`block w-full text-left px-4 py-2 hover:bg-neutral-light ${form.product===p.name?'bg-neutral-light':''}`} onClick={()=>{setForm({...form, product:p.name}); setIsProductOpen(false)}}>{p.name}{p.is_discontinued? ' • Discontinued' : ''}</button>
-                            ))}
-                          </div>
-                        )}
-                      </div>
+                      <label className="flex items-center text-sm font-medium text-neutral-dark">Product</label>
+                      <select className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light" value={form.product} onChange={(e)=>setForm({...form, product:e.target.value})}>
+                        <option value="">Select Product</option>
+                        {products.map(p => (
+                          <option key={p.id} value={p.name}>{p.name}{p.is_discontinued? ' • Discontinued' : ''}</option>
+                        ))}
+                      </select>
                     </div>
+                    {/* Packaging Type placed next to Product */}
                     <div className="space-y-2">
-                      <label className="flex items-center text-sm font-medium text-neutral-dark">
-                        <Package className="h-4 w-4 mr-2 text-primary-medium" />
-                        Packaging Type
-                      </label>
-                      <input type="text" placeholder="e.g., Boxes" className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light" value={form.packagingType} onChange={(e)=>setForm({...form, packagingType:e.target.value})} />
+                      <div className="flex items-center justify-between">
+                        <label className="flex items-center text-sm font-medium text-neutral-dark">
+                          <Package className="h-4 w-4 mr-2 text-primary-medium" />
+                          Packaging Type
+                        </label>
+                        <button type="button" disabled={!packagingReady} title={!packagingReady? 'Create table "packaging_types" to manage types' : ''} onClick={()=>setShowManagePackaging(true)} className={`text-xs ${packagingReady? 'text-primary-medium hover:text-primary-dark' : 'text-neutral-medium cursor-not-allowed'}`}>Manage Types</button>
+                      </div>
+                      <select multiple className="w-full px-3 py-2 border border-neutral-soft rounded-lg h-28" value={selectedPackagingTypes} onChange={(e)=>{
+                        const opts = Array.from(e.target.selectedOptions).map(o=>o.value); setSelectedPackagingTypes(opts)
+                      }}>
+                        {packagingTypes.map(t=> <option key={t} value={t}>{t}</option>)}
+                      </select>
+                      <div className="text-xs text-neutral-medium">Hold Ctrl/Cmd to select multiple</div>
                     </div>
+                  </div>
+
+                  {/* Additional Products moved to full width below */}
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between mb-1">
+                      <div className="text-sm font-medium text-neutral-dark">Additional Products</div>
+                      <button type="button" className="px-3 py-1.5 text-xs rounded-md border border-neutral-soft hover:bg-neutral-light" onClick={()=>setExtraLines(prev=>[...prev,{ id: (crypto?.randomUUID?.()||`${Date.now()}`), product: '', qty: 0 }])}>+ Add Product</button>
+                    </div>
+                    {extraLines.length===0 ? (
+                      <div className="text-xs text-neutral-medium border border-dashed border-neutral-soft rounded-lg p-3">No additional products added. Click "+ Add Product" to add more products to this order.</div>
+                    ) : (
+                      <div className="space-y-3 max-h-60 overflow-auto">
+                        {extraLines.map((l)=> (
+                          <div key={l.id} className="grid grid-cols-12 gap-3 items-center border border-neutral-soft rounded-lg p-3">
+                            <div className="col-span-7">
+                              <label className="text-xs text-neutral-medium">Product</label>
+                              <select className="w-full px-3 py-2 border border-neutral-soft rounded-lg" value={l.product} onChange={(e)=> setExtraLines(prev=> prev.map(x=> x.id===l.id ? { ...x, product: e.target.value } : x))}>
+                                <option value="">Select Product</option>
+                                {products.map(p=> <option key={p.id} value={p.name}>{p.name}</option>)}
+                              </select>
+                            </div>
+                            <div className="col-span-4">
+                              <label className="text-xs text-neutral-medium">Quantity</label>
+                              <input type="number" className="w-full px-3 py-2 border border-neutral-soft rounded-lg" value={l.qty} onChange={(e)=> setExtraLines(prev=> prev.map(x=> x.id===l.id ? { ...x, qty: Number(e.target.value||0) } : x))} />
+                            </div>
+                            <div className="col-span-1 flex justify-end pt-5">
+                              <button type="button" className="p-2 text-accent-danger hover:bg-red-50 rounded-md" onClick={()=> setExtraLines(prev=> prev.filter(x=> x.id!==l.id))}>🗑️</button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -364,6 +485,7 @@ const PurchaseOrders: React.FC = () => {
                       <input type="number" placeholder="Total quantity" className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light" value={form.quantity} onChange={(e)=>setForm({...form, quantity:e.target.value})} />
                     </div>
                   </div>
+
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     <div className="space-y-2">
@@ -452,6 +574,37 @@ const PurchaseOrders: React.FC = () => {
                 <div><strong>Location:</strong> {isViewOpen.location || '-'}</div>
                 <div><strong>Rush:</strong> {isViewOpen.is_rush ? 'Yes' : 'No'}</div>
                 <div><strong>Comments:</strong> {isViewOpen.comments || '-'}</div>
+              </div>
+            </div>
+          </div>
+        )}
+        {showManagePackaging && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-black/50" onClick={()=>setShowManagePackaging(false)}></div>
+            <div className="relative z-10 w-full max-w-md bg-white rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden">
+              <div className="flex items-center justify-between px-6 py-4 border-b">
+                <h3 className="text-lg font-semibold">Manage Packaging Types</h3>
+                <button onClick={()=>setShowManagePackaging(false)} className="p-2"><X className="h-5 w-5"/></button>
+              </div>
+              <div className="p-6 space-y-4 text-sm">
+                <div className="flex gap-2">
+                  <input className="flex-1 px-3 py-2 border border-neutral-soft rounded-lg" placeholder="e.g., Bottles, Pouches" value={newPackaging} onChange={(e)=>setNewPackaging(e.target.value)} />
+                  <button className="px-4 py-2 rounded-lg bg-primary-dark text-white disabled:opacity-60" disabled={!packagingReady} onClick={async()=>{ if(!packagingReady) return; const name = newPackaging.trim(); if(!name) return; try{ const { error } = await supabase.from('packaging_types').insert({ name }); if (error) return; setPackagingTypes(prev=> Array.from(new Set([...prev, name])).sort()); setNewPackaging('') }catch(e){} }}>Add</button>
+                </div>
+                <div className="space-y-2">
+                  {packagingTypes.map((t)=> (
+                    <div key={t} className="flex items-center justify-between border border-neutral-soft rounded-lg px-3 py-2">
+                      <div>{t}</div>
+                      <div className="flex gap-3 text-xs">
+                        <button className={`text-primary-medium ${!packagingReady? 'opacity-50 cursor-not-allowed':''}`} onClick={async()=>{ if(!packagingReady) return; const nn = prompt('Edit type', t) || ''; const name = nn.trim(); if(!name) return; try{ const { error } = await supabase.from('packaging_types').update({ name }).eq('name', t); if (error) return; setPackagingTypes(prev=> prev.map(x=> x===t? name: x).sort()) }catch(e){} }}>Edit</button>
+                        <button className={`text-accent-danger ${!packagingReady? 'opacity-50 cursor-not-allowed':''}`} onClick={async()=>{ if(!packagingReady) return; try{ const { error } = await supabase.from('packaging_types').delete().eq('name', t); if (error) return; setPackagingTypes(prev=> prev.filter(x=> x!==t)) }catch(e){} }}>Delete</button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div className="flex justify-end">
+                  <button className="px-4 py-2 rounded-lg border" onClick={()=>setShowManagePackaging(false)}>Close</button>
+                </div>
               </div>
             </div>
           </div>

@@ -85,41 +85,59 @@ const Inventory: React.FC = () => {
   }, [])
 
   // Load finished goods and allocated summary
-  useEffect(() => {
-    const loadFinished = async () => {
-      if (!supabase) return
-      setFgLoading(true)
-      setFgError(null)
-      // finished_goods
-      const { data: fData, error: fErr } = await supabase
-        .from('finished_goods')
-        .select('id, product_name, available_qty, location')
-        .order('product_name', { ascending: true })
-      if (fErr) {
-        setFgError('Cannot load finished goods')
-        setFgLoading(false)
-        return
-      }
-      const items = (fData ?? []).map((r: any) => ({ id: String(r.id), product_name: String(r.product_name ?? ''), available_qty: Number(r.available_qty ?? 0), location: r.location ?? null }))
-      setFg(items)
-      // allocated from open POs (exclude Canceled/Closed)
-      const { data: poData } = await supabase
-        .from('purchase_orders')
-        .select('product_name, allocated_qty, status')
-      const map: Record<string, number> = {}
-      ;(poData ?? []).forEach((r: any) => {
-        const st = String(r.status || '')
-        if (st === 'Canceled' || st === 'Closed') return
-        const key = String(r.product_name || '')
-        const val = Number(r.allocated_qty ?? 0)
-        if (!key) return
-        map[key] = (map[key] || 0) + val
-      })
-      setAllocatedMap(map)
+  const loadFinished = React.useCallback(async () => {
+    if (!supabase) return
+    setFgLoading(true)
+    setFgError(null)
+    // finished_goods
+    const { data: fData, error: fErr } = await supabase
+      .from('finished_goods')
+      .select('id, product_name, available_qty, location')
+      .order('product_name', { ascending: true })
+    if (fErr) {
+      setFgError('Cannot load finished goods')
       setFgLoading(false)
+      return
     }
-    loadFinished()
+    const items = (fData ?? []).map((r: any) => ({ id: String(r.id), product_name: String(r.product_name ?? ''), available_qty: Number(r.available_qty ?? 0), location: r.location ?? null }))
+    setFg(items)
+    // allocated from purchase_order_lines for active POs (exclude Canceled/Closed)
+    const { data: activePOs } = await supabase
+      .from('purchase_orders')
+      .select('id, status')
+    const activeIds = (activePOs ?? [])
+      .filter((p: any) => {
+        const st = String(p.status || '')
+        return st !== 'Canceled' && st !== 'Closed'
+      })
+      .map((p: any) => String(p.id))
+    const allocMap: Record<string, number> = {}
+    if (activeIds.length) {
+      const { data: lines } = await supabase
+        .from('purchase_order_lines')
+        .select('product_name, allocated_qty, status, purchase_order_id')
+        .in('purchase_order_id', activeIds)
+      ;(lines ?? []).forEach((ln: any) => {
+        const key = String(ln.product_name || '')
+        const val = Number(ln.allocated_qty ?? 0)
+        if (!key || !(val > 0)) return
+        allocMap[key] = (allocMap[key] || 0) + val
+      })
+    }
+    setAllocatedMap(allocMap)
+    setFgLoading(false)
   }, [])
+
+  useEffect(() => {
+    loadFinished()
+    const channel = supabase
+      ?.channel('realtime-finished-goods')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'finished_goods' }, () => {
+        loadFinished()
+      })
+      .subscribe()
+    return () => { if (channel) supabase?.removeChannel(channel) }
+  }, [loadFinished])
 
   useEffect(() => {
     if (toast.show) {
@@ -335,6 +353,7 @@ const Inventory: React.FC = () => {
             <div className="px-6 py-4 bg-gradient-to-r from-neutral-light/60 via-neutral-light/40 to-neutral-soft/30 border-b border-neutral-soft/40">
               <div className="flex items-center justify-between">
                 <h3 className="text-lg font-semibold text-neutral-dark">Finished Goods Inventory</h3>
+                <button onClick={() => loadFinished()} className="px-3 py-2 text-sm border border-neutral-soft rounded-lg hover:bg-neutral-light/40">Refresh</button>
               </div>
             </div>
             {fgLoading ? (

@@ -284,10 +284,60 @@ const PurchaseOrders: React.FC = () => {
 
   const removeOrder = async (id: string) => {
     setError(null)
-    const { error } = await supabase.from('purchase_orders').delete().eq('id', id)
-    if (error) { setError('Failed to delete order'); return }
-    setOrders(orders.filter(o => o.id !== id))
-    setToast({ show: true, message: 'Purchase order deleted' })
+    try {
+      // Capture affected products BEFORE delete (lines may be cascade-deleted)
+      const { data: lines } = await supabase
+        .from('purchase_order_lines')
+        .select('product_name')
+        .eq('purchase_order_id', id)
+
+      const { error } = await supabase.from('purchase_orders').delete().eq('id', id)
+      if (error) { setError('Failed to delete order'); return }
+      setOrders(orders.filter(o => o.id !== id))
+      setToast({ show: true, message: 'Purchase order deleted' })
+
+      // Cleanup FG placeholder rows: if FG.available_qty == 0 and no other active PO lines for the product, delete FG row
+      const products = Array.from(new Set((lines ?? []).map((l: any) => String(l.product_name || '').trim()).filter(Boolean)))
+      if (products.length) {
+        // Find active PO ids (not Canceled/Closed)
+        const { data: poRows } = await supabase
+          .from('purchase_orders')
+          .select('id, status')
+        const activeIds = (poRows ?? [])
+          .filter((p: any) => {
+            const st = String(p.status || '')
+            return st !== 'Canceled' && st !== 'Closed'
+          })
+          .map((p: any) => String(p.id))
+
+        await Promise.all(products.map(async (name) => {
+          // Any other active lines for this product?
+          let hasOther = false
+          if (activeIds.length) {
+            const { data: other } = await supabase
+              .from('purchase_order_lines')
+              .select('id')
+              .eq('product_name', name)
+              .in('purchase_order_id', activeIds)
+              .limit(1)
+            hasOther = Array.isArray(other) && other.length > 0
+          }
+          if (hasOther) return
+          // Check FG row and delete if available_qty == 0
+          const { data: fg } = await supabase
+            .from('finished_goods')
+            .select('id, available_qty')
+            .eq('product_name', name)
+            .limit(1)
+          const row = fg?.[0]
+          if (row?.id && Number(row.available_qty || 0) === 0) {
+            await supabase.from('finished_goods').delete().eq('id', row.id)
+          }
+        }))
+      }
+    } catch (e) {
+      // non-fatal cleanup errors should not block UI
+    }
   }
 
   // Approve + Allocate for a single PO
@@ -311,6 +361,37 @@ const PurchaseOrders: React.FC = () => {
         setToast({ show: true, message: `Allocation failed: ${String(msg)}` })
         return
       }
+
+      // 2b) Reflect allocation to Finished Goods as well (client-side adjustment)
+      try {
+        const lines: any[] = Array.isArray(summary?.lines) ? summary.lines : []
+        const agg: Record<string, number> = {}
+        for (const ln of lines) {
+          const name = String(ln.product_name || '').trim()
+          const alloc = Number(ln.allocated_qty || 0)
+          if (!name || !(alloc > 0)) continue
+          agg[name] = (agg[name] || 0) + alloc
+        }
+        const entries = Object.entries(agg)
+        if (entries.length) {
+          await Promise.all(entries.map(async ([productName, dec]) => {
+            const { data: fg } = await supabase
+              .from('finished_goods')
+              .select('id, available_qty')
+              .eq('product_name', productName)
+              .limit(1)
+            const row = fg?.[0]
+            if (!row?.id) {
+              // create a new FG row with 0 available (no negative stock), so it appears in Inventory list
+              await supabase.from('finished_goods').insert({ product_name: productName, available_qty: 0 })
+            } else {
+              const current = Number(row.available_qty || 0)
+              const next = Math.max(0, current - Number(dec))
+              await supabase.from('finished_goods').update({ available_qty: next }).eq('id', row.id)
+            }
+          }))
+        }
+      } catch { /* do not block UI on FG sync errors */ }
 
       // 3) Refresh purchase orders
       const { data: poRows } = await supabase

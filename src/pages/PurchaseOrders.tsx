@@ -362,37 +362,6 @@ const PurchaseOrders: React.FC = () => {
         return
       }
 
-      // 2b) Reflect allocation to Finished Goods as well (client-side adjustment)
-      try {
-        const lines: any[] = Array.isArray(summary?.lines) ? summary.lines : []
-        const agg: Record<string, number> = {}
-        for (const ln of lines) {
-          const name = String(ln.product_name || '').trim()
-          const alloc = Number(ln.allocated_qty || 0)
-          if (!name || !(alloc > 0)) continue
-          agg[name] = (agg[name] || 0) + alloc
-        }
-        const entries = Object.entries(agg)
-        if (entries.length) {
-          await Promise.all(entries.map(async ([productName, dec]) => {
-            const { data: fg } = await supabase
-              .from('finished_goods')
-              .select('id, available_qty')
-              .eq('product_name', productName)
-              .limit(1)
-            const row = fg?.[0]
-            if (!row?.id) {
-              // create a new FG row with 0 available (no negative stock), so it appears in Inventory list
-              await supabase.from('finished_goods').insert({ product_name: productName, available_qty: 0 })
-            } else {
-              const current = Number(row.available_qty || 0)
-              const next = Math.max(0, current - Number(dec))
-              await supabase.from('finished_goods').update({ available_qty: next }).eq('id', row.id)
-            }
-          }))
-        }
-      } catch { /* do not block UI on FG sync errors */ }
-
       // 3) Refresh purchase orders
       const { data: poRows } = await supabase
         .from('purchase_orders')

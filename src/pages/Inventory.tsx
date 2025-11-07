@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react'
-import { Plus, Package, Box, Factory, LineChart, Inbox, Landmark, X, Tag, User, Scale, DollarSign, ClipboardList, Eye, Edit, Trash2, CheckCircle2 } from 'lucide-react'
+import { Plus, Package, Box, Factory, LineChart, Inbox, Landmark, X, Tag, User, Scale, DollarSign, ClipboardList, Eye, Edit, Trash2, CheckCircle2, Clock } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 
 interface Supplier {
@@ -50,10 +50,15 @@ const Inventory: React.FC = () => {
   const [deleting, setDeleting] = useState<boolean>(false)
   const [toast, setToast] = useState<{ show: boolean; message: string }>({ show: false, message: '' })
   // Finished goods state
-  const [fg, setFg] = useState<Array<{ id: string; product_name: string; available_qty: number; location?: string | null }>>([])
+  const [fg, setFg] = useState<Array<{ id: string; product_name: string; available_qty: number; reserved_qty: number; location?: string | null }>>([])
   const [fgLoading, setFgLoading] = useState<boolean>(false)
   const [fgError, setFgError] = useState<string | null>(null)
-  const [allocatedMap, setAllocatedMap] = useState<Record<string, number>>({})
+  // Reservation history modal state
+  const [isHistoryOpen, setIsHistoryOpen] = useState<boolean>(false)
+  const [historyData, setHistoryData] = useState<Array<{ po_id: string; line_id: string; qty: number; created_at: string }>>([])
+  const [historyLoading, setHistoryLoading] = useState<boolean>(false)
+  const [historyError, setHistoryError] = useState<string | null>(null)
+  const [selectedMaterial, setSelectedMaterial] = useState<string | null>(null)
   const [rawForm, setRawForm] = useState({
     name: '',
     category: '',
@@ -84,6 +89,31 @@ const Inventory: React.FC = () => {
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [])
 
+  // Load reservation history when modal opens
+  useEffect(() => {
+    const loadHistory = async () => {
+      if (!isHistoryOpen || !selectedMaterial) return
+      setHistoryLoading(true)
+      setHistoryError(null)
+      try {
+        const { data, error } = await supabase
+          .from('inventory_reservations')
+          .select('po_id, line_id, qty, created_at')
+          .eq('product_name', selectedMaterial)
+          .order('created_at', { ascending: false })
+        if (error) {
+          setHistoryError('Cannot load reservation history')
+          setHistoryData([])
+        } else {
+          setHistoryData((data as any[]) || [])
+        }
+      } finally {
+        setHistoryLoading(false)
+      }
+    }
+    loadHistory()
+  }, [isHistoryOpen, selectedMaterial])
+
   // Load finished goods and allocated summary
   const loadFinished = React.useCallback(async () => {
     if (!supabase) return
@@ -92,39 +122,15 @@ const Inventory: React.FC = () => {
     // finished_goods
     const { data: fData, error: fErr } = await supabase
       .from('finished_goods')
-      .select('id, product_name, available_qty, location')
+      .select('id, product_name, available_qty, reserved_qty, location')
       .order('product_name', { ascending: true })
     if (fErr) {
       setFgError('Cannot load finished goods')
       setFgLoading(false)
       return
     }
-    const items = (fData ?? []).map((r: any) => ({ id: String(r.id), product_name: String(r.product_name ?? ''), available_qty: Number(r.available_qty ?? 0), location: r.location ?? null }))
+    const items = (fData ?? []).map((r: any) => ({ id: String(r.id), product_name: String(r.product_name ?? ''), available_qty: Number(r.available_qty ?? 0), reserved_qty: Number(r.reserved_qty ?? 0), location: r.location ?? null }))
     setFg(items)
-    // allocated from purchase_order_lines for active POs (exclude Canceled/Closed)
-    const { data: activePOs } = await supabase
-      .from('purchase_orders')
-      .select('id, status')
-    const activeIds = (activePOs ?? [])
-      .filter((p: any) => {
-        const st = String(p.status || '')
-        return st !== 'Canceled' && st !== 'Closed'
-      })
-      .map((p: any) => String(p.id))
-    const allocMap: Record<string, number> = {}
-    if (activeIds.length) {
-      const { data: lines } = await supabase
-        .from('purchase_order_lines')
-        .select('product_name, allocated_qty, status, purchase_order_id')
-        .in('purchase_order_id', activeIds)
-      ;(lines ?? []).forEach((ln: any) => {
-        const key = String(ln.product_name || '')
-        const val = Number(ln.allocated_qty ?? 0)
-        if (!key || !(val > 0)) return
-        allocMap[key] = (allocMap[key] || 0) + val
-      })
-    }
-    setAllocatedMap(allocMap)
     setFgLoading(false)
   }, [])
 
@@ -137,6 +143,120 @@ const Inventory: React.FC = () => {
       })
       .subscribe()
     return () => { if (channel) supabase?.removeChannel(channel) }
+  }, [loadFinished])
+
+  // UI behavior hooks for PO canceled and batch completed
+  useEffect(() => {
+    const poChannel = supabase
+      ?.channel('ui-po-status')
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'purchase_orders' }, async (payload: any) => {
+        const newRow: any = payload?.new || {}
+        const oldRow: any = payload?.old || {}
+        const newSt = String(newRow?.status || '').toLowerCase()
+        const oldSt = String(oldRow?.status || '').toLowerCase()
+        if (newSt === 'canceled' && oldSt !== 'canceled' && newRow?.id) {
+          try {
+            await supabase.rpc('release_po_reservations', { p_po_id: newRow.id })
+            setToast({ show: true, message: 'Reservations released for this PO.' })
+            // refresh materials to reflect reservation release
+            try {
+              const { data, error } = await supabase
+                .from('inventory_materials')
+                .select('id, product_name, category, supplier_id, supplier_name, unit_of_measure, unit_weight, cost_per_unit, total_available, reserved_qty, created_at')
+                .order('product_name', { ascending: true })
+              if (!error) {
+                const rows = (data ?? []) as Array<any>
+                const mapped: any[] = rows.map((r) => ({
+                  id: String(r.id),
+                  product_name: String(r.product_name ?? ''),
+                  category: String(r.category ?? ''),
+                  supplier_id: r.supplier_id ?? null,
+                  supplier_name: r.supplier_name ?? null,
+                  unit_of_measure: r.unit_of_measure ?? null,
+                  unit_weight: r.unit_weight ?? null,
+                  cost_per_unit: r.cost_per_unit ?? null,
+                  total_available: r.total_available ?? null,
+                  reserved_qty: r.reserved_qty ?? 0,
+                  created_at: r.created_at ?? null,
+                }))
+                setMaterials(mapped as any)
+              }
+            } catch {}
+          } catch {}
+        }
+      })
+      .subscribe()
+
+    const batchChannel = supabase
+      ?.channel('ui-batch-status')
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'production_batches' }, async (payload: any) => {
+        const newRow: any = payload?.new || {}
+        const oldRow: any = payload?.old || {}
+        const newSt = String(newRow?.status || '').toLowerCase()
+        const oldSt = String(oldRow?.status || '').toLowerCase()
+        if (newSt === 'completed' && oldSt !== 'completed' && newRow?.id) {
+          try {
+            await supabase.rpc('consume_reservations', { p_batch_id: newRow.id })
+            setToast({ show: true, message: 'Raw materials consumed.' })
+            // reload inventory materials inline (minimal duplication to avoid refactor)
+            try {
+              const { data, error } = await supabase
+                .from('inventory_materials')
+                .select('id, product_name, category, supplier_id, supplier_name, unit_of_measure, unit_weight, cost_per_unit, total_available, reserved_qty, created_at')
+                .order('product_name', { ascending: true })
+              if (!error) {
+                const rows = (data ?? []) as Array<any>
+                const mapped: any[] = rows.map((r) => ({
+                  id: String(r.id),
+                  product_name: String(r.product_name ?? ''),
+                  category: String(r.category ?? ''),
+                  supplier_id: r.supplier_id ?? null,
+                  supplier_name: r.supplier_name ?? null,
+                  unit_of_measure: r.unit_of_measure ?? null,
+                  unit_weight: r.unit_weight ?? null,
+                  cost_per_unit: r.cost_per_unit ?? null,
+                  total_available: r.total_available ?? null,
+                  reserved_qty: r.reserved_qty ?? 0,
+                  created_at: r.created_at ?? null,
+                }))
+                setMaterials(mapped as any)
+              }
+            } catch {}
+            loadFinished()
+          } catch {}
+        } else {
+          // For other status transitions, still refresh materials to keep reserved/available in sync
+          try {
+            const { data, error } = await supabase
+              .from('inventory_materials')
+              .select('id, product_name, category, supplier_id, supplier_name, unit_of_measure, unit_weight, cost_per_unit, total_available, reserved_qty, created_at')
+              .order('product_name', { ascending: true })
+            if (!error) {
+              const rows = (data ?? []) as Array<any>
+              const mapped: any[] = rows.map((r) => ({
+                id: String(r.id),
+                product_name: String(r.product_name ?? ''),
+                category: String(r.category ?? ''),
+                supplier_id: r.supplier_id ?? null,
+                supplier_name: r.supplier_name ?? null,
+                unit_of_measure: r.unit_of_measure ?? null,
+                unit_weight: r.unit_weight ?? null,
+                cost_per_unit: r.cost_per_unit ?? null,
+                total_available: r.total_available ?? null,
+                reserved_qty: r.reserved_qty ?? 0,
+                created_at: r.created_at ?? null,
+              }))
+              setMaterials(mapped as any)
+            }
+          } catch {}
+        }
+      })
+      .subscribe()
+
+    return () => {
+      if (poChannel) supabase?.removeChannel(poChannel)
+      if (batchChannel) supabase?.removeChannel(batchChannel)
+    }
   }, [loadFinished])
 
   useEffect(() => {
@@ -183,8 +303,9 @@ const Inventory: React.FC = () => {
       if (!supabase) return
       setMaterialsLoading(true)
       const { data, error } = await supabase
-        .from('inventory_materials')
-        .select('id, product_name, category, supplier_id, supplier_name, unit_of_measure, unit_weight, cost_per_unit, total_available, created_at')
+      .from('inventory_materials')
+      .select('id, product_name, category, supplier_id, supplier_name, unit_of_measure, unit_weight, cost_per_unit, total_available, reserved_qty, created_at')
+      .order('product_name', { ascending: true })
 
       if (error) {
         console.error('Failed to fetch materials', error)
@@ -192,11 +313,6 @@ const Inventory: React.FC = () => {
         return
       }
       const rows = (data ?? []) as Array<any>
-      rows.sort((a, b) => {
-        const ta = a.created_at ? Date.parse(a.created_at as string) : 0
-        const tb = b.created_at ? Date.parse(b.created_at as string) : 0
-        return tb - ta
-      })
       const mapped: RawMaterial[] = rows.map((r) => ({
         id: String(r.id),
         product_name: String(r.product_name ?? ''),
@@ -207,6 +323,7 @@ const Inventory: React.FC = () => {
         unit_weight: r.unit_weight ?? null,
         cost_per_unit: r.cost_per_unit ?? null,
         total_available: r.total_available ?? null,
+        reserved_qty: r.reserved_qty ?? 0,   // ✅ ADD THIS
         created_at: r.created_at ?? null,
       }))
       setMaterials(mapped)
@@ -215,8 +332,11 @@ const Inventory: React.FC = () => {
 
     loadMaterials()
     const channel = supabase
-      ?.channel('realtime-inventory-materials')
+      ?.channel('inventory-live')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'inventory_materials' }, () => {
+        loadMaterials()
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'inventory_reservations' }, () => {
         loadMaterials()
       })
       .subscribe()
@@ -225,6 +345,8 @@ const Inventory: React.FC = () => {
       if (channel) supabase?.removeChannel(channel)
     }
   }, [])
+
+  
 
   const titleByTab = {
     raw: 'Raw Materials',
@@ -282,6 +404,57 @@ const Inventory: React.FC = () => {
                 <LineChart className="h-4 w-4 text-primary-medium" /> {mainTab === 'packaging' ? 'Generate Monthly Forecast' : 'Generate Forecast'}
               </button>
             )}
+
+        {/* Reservation History Modal */}
+        {isHistoryOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-black/50" onClick={() => setIsHistoryOpen(false)}></div>
+            <div className="relative z-10 w-full max-w-3xl bg-white rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden flex flex-col">
+              <div className="flex items-center justify-between px-8 py-6 bg-gradient-to-r from-neutral-light to-neutral-light/80 border-b border-neutral-soft/50">
+                <div>
+                  <h2 className="text-2xl font-semibold text-neutral-dark">Reservation History – {selectedMaterial}</h2>
+                  <p className="text-sm text-neutral-medium mt-1">Latest entries first</p>
+                </div>
+                <button onClick={() => setIsHistoryOpen(false)} className="p-3 text-neutral-medium hover:text-neutral-dark hover:bg-white/60 rounded-xl transition-all">✕</button>
+              </div>
+              <div className="p-6">
+                {historyLoading ? (
+                  <div className="p-6 text-center text-neutral-medium">Loading…</div>
+                ) : historyError ? (
+                  <div className="p-6 text-center text-accent-danger text-sm">{historyError}</div>
+                ) : historyData.length === 0 ? (
+                  <div className="p-6 text-center text-neutral-medium text-sm">No reservation history found</div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full">
+                      <thead>
+                        <tr className="bg-gradient-to-r from-neutral-light/60 via-neutral-light/40 to-neutral-soft/30 border-b-2 border-neutral-soft/50">
+                          <th className="px-6 py-3 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">PO Number</th>
+                          <th className="px-6 py-3 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">Line ID</th>
+                          <th className="px-6 py-3 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">Quantity Reserved</th>
+                          <th className="px-6 py-3 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">Date Created</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-neutral-soft/20">
+                        {historyData.map((h, i) => (
+                          <tr key={i} className="group">
+                            <td className="px-6 py-3 text-sm text-neutral-dark">{h.po_id}</td>
+                            <td className="px-6 py-3 text-sm text-neutral-dark">{h.line_id}</td>
+                            <td className="px-6 py-3 text-sm text-neutral-dark">{h.qty}</td>
+                            <td className="px-6 py-3 text-sm text-neutral-dark">{new Date(h.created_at).toLocaleString()}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+                <div className="mt-6 flex justify-end">
+                  <button className="px-5 py-2.5 rounded-xl border border-neutral-soft text-neutral-dark hover:bg-neutral-light/60 transition-all" onClick={() => setIsHistoryOpen(false)}>Close</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
             {mainTab !== 'finished' && (
               <button onClick={() => { if (mainTab==='raw') setIsAddRawOpen(true) }} className="inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm text-white bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light shadow-md">
                 <Plus className="h-4 w-4" /> {addLabelByTab[mainTab]}
@@ -370,14 +543,14 @@ const Inventory: React.FC = () => {
                       <th className="px-6 py-4 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">Product</th>
                       <th className="px-6 py-4 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">Location</th>
                       <th className="px-6 py-4 text-right text-xs font-bold text-neutral-dark uppercase tracking-wider">Available</th>
-                      <th className="px-6 py-4 text-right text-xs font-bold text-neutral-dark uppercase tracking-wider">Allocated (POs)</th>
+                      <th className="px-6 py-4 text-right text-xs font-bold text-neutral-dark uppercase tracking-wider">Reserved</th>
                       <th className="px-6 py-4 text-right text-xs font-bold text-neutral-dark uppercase tracking-wider">Net Available</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-neutral-soft/20">
                     {fg.map(item => {
-                      const allocated = allocatedMap[item.product_name] || 0
-                      const net = item.available_qty - allocated
+                      const allocated = Number(item.reserved_qty || 0)
+                      const net = Number(item.available_qty || 0) - allocated
                       return (
                         <tr key={item.id} className="hover:bg-neutral-light/20 transition">
                           <td className="px-6 py-4 text-sm text-neutral-dark font-medium">{item.product_name}</td>
@@ -440,6 +613,8 @@ const Inventory: React.FC = () => {
                           <th className="px-6 py-4 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">Unit Weight</th>
                           <th className="px-6 py-4 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">Cost/Unit</th>
                           <th className="px-6 py-4 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">Total Available</th>
+                          <th className="px-6 py-4 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">Reserved</th>
+                          <th className="px-6 py-4 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">Net Available</th>
                           <th className="px-6 py-4 text-center text-xs font-bold text-neutral-dark uppercase tracking-wider">Actions</th>
                         </tr>
                       </thead>
@@ -453,6 +628,20 @@ const Inventory: React.FC = () => {
                             <td className="px-6 py-4 text-sm text-neutral-dark">{m.unit_weight || '—'}</td>
                             <td className="px-6 py-4 text-sm text-neutral-dark">{m.cost_per_unit || '—'}</td>
                             <td className="px-6 py-4 text-sm text-neutral-dark">{m.total_available || '—'}</td>
+                            <td className="px-6 py-4 text-sm text-neutral-dark">
+                              <div className="flex items-center gap-2">
+                                <span>{(m as any).reserved_qty ?? 0}</span>
+                                <button
+                                  type="button"
+                                  className="p-1.5 rounded-md border border-neutral-soft hover:border-neutral-medium hover:bg-neutral-light/40 text-neutral-medium hover:text-neutral-dark"
+                                  title="View reservation history"
+                                  onClick={() => { setSelectedMaterial(m.product_name); setIsHistoryOpen(true) }}
+                                >
+                                  <Clock className="h-4 w-4" />
+                                </button>
+                              </div>
+                            </td>
+                            <td className="px-6 py-4 text-sm text-neutral-dark">{Number(m.total_available || 0) - Number(((m as any).reserved_qty ?? 0))}</td>
                             <td className="px-6 py-4">
                               <div className="flex items-center justify-center gap-2">
                                 <button type="button" onClick={() => { setViewData(m); setIsViewOpen(true) }} className="p-2 text-primary-medium hover:text-white hover:bg-primary-medium rounded-lg border border-primary-light/30">

@@ -1,207 +1,451 @@
-import React, { useEffect, useRef, useState } from 'react'
-import { Plus, Inbox, X } from 'lucide-react'
+import React, { useEffect, useState } from "react";
+import { Plus, Inbox, X, Trash2 } from "lucide-react";
+import { supabase } from "../lib/supabase";
+
+type Product = { id: string; product_name: string };
+type Material = { id: string; product_name: string; unit_of_measure: string };
+type Customer = { id: string; company_name: string };
+
+type Ingredient = {
+  material_id: string;
+  qty: string;
+  uom: string;
+  percentage: string;
+};
+
+const emptyIngredient: Ingredient = {
+  material_id: "",
+  qty: "",
+  uom: "",
+  percentage: "",
+};
 
 const Formulas: React.FC = () => {
-  const [isCategoryOpen, setIsCategoryOpen] = useState(false)
-  const [category, setCategory] = useState('All Products')
-  const categoryRef = useRef<HTMLDivElement>(null)
-  const [isAddOpen, setIsAddOpen] = useState(false)
+  const [isAddOpen, setIsAddOpen] = useState(false);
+
+  const [products, setProducts] = useState<Product[]>([]);
+  const [materials, setMaterials] = useState<Material[]>([]);
+  const [customersList, setCustomersList] = useState<Customer[]>([]);
+  const [formulasList, setFormulasList] = useState<any[]>([]); // ✅ FOR DISPLAYING FORMULAS
+
+  const [saving, setSaving] = useState(false);
 
   const [form, setForm] = useState({
-    product: '',
-    customer: '',
-    comments: '',
-  })
-  type Ingredient = { material: string; quantity: string; unit: string; percent: string }
+    product_id: "",
+    customer_id: "",
+    comments: "",
+  });
+
   const [ingredients, setIngredients] = useState<Ingredient[]>([
-    { material: '', quantity: '', unit: 'Grams', percent: '' },
-  ])
+    { ...emptyIngredient },
+  ]);
 
-  const addIngredient = () => setIngredients((prev) => [...prev, { material: '', quantity: '', unit: 'Grams', percent: '' }])
+  const resetForm = () => {
+    setForm({ product_id: "", customer_id: "", comments: "" });
+    setIngredients([{ ...emptyIngredient }]);
+  };
+
+  const addIngredient = () =>
+    setIngredients((prev) => [...prev, { ...emptyIngredient }]);
+
+  const removeIngredient = (idx: number) =>
+    setIngredients((prev) => prev.filter((_, i) => i !== idx));
+
   const updateIngredient = (idx: number, patch: Partial<Ingredient>) =>
-    setIngredients((prev) => prev.map((it, i) => (i === idx ? { ...it, ...patch } : it)))
+    setIngredients((prev) =>
+      prev.map((it, i) => (i === idx ? { ...it, ...patch } : it))
+    );
 
-  // Close on outside click
+  /* ✅ 1. LOAD PRODUCTS, MATERIALS, CUSTOMERS */
   useEffect(() => {
-    const handler = (e: MouseEvent) => {
-      if (categoryRef.current && !categoryRef.current.contains(e.target as Node)) {
-        setIsCategoryOpen(false)
-      }
+    const load = async () => {
+      const [{ data: p }, { data: m }, { data: c }] = await Promise.all([
+        supabase.from("products").select("id, product_name"),
+        supabase
+          .from("inventory_materials")
+          .select("id, product_name, unit_of_measure"),
+        supabase.from("customers").select("id, company_name"),
+      ]);
+
+      setProducts(p || []);
+      setMaterials(m || []);
+      setCustomersList(c || []);
+    };
+    load();
+  }, []);
+
+  /* ✅ 2. LOAD FORMULAS FOR DISPLAY */
+  const loadFormulas = async () => {
+    const { data, error } = await supabase
+      .from("formulas")
+      .select(`
+        id,
+        formula_name,
+        version,
+        created_at,
+        products ( product_name ),
+        customers ( company_name )
+      `)
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      console.warn("Error loading formulas:", error);
+      return;
     }
-    document.addEventListener('mousedown', handler)
-    return () => document.removeEventListener('mousedown', handler)
-  }, [])
+
+    setFormulasList(data || []);
+  };
+
+  useEffect(() => {
+    loadFormulas();
+  }, []);
+
+  /* ✅ 3. CREATE FORMULA */
+  const handleCreate = async () => {
+    try {
+      if (!form.product_id || !form.customer_id) return;
+      setSaving(true);
+
+      const selectedProduct = products.find(
+        (p) => p.id === form.product_id
+      )?.product_name;
+
+      const { data: fdata, error: ferr } = await supabase
+        .from("formulas")
+        .insert([
+          {
+            product_id: form.product_id,
+            customer_id: form.customer_id,
+            formula_name: `${selectedProduct} Formula`,
+            comments: form.comments,
+            version: 1,
+          },
+        ])
+        .select()
+        .single();
+
+      if (ferr) {
+        console.warn("Formula insert error:", ferr);
+        setSaving(false);
+        return;
+      }
+
+      const formulaId = fdata.id;
+
+      // ✅ Build formula items (ingredients)
+      const items = ingredients
+        .filter((r) => r.material_id)
+        .map((r) => ({
+          formula_id: formulaId,
+          material_id: r.material_id,
+          qty_per_unit: r.qty ? Number(r.qty) : null,
+          uom: r.uom || null,
+          percentage: r.percentage ? Number(r.percentage) : null,
+        }));
+
+      if (items.length > 0) {
+        const { error: ierr } = await supabase
+          .from("formula_items")
+          .insert(items);
+
+        if (ierr) console.warn("Ingredient insert error:", ierr);
+      }
+
+      resetForm();
+      setIsAddOpen(false);
+
+      /* ✅ REFRESH LIST */
+      await loadFormulas();
+    } catch (e) {
+      console.warn("Unexpected:", e);
+    } finally {
+      setSaving(false);
+    }
+  };
 
   return (
     <div className="min-h-screen bg-neutral-light/20">
       <div className="p-8">
-        {/* Header */}
+        {/* HEADER */}
         <div className="flex items-start justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-neutral-dark">Formula Manager</h1>
-            <p className="text-neutral-medium">Manage product recipes and bills of materials</p>
+            <h1 className="text-2xl font-bold text-neutral-dark">
+              Formula Manager
+            </h1>
+            <p className="text-neutral-medium">
+              Manage product recipes and bills of materials
+            </p>
           </div>
-          <button onClick={() => setIsAddOpen(true)} className="px-6 py-3 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold transition-all duration-300 shadow-md hover:shadow-lg flex items-center">
+
+          <button
+            onClick={() => setIsAddOpen(true)}
+            className="px-6 py-3 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold shadow-md hover:shadow-lg flex items-center"
+          >
             <Plus className="h-5 w-5 mr-2" />
             Add Formula
           </button>
         </div>
 
-        {/* Top Filters */}
-        <div className="mt-6 max-w-xs" ref={categoryRef}>
-          <label className="mb-2 block text-sm font-medium text-neutral-dark">Category</label>
-          <button
-            type="button"
-            onClick={() => setIsCategoryOpen(v => !v)}
-            className="w-full flex items-center justify-between px-4 py-3 border border-neutral-soft rounded-lg text-left bg-white transition-all hover:border-neutral-medium focus:ring-2 focus:ring-primary-light focus:border-primary-light shadow-sm"
-          >
-            <span className={category ? 'text-neutral-dark' : 'text-neutral-medium'}>
-              {category || 'All Products'}
-            </span>
-            <span className="ml-2 text-neutral-medium">▼</span>
-          </button>
-          {isCategoryOpen && (
-            <div className="absolute z-[100] mt-2 w-[calc(theme(width.full)_-_0px)] max-w-xs bg-white border border-neutral-soft rounded-xl shadow-xl overflow-hidden">
-              <div className="px-3 py-2 text-xs text-neutral-medium">Select Category</div>
-              {['All Products', 'Active', 'Draft'].map(opt => (
-                <button
-                  key={opt}
-                  type="button"
-                  className={`block w-full text-left px-4 py-2 hover:bg-neutral-light ${category===opt ? 'bg-neutral-light' : ''}`}
-                  onClick={() => { setCategory(opt); setIsCategoryOpen(false) }}
-                >
-                  {opt}
-                </button>
-              ))}
+        {/* ✅ DISPLAY FORMULA LIST IF AVAILABLE */}
+        {formulasList.length > 0 ? (
+          <div className="mt-10 bg-white rounded-xl shadow border border-neutral-soft p-6">
+            <table className="w-full">
+              <thead>
+                <tr className="text-left text-sm text-neutral-medium border-b">
+                  <th className="py-3">Formula Name</th>
+                  <th className="py-3">Product</th>
+                  <th className="py-3">Customer</th>
+                  <th className="py-3">Version</th>
+                  <th className="py-3">Created</th>
+                </tr>
+              </thead>
+
+              <tbody>
+                {formulasList.map((f) => (
+                  <tr key={f.id} className="border-b text-sm">
+                    <td className="py-3">{f.formula_name}</td>
+                    <td className="py-3">{f.products?.product_name}</td>
+                    <td className="py-3">{f.customers?.company_name}</td>
+                    <td className="py-3">{f.version}</td>
+                    <td className="py-3">
+                      {new Date(f.created_at).toLocaleDateString()}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          /* ✅ EMPTY STATE */
+          <div className="flex flex-col items-center justify-center text-center mt-16">
+            <Inbox className="h-14 w-14 text-neutral-medium/40 mb-3" />
+            <div className="text-neutral-dark font-semibold">
+              No formulas found
             </div>
-          )}
-        </div>
+            <p className="text-sm text-neutral-medium">
+              Create product formulas to enable accurate production planning.
+            </p>
+            <button
+              onClick={() => setIsAddOpen(true)}
+              className="mt-4 px-5 py-2.5 rounded-lg bg-primary-medium hover:bg-primary-dark text-white text-sm font-medium shadow-sm"
+            >
+              Create Your First Formula
+            </button>
+          </div>
+        )}
 
-        {/* Empty State */}
-        <div className="flex flex-col items-center justify-center text-center mt-16">
-          <Inbox className="h-14 w-14 text-neutral-medium/40 mb-3" />
-          <div className="text-neutral-dark font-semibold">No formulas found</div>
-          <p className="text-sm text-neutral-medium">Create product formulas to enable accurate production planning.</p>
-          <button className="mt-4 px-5 py-2.5 rounded-lg bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white text-sm font-medium shadow-sm hover:shadow-md">Create Your First Formula</button>
-        </div>
-
+        {/* ✅ ADD FORMULA MODAL */}
         {isAddOpen && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-            <div className="absolute inset-0 bg-black/50" onClick={() => setIsAddOpen(false)}></div>
+            <div
+              className="absolute inset-0 bg-black/50"
+              onClick={() => setIsAddOpen(false)}
+            ></div>
+
             <div className="relative z-10 w-full max-w-6xl h-[80vh] bg-white rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden flex flex-col">
-              <div className="flex items-center justify-between px-8 py-6 bg-gradient-to-r from-neutral-light to-neutral-light/80 border-b border-neutral-soft/50">
-                <div>
-                  <h2 className="text-xl font-semibold text-neutral-dark">Create New Formula</h2>
-                </div>
-                <button onClick={() => setIsAddOpen(false)} className="p-2 text-neutral-medium hover:text-neutral-dark hover:bg-white/60 rounded-xl transition-all duration-200 hover:shadow-sm">
+              <div className="flex items-center justify-between px-8 py-6 bg-neutral-light border-b border-neutral-soft/50">
+                <h2 className="text-xl font-semibold text-neutral-dark">
+                  Create New Formula
+                </h2>
+                <button
+                  onClick={() => setIsAddOpen(false)}
+                  className="p-2 text-neutral-medium hover:text-neutral-dark"
+                >
                   <X className="h-5 w-5" />
                 </button>
               </div>
 
               <div className="flex-1 overflow-y-auto p-8 space-y-6">
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-neutral-dark">Product</label>
-                  <select
-                    className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light bg-white text-neutral-dark"
-                    value={form.product}
-                    onChange={(e) => setForm({ ...form, product: e.target.value })}
-                  >
-                    <option value="">Select Product</option>
-                    <option>Sample Product A</option>
-                    <option>Sample Product B</option>
-                  </select>
+                {/* PRODUCT + CUSTOMER */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div>
+                    <label className="text-sm font-medium text-neutral-dark">
+                      Product
+                    </label>
+                    <select
+                      className="w-full px-4 py-3 border border-neutral-soft rounded-lg bg-white"
+                      value={form.product_id}
+                      onChange={(e) =>
+                        setForm({ ...form, product_id: e.target.value })
+                      }
+                    >
+                      <option value="">Select Product</option>
+                      {products.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.product_name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="text-sm font-medium text-neutral-dark">
+                      Customer
+                    </label>
+                    <select
+                      className="w-full px-4 py-3 border border-neutral-soft rounded-lg bg-white"
+                      value={form.customer_id}
+                      onChange={(e) =>
+                        setForm({ ...form, customer_id: e.target.value })
+                      }
+                    >
+                      <option value="">Select Customer</option>
+                      {customersList.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.company_name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
 
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-neutral-dark">Customer</label>
-                  <select
-                    className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light bg-white text-neutral-dark"
-                    value={form.customer}
-                    onChange={(e) => setForm({ ...form, customer: e.target.value })}
-                  >
-                    <option value="">Select Customer</option>
-                    <option>ABC Foods Inc.</option>
-                    <option>Delicioso Brands</option>
-                  </select>
-                </div>
-
+                {/* INGREDIENTS */}
                 <div className="space-y-4">
                   <div className="flex items-center justify-between">
-                    <h3 className="text-sm font-semibold text-neutral-dark">Ingredients</h3>
-                    <button type="button" onClick={addIngredient} className="px-3 py-2 rounded-lg bg-white border border-neutral-soft hover:border-neutral-medium text-sm text-neutral-dark shadow-sm">Add Ingredient</button>
+                    <h3 className="text-sm font-semibold text-neutral-dark">
+                      Ingredients
+                    </h3>
+
+                    <button
+                      type="button"
+                      onClick={addIngredient}
+                      className="px-3 py-2 rounded-lg bg-white border border-neutral-soft hover:border-neutral-medium text-sm text-neutral-dark shadow-sm"
+                    >
+                      Add Ingredient
+                    </button>
                   </div>
 
                   {ingredients.map((ing, idx) => (
-                    <div key={idx} className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                      <div className="md:col-span-1">
-                        <label className="text-xs text-neutral-medium block mb-1">Raw Material</label>
+                    <div
+                      key={idx}
+                      className="grid grid-cols-1 md:grid-cols-[2fr_1fr_1fr_1fr_auto] gap-4 items-end"
+                    >
+                      <div>
+                        <label className="text-xs text-neutral-medium block mb-1">
+                          Raw Material
+                        </label>
                         <select
-                          className="w-full px-3 py-2.5 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light bg-white text-neutral-dark"
-                          value={ing.material}
-                          onChange={(e) => updateIngredient(idx, { material: e.target.value })}
+                          className="w-full px-3 py-2.5 border border-neutral-soft rounded-lg bg-white"
+                          value={ing.material_id}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            const mat = materials.find(
+                              (mm) => mm.id === val
+                            );
+                            updateIngredient(idx, {
+                              material_id: val,
+                              uom: mat?.unit_of_measure || "",
+                            });
+                          }}
                         >
                           <option value="">Select Material</option>
-                          <option>Peanut</option>
-                          <option>Sugar</option>
+                          {materials.map((m) => (
+                            <option key={m.id} value={m.id}>
+                              {m.product_name}
+                            </option>
+                          ))}
                         </select>
                       </div>
+
                       <div>
-                        <label className="text-xs text-neutral-medium block mb-1">Quantity</label>
+                        <label className="text-xs text-neutral-medium block mb-1">
+                          Quantity
+                        </label>
                         <input
                           type="number"
-                          className="w-full px-3 py-2.5 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light bg-white text-neutral-dark"
+                          className="w-full px-3 py-2.5 border border-neutral-soft rounded-lg bg-white"
                           placeholder="0"
-                          value={ing.quantity}
-                          onChange={(e) => updateIngredient(idx, { quantity: e.target.value })}
+                          value={ing.qty}
+                          onChange={(e) =>
+                            updateIngredient(idx, { qty: e.target.value })
+                          }
                         />
                       </div>
+
                       <div>
-                        <label className="text-xs text-neutral-medium block mb-1">Unit</label>
-                        <select
-                          className="w-full px-3 py-2.5 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light bg-white text-neutral-dark"
-                          value={ing.unit}
-                          onChange={(e) => updateIngredient(idx, { unit: e.target.value })}
-                        >
-                          <option>Grams</option>
-                          <option>Kg</option>
-                          <option>Pieces</option>
-                        </select>
+                        <label className="text-xs text-neutral-medium block mb-1">
+                          Unit
+                        </label>
+                        <input
+                          readOnly
+                          className="w-full px-3 py-2.5 border border-neutral-soft rounded-lg bg-neutral-50 text-neutral-dark"
+                          value={ing.uom}
+                          placeholder="Auto"
+                        />
                       </div>
+
                       <div>
-                        <label className="text-xs text-neutral-medium block mb-1">%</label>
+                        <label className="text-xs text-neutral-medium block mb-1">
+                          %
+                        </label>
                         <input
                           type="number"
-                          className="w-full px-3 py-2.5 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light bg-white text-neutral-dark"
+                          className="w-full px-3 py-2.5 border border-neutral-soft rounded-lg bg-white"
                           placeholder="0-100"
-                          value={ing.percent}
-                          onChange={(e) => updateIngredient(idx, { percent: e.target.value })}
+                          value={ing.percentage}
+                          onChange={(e) =>
+                            updateIngredient(idx, {
+                              percentage: e.target.value,
+                            })
+                          }
                         />
+                      </div>
+
+                      <div className="flex justify-end pb-0">
+                        <button
+                          type="button"
+                          onClick={() => removeIngredient(idx)}
+                          className="h-10 w-10 inline-flex items-center justify-center rounded-lg border border-neutral-soft text-neutral-medium hover:text-red-600 hover:border-red-200 hover:bg-red-50"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
                       </div>
                     </div>
                   ))}
                 </div>
 
+                {/* COMMENTS */}
                 <div className="space-y-2">
-                  <label className="text-sm font-medium text-neutral-dark">Comments</label>
+                  <label className="text-sm font-medium text-neutral-dark">
+                    Comments
+                  </label>
                   <textarea
-                    className="w-full min-h-[100px] px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light bg-white text-neutral-dark placeholder-neutral-medium resize-none"
-                    placeholder="Additional notes or comments about this formula..."
+                    className="w-full min-h-[100px] px-4 py-3 border border-neutral-soft rounded-lg bg-white resize-none"
+                    placeholder="Additional notes..."
                     value={form.comments}
-                    onChange={(e) => setForm({ ...form, comments: e.target.value })}
+                    onChange={(e) =>
+                      setForm({ ...form, comments: e.target.value })
+                    }
                   />
                 </div>
               </div>
 
+              {/* FOOTER */}
               <div className="px-8 py-5 bg-white border-t border-neutral-soft/60 flex items-center justify-end gap-3">
-                <button onClick={() => setIsAddOpen(false)} className="px-4 py-2 rounded-lg border border-neutral-soft text-neutral-dark bg-white hover:border-neutral-medium text-sm shadow-sm">Cancel</button>
-                <button className="px-5 py-2.5 rounded-lg bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white text-sm font-semibold shadow-sm">Create Formula</button>
+                <button
+                  onClick={() => {
+                    resetForm();
+                    setIsAddOpen(false);
+                  }}
+                  className="px-4 py-2 rounded-lg border border-neutral-soft text-neutral-dark bg-white hover:border-neutral-medium"
+                >
+                  Cancel
+                </button>
+
+                <button
+                  disabled={saving || !form.product_id || !form.customer_id}
+                  onClick={handleCreate}
+                  className="px-5 py-2.5 rounded-lg bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white text-sm font-semibold shadow-sm disabled:opacity-60"
+                >
+                  {saving ? "Saving..." : "Create Formula"}
+                </button>
               </div>
             </div>
           </div>
         )}
       </div>
     </div>
-  )
-}
+  );
+};
 
-export default Formulas
+export default Formulas;

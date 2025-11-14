@@ -100,6 +100,18 @@ const Formulas: React.FC = () => {
     loadFormulas();
   }, []);
 
+  /* ✅ 2b. REALTIME: auto-refresh list on any INSERT/UPDATE/DELETE in formulas */
+  useEffect(() => {
+    const channel = supabase
+      ?.channel('rt-formulas')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'formulas' }, () => {
+        // Safer: reload full list to include joined product/customer names
+        loadFormulas();
+      })
+      .subscribe();
+    return () => { if (channel) supabase?.removeChannel(channel); };
+  }, []);
+
   /* ✅ 3. CREATE FORMULA */
   const handleCreate = async () => {
     try {
@@ -151,11 +163,15 @@ const Formulas: React.FC = () => {
         if (ierr) console.warn("Ingredient insert error:", ierr);
       }
 
+      // Optimistic add to list so user sees result instantly (no full reload needed)
+      setFormulasList(prev => [{
+        ...fdata,
+        products: { product_name: selectedProduct || '' },
+        customers: { company_name: customersList.find(c=>c.id===form.customer_id)?.company_name || '' },
+      }, ...prev]);
+
       resetForm();
       setIsAddOpen(false);
-
-      /* ✅ REFRESH LIST */
-      await loadFormulas();
     } catch (e) {
       console.warn("Unexpected:", e);
     } finally {

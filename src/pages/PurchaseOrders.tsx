@@ -1,7 +1,11 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { Plus, X, User, Package, Calendar, FileText, Eye, Pencil, Trash2, MapPin, BadgeCheck, Search, Filter, CheckCircle2 } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 import { Status } from '../domain/enums'
+import { validatePODraft } from '../rules/po.rules'
+import { PO_RULES } from '../config/rules-config'
+import SubstituteModal from '../components/SubstituteModal'
 
 const PurchaseOrders: React.FC = () => {
   const [isAddOpen, setIsAddOpen] = useState(false)
@@ -26,18 +30,30 @@ const PurchaseOrders: React.FC = () => {
   const [newPackaging, setNewPackaging] = useState('')
   const [selectedPackagingTypes, setSelectedPackagingTypes] = useState<string[]>([])
   const [extraLines, setExtraLines] = useState<Array<{ id: string; product: string; qty: number }>>([])
-  const [toast, setToast] = useState<{ show: boolean; message: string }>({ show: false, message: '' })
+  const [toast, setToast] = useState<{ show: boolean; message: string; kind?: 'success' | 'warning' | 'error' }>({ show: false, message: '', kind: 'success' })
   const [isAllocOpen, setIsAllocOpen] = useState(false)
   const [allocSummary, setAllocSummary] = useState<any | null>(null)
   const [isDeleteOpen, setIsDeleteOpen] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState<any | null>(null)
   const [deleting, setDeleting] = useState(false)
+  const [showSubModal, setShowSubModal] = useState(false)
+  const [pendingApproveId, setPendingApproveId] = useState<string | null>(null)
+  const [pendingLines, setPendingLines] = useState<Array<{ id?: string; product_name: string; quantity?: number }>>([])
+  const [showNoFg, setShowNoFg] = useState(false)
+  const navigate = useNavigate()
+  const [showBackorderAdvisory, setShowBackorderAdvisory] = useState(false)
+  const [viewLines, setViewLines] = useState<Array<{ product_name: string; quantity: number; allocated_qty: number; shortfall_qty: number; status: string }>>([])
+  const [viewLoading, setViewLoading] = useState(false)
+  const [viewPrs, setViewPrs] = useState<Array<{ id: string; item_name: string; required_qty: number; needed_by: string | null; status: string; created_at: string | null }>>([])
+  const [viewPrLoading, setViewPrLoading] = useState(false)
   const [form, setForm] = useState({
     date: '',
     customer: '',
+    customer_id: '',
     product: '',
     packagingType: '',
     requestedShipDate: '',
+    ship_date: '',
     quantity: '',
     caseQty: '',
     notes: '',
@@ -45,7 +61,8 @@ const PurchaseOrders: React.FC = () => {
     paymentTerms: '',
     status: 'Open',
     comments: '',
-    location: ''
+    location: '',
+    lines: [] as Array<{ sku?: string; product_name: string; qty: number; is_discontinued?: boolean; substitute_sku?: string | null }>
   })
   const customerRef = useRef<HTMLDivElement>(null)
   
@@ -59,9 +76,242 @@ const PurchaseOrders: React.FC = () => {
       if (statusRef.current && !statusRef.current.contains(e.target as Node)) setIsStatusOpen(false)
       if (rushRef.current && !rushRef.current.contains(e.target as Node)) setIsRushOpen(false)
     }
+
     document.addEventListener('mousedown', handle)
     return () => document.removeEventListener('mousedown', handle)
   }, [])
+
+  // Load purchase_order_lines when View modal opens
+  useEffect(() => {
+    const loadLines = async () => {
+      try {
+        setViewLoading(true)
+        setViewLines([])
+        if (!isViewOpen?.id) { setViewLoading(false); return }
+        const { data, error } = await supabase
+          .from('purchase_order_lines')
+          .select('product_name, quantity, allocated_qty, shortfall_qty, status')
+          .eq('purchase_order_id', String(isViewOpen.id))
+          .order('created_at', { ascending: true })
+        if (!error && Array.isArray(data)) {
+          setViewLines(data.map((r: any) => ({
+            product_name: String(r.product_name || ''),
+            quantity: Number(r.quantity || 0),
+            allocated_qty: Number(r.allocated_qty || 0),
+            shortfall_qty: Number(r.shortfall_qty || 0),
+            status: String(r.status || ''),
+          })))
+        }
+      } finally { setViewLoading(false) }
+    }
+    loadLines()
+  }, [isViewOpen?.id])
+
+  // Load related purchase_requisitions when View modal opens
+  useEffect(() => {
+    const loadPrs = async () => {
+      try {
+        setViewPrLoading(true)
+        setViewPrs([])
+        if (!isViewOpen?.id) { setViewPrLoading(false); return }
+        const poId = String(isViewOpen.id)
+        const { data, error } = await supabase
+          .from('purchase_requisitions')
+          .select('id, item_name, required_qty, needed_by, status, created_at, source, notes')
+          .eq('source', 'Auto PR from PO Shortfall')
+          .eq('status', 'Open')
+          .ilike('notes', `%${poId}%`)
+          .order('created_at', { ascending: false })
+        if (!error && Array.isArray(data)) {
+          setViewPrs(data.map((r: any) => ({
+            id: String(r.id),
+            item_name: String(r.item_name || ''),
+            required_qty: Number(r.required_qty || 0),
+            needed_by: r.needed_by || null,
+            status: String(r.status || 'Open'),
+            created_at: r.created_at || null,
+          })))
+        }
+      } finally {
+        setViewPrLoading(false)
+      }
+    }
+    loadPrs()
+  }, [isViewOpen?.id])
+
+  const statusDescription = (st: string) => {
+    const s = String(st || '').toLowerCase()
+    if (s === 'draft') return 'Draft: not yet submitted or approved.'
+    if (s === 'open') return 'Open: awaiting approval and allocation.'
+    if (s === 'approved') return 'Approved: ready for stock allocation.'
+    if (s === 'allocated') return 'Allocated: finished goods reserved for this order.'
+    if (s === 'backordered') return 'Backordered: insufficient finished goods; pending production or replenishment.'
+    if (s === 'on hold') return 'On Hold: blocked due to credit hold or rule validation.'
+    if (s === 'closed') return 'Closed: fulfilled and completed.'
+    if (s === 'canceled') return 'Canceled: the order has been canceled.'
+    return '—'
+  }
+
+  const prStatusBadge = (st: string) => {
+    const s = String(st || '').toLowerCase()
+    if (s === 'approved') return { label: 'Approved', cls: 'bg-emerald-100 text-emerald-800' }
+    if (s === 'closed' || s === 'completed') return { label: 'Closed', cls: 'bg-gray-100 text-gray-700' }
+    return { label: 'Open', cls: 'bg-amber-100 text-amber-800' }
+  }
+
+  const timeAgo = (iso: string | null) => {
+    if (!iso) return '—'
+    try {
+      const dt = new Date(iso)
+      const diff = Date.now() - dt.getTime()
+      const sec = Math.floor(diff / 1000)
+      if (sec < 60) return 'Just now'
+      const min = Math.floor(sec / 60)
+      if (min < 60) return `${min} min ago`
+      const hr = Math.floor(min / 60)
+      if (hr < 24) return `${hr} hour${hr === 1 ? '' : 's'} ago`
+      const day = Math.floor(hr / 24)
+      return `${day} day${day === 1 ? '' : 's'} ago`
+    } catch {
+      return iso || '—'
+    }
+  }
+
+  const hasViewShortfall = useMemo(
+    () => viewLines.some(l => Number(l.shortfall_qty || 0) > 0),
+    [viewLines]
+  )
+
+  // Pre-approval check: discontinued + substitutes
+  const handleApproveClick = async (po: any) => {
+    try {
+      // Load PO lines
+      const { data: lines, error } = await supabase
+        .from('purchase_order_lines')
+        .select('id, product_name, quantity')
+        .eq('purchase_order_id', po.id)
+      if (error) throw error
+      const poLines = (lines || []) as Array<{ id: string; product_name: string; quantity?: number }>
+
+      // Detect discontinued
+      const discontinuedItems = poLines.filter(l => {
+        const prod = productsIndex[l.product_name]
+        return !!prod?.is_discontinued
+      })
+
+      if (discontinuedItems.length === 0) {
+        await approveAndAllocate(po.id)
+        return
+      }
+
+      const needsSubstitute = discontinuedItems.some(l => !(productsIndex[l.product_name]?.substitute_sku))
+      if (needsSubstitute) {
+        setToast({ show: true, message: PO_RULES.MESSAGES.discontinued, kind: 'error' })
+        return
+      }
+
+      // Show modal to apply substitutes
+      setPendingApproveId(String(po.id))
+      setPendingLines(poLines)
+      setShowSubModal(true)
+    } catch (e: any) {
+      setToast({ show: true, message: e?.message || 'Failed to prepare approval', kind: 'error' })
+    }
+  }
+
+  const applySubstitutesAndApprove = async () => {
+    if (!pendingApproveId) { setShowSubModal(false); return }
+    try {
+      // Update discontinued lines with substitutes
+      const applied: string[] = []
+      for (const l of pendingLines) {
+        const prod = productsIndex[l.product_name]
+        if (prod?.is_discontinued && prod?.substitute_sku) {
+          applied.push(String(prod.substitute_sku))
+          const { error } = await supabase
+            .from('purchase_order_lines')
+            .update({ product_name: prod.substitute_sku })
+            .eq('id', l.id as string)
+          if (error) throw error
+        }
+      }
+      if (applied.length) setToast({ show: true, message: `Substitute applied: ${applied.join(', ')}`, kind: 'success' })
+      setShowSubModal(false)
+      setPendingLines([])
+      const id = pendingApproveId
+      setPendingApproveId(null)
+      await approveAndAllocate(id)
+    } catch (e: any) {
+      setToast({ show: true, message: e?.message || 'Failed to apply substitutes', kind: 'error' })
+    }
+  }
+
+  const productsIndex = useMemo(() => {
+    const idx: Record<string, any> = {}
+    products.forEach(p => {
+      const key = (p as any).sku || p.name
+      if (key) idx[key] = p
+    })
+    return idx
+  }, [products])
+
+  // When allocation summary opens with backordered status, detect full shortfall and absence of finished_goods
+  useEffect(() => {
+    const check = async () => {
+      try {
+        setShowBackorderAdvisory(false)
+        const sum: any = allocSummary
+        if (!sum || String(sum?.status || '').toLowerCase() !== 'backordered') return
+        const lines: any[] = Array.isArray(sum?.lines) ? sum.lines : []
+        if (lines.length === 0) return
+        const allShortfall = lines.every((ln: any) => Number(ln?.allocated || ln?.allocated_qty || 0) === 0 && Number(ln?.shortfall || ln?.shortfall_qty || 0) > 0)
+        if (!allShortfall) return
+        const names = Array.from(new Set(lines.map((ln: any) => String(ln?.product || ln?.product_name || '').trim()).filter(Boolean)))
+        if (names.length === 0) return
+        const { data, error } = await supabase
+          .from('finished_goods')
+          .select('product_name')
+          .in('product_name', names)
+        if (error) return
+        // Show advisory only if none of the products exist in finished_goods
+        const found = new Set((data || []).map((r: any) => String(r.product_name || '')))
+        const noneExist = names.every(n => !found.has(n))
+        if (noneExist) setShowBackorderAdvisory(true)
+      } catch {}
+    }
+    check()
+  }, [allocSummary])
+
+  // substitute hook available if needed
+
+  // Keep form.lines in sync from main product + additional products
+  useEffect(() => {
+    const lines: Array<{ sku?: string; product_name: string; qty: number; is_discontinued?: boolean; substitute_sku?: string | null }> = []
+    const mainQty = Number(form.quantity || 0)
+    if (form.product && mainQty > 0) {
+      const prod = productsIndex[form.product] || {}
+      lines.push({
+        sku: (prod as any).sku,
+        product_name: form.product,
+        qty: mainQty,
+        is_discontinued: (prod as any)?.is_discontinued,
+        substitute_sku: (prod as any)?.substitute_sku ?? null,
+      })
+    }
+    extraLines.forEach(l => {
+      if (l.product && l.qty > 0) {
+        const prod = productsIndex[l.product] || {}
+        lines.push({
+          sku: (prod as any).sku,
+          product_name: l.product,
+          qty: Number(l.qty || 0),
+          is_discontinued: (prod as any)?.is_discontinued,
+          substitute_sku: (prod as any)?.substitute_sku ?? null,
+        })
+      }
+    })
+    setForm(prev => ({ ...prev, lines }))
+  }, [form.product, form.quantity, extraLines, productsIndex])
 
   useEffect(() => {
     if (toast.show) {
@@ -106,30 +356,17 @@ const PurchaseOrders: React.FC = () => {
     loadPackagingTypes()
   }, [])
 
-  const validate = (): { ok: boolean; msg?: string } => {
-    if (!form.customer) return { ok: false, msg: 'Customer is required' }
-    if (!form.product) return { ok: false, msg: 'Product/SKU is required' }
-    if (!form.quantity || Number(form.quantity) <= 0) return { ok: false, msg: 'Quantity must be greater than 0' }
-    if (!form.requestedShipDate) return { ok: false, msg: 'Requested ship date is required' }
-    if (!form.location) return { ok: false, msg: 'Location is required' }
-    const customer = customers.find(c => c.name === form.customer)
-    if (customer && (customer.credit_hold || (customer.overdue_balance ?? 0) > 0)) {
-      setForm({ ...form, status: Status.OnHold })
-    }
-    const prod = products.find(p => p.name === form.product)
-    if (prod?.is_discontinued) {
-      return { ok: false, msg: `Product is discontinued. Suggested substitute: ${prod.substitute_sku || 'N/A'}` }
-    }
-    return { ok: true }
-  }
+  // validation handled by validatePODraft
 
   const resetForm = () => {
     setForm({
       date: '',
       customer: '',
+      customer_id: '',
       product: '',
       packagingType: '',
       requestedShipDate: '',
+      ship_date: '',
       quantity: '',
       caseQty: '',
       notes: '',
@@ -137,149 +374,138 @@ const PurchaseOrders: React.FC = () => {
       paymentTerms: '',
       status: 'Open',
       comments: '',
-      location: ''
+      location: '',
+      lines: []
     })
   }
 
   const saveOrder = async () => {
     setError(null)
-    const wasEdit = !!isEditOpen?.id
-    const v = validate()
-    if (!v.ok) { setError(v.msg || 'Validation failed'); return }
-    const isRush = (() => {
-      const today = new Date()
-      const req = new Date(form.requestedShipDate)
-      const diff = Math.ceil((req.getTime() - new Date(today.toDateString()).getTime()) / (1000*60*60*24))
-      return diff >= 0 && diff <= 3
-    })()
-    const customer = customers.find(c => c.name === form.customer)
-    const prod = products.find(p => p.name === form.product)
-    const willHold = !!(customer && (customer.credit_hold || (customer.overdue_balance ?? 0) > 0))
-    const row = {
-      date: form.date || null,
-      customer_id: customer?.id || null,
-      customer_name: form.customer || null,
-      product_id: prod?.id || null,
-      product_name: form.product || null,
-      packaging_type: form.packagingType || null,
-      requested_ship_date: form.requestedShipDate || null,
-      quantity: Number(form.quantity),
-      case_qty: form.caseQty ? Number(form.caseQty) : null,
-      notes: form.notes || null,
-      invoice: form.invoice || null,
-      payment_terms: form.paymentTerms || null,
-      status: willHold ? Status.OnHold : form.status,
-      comments: form.comments || null,
-      location: form.location || null,
-      is_rush: isRush,
-      flags: isRush ? ['RushOrder'] : null,
-      hold_reason: willHold ? 'Credit hold or overdue balance' : null,
+
+    // Build draft payload from UI
+    const selectedCustomerId = customers.find(c => c.name === form.customer)?.id || null
+    const draft = {
+      customer_id: form.customer_id || selectedCustomerId || null,
+      ship_date: form.ship_date,
+      location: form.location,
+      lines: (form.lines || []).map(l => ({
+        sku: (l as any).sku,
+        product_name: l.product_name,
+        qty: Number((l as any).qty || 0),
+        is_discontinued: (l as any).is_discontinued,
+        substitute_sku: (l as any).substitute_sku,
+      })),
     }
-    let newOrderId: string | null = null
-    if (isEditOpen?.id) {
-      const { error } = await supabase.from('purchase_orders').update(row).eq('id', isEditOpen.id)
-      if (error) { setError('Failed to update order'); return }
-      newOrderId = String(isEditOpen.id)
-    } else {
-      const { data, error } = await supabase.from('purchase_orders').insert(row).select('*').single()
-      if (error) { setError('Failed to create order'); return }
-      newOrderId = data?.id ? String(data.id) : null
+
+    const customer = customers.find(c => c.id === draft.customer_id) || null
+
+    // VALIDATE AGAINST RULE ENGINE
+    const result = validatePODraft(draft, customer, productsIndex)
+
+    if (!result.ok) {
+      setToast({ show: true, message: result.errors.join(' '), kind: 'error' })
+      return
     }
-    // Notify Finance and Sales if order is placed on hold
+
+    // Auto status rules
+    let status = form.status || 'Draft'
+    if (result.flags.creditHold) status = 'On Hold'
+
+    const is_rush = result.flags.rush === true
+
+    setLoading(true)
     try {
-      if (row.status === Status.OnHold) {
-        const webhook = (import.meta as any).env?.VITE_ONHOLD_WEBHOOK_URL as string | undefined
-        if (webhook) {
-          await fetch(webhook, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              type: 'PO_ON_HOLD',
-              reason: row.hold_reason,
-              customer_id: row.customer_id,
-              customer_name: row.customer_name,
-              product_id: row.product_id,
-              product_name: row.product_name,
-              quantity: row.quantity,
-              requested_ship_date: row.requested_ship_date,
-              status: row.status,
-              created_at: new Date().toISOString(),
-            }),
+      const mainProd = products.find(p => p.name === form.product) || null
+      let po_id: string
+
+      if (isEditOpen?.id) {
+        // UPDATE existing head
+        const { error: upErr } = await supabase
+          .from('purchase_orders')
+          .update({
+            date: form.date || null,
+            customer_id: draft.customer_id,
+            customer_name: form.customer || (customers.find(c=>c.id===draft.customer_id)?.name || null),
+            product_id: mainProd?.id || null,
+            product_name: form.product || null,
+            requested_ship_date: draft.ship_date,
+            quantity: form.quantity ? Number(form.quantity) : null,
+            location: draft.location || null,
+            status,
+            is_rush,
+            notes: form.notes || null,
+            invoice: form.invoice || null,
+            payment_terms: form.paymentTerms || null,
           })
-        }
-      }
-    } catch {}
-    // Persist packaging types (array) and line items
-    try {
-      if (newOrderId) {
-        await supabase.from('purchase_orders').update({ packaging_types: selectedPackagingTypes.length ? selectedPackagingTypes : null }).eq('id', newOrderId)
-        // Reset PO lines for simplicity
-        await supabase.from('purchase_order_lines').delete().eq('purchase_order_id', newOrderId)
-        const mainQty = Number(form.quantity || 0)
-        const items: any[] = []
-        if (form.product && mainQty > 0) {
-          items.push({ purchase_order_id: newOrderId, product_name: form.product, quantity: mainQty })
-        }
-        extraLines.forEach(l => {
-          if (l.product && l.qty > 0) items.push({ purchase_order_id: newOrderId, product_name: l.product, quantity: l.qty })
-        })
-        if (items.length) await supabase.from('purchase_order_lines').insert(items)
-      }
-    } catch {}
-
-    const { data } = await supabase.from('purchase_orders').select('*').order('created_at', { ascending: false })
-    setOrders(data ?? [])
-    resetForm()
-    setIsAddOpen(false)
-    setIsEditOpen(null)
-    setToast({ show: true, message: wasEdit ? 'Purchase order updated' : 'Purchase order created' })
-
-    // Auto-allocation workflow when PO is Approved
-    try {
-      const shouldAllocate = (row.status === Status.Approved)
-      if (shouldAllocate && newOrderId) {
-        // Lookup available finished goods for the product
-        const { data: fgRows } = await supabase
-          .from('finished_goods')
-          .select('id, product_name, available_qty')
-          .eq('product_name', row.product_name)
-          .limit(1)
-        const available = Number(fgRows?.[0]?.available_qty ?? 0)
-        const allocateQty = Math.min(available, row.quantity)
-        const shortfall = Math.max(0, row.quantity - allocateQty)
-
-        // Update finished goods stock
-        if (allocateQty > 0 && fgRows && fgRows[0]?.id) {
-          await supabase.from('finished_goods')
-            .update({ available_qty: available - allocateQty })
-            .eq('id', fgRows[0].id)
-        }
-
-        // Update PO with allocation outcome
-        const nextStatus = shortfall === 0 ? Status.Allocated : Status.Backordered
-        await supabase.from('purchase_orders')
-          .update({ allocated_qty: allocateQty, backorder_qty: shortfall, status: nextStatus })
-          .eq('id', newOrderId)
-
-        // If shortfall, create a production batch suggestion
-        if (shortfall > 0) {
-          await supabase.from('production_batches').insert({
-            product_sku: row.product_name,
-            qty: shortfall,
-            room: row.location || 'Main Room',
-            start_date: row.requested_ship_date || new Date().toISOString().slice(0,10),
-            status: Status.Scheduled,
-            required_capacity: shortfall,
-            assigned_line: row.location || 'Main Room',
-            flags: ['AutoCreatedFromPO'],
+          .eq('id', isEditOpen.id)
+        if (upErr) throw upErr
+        po_id = String(isEditOpen.id)
+      } else {
+        // INSERT head
+        const { data: poHead, error: headErr } = await supabase
+          .from('purchase_orders')
+          .insert({
+            date: form.date || null,
+            customer_id: draft.customer_id,
+            customer_name: form.customer || (customers.find(c=>c.id===draft.customer_id)?.name || null),
+            product_id: mainProd?.id || null,
+            product_name: form.product || null,
+            requested_ship_date: draft.ship_date,
+            quantity: form.quantity ? Number(form.quantity) : null,
+            location: draft.location || null,
+            status,
+            is_rush,
+            notes: form.notes || null,
+            invoice: form.invoice || null,
+            payment_terms: form.paymentTerms || null,
           })
-        }
-
-        // Refresh orders again to reflect status change
-        const { data: refreshed } = await supabase.from('purchase_orders').select('*').order('created_at', { ascending: false })
-        setOrders(refreshed ?? [])
+          .select()
+          .single()
+        if (headErr) throw headErr
+        po_id = String(poHead.id)
       }
-    } catch { /* swallow allocation errors to not block UI */ }
+
+      // Replace lines for this PO
+      await supabase.from('purchase_order_lines').delete().eq('purchase_order_id', po_id)
+
+      const linesPayload = (draft.lines || []).map(l => ({
+        purchase_order_id: po_id,
+        product_name: l.product_name,
+        quantity: l.qty,
+      }))
+
+      if (linesPayload.length === 0) throw new Error('PO must have at least one line.')
+
+      const { error: linesErr } = await supabase
+        .from('purchase_order_lines')
+        .insert(linesPayload)
+
+      if (linesErr) throw linesErr
+
+      // Show SEPARATE toasts: rush, creditHold, then success
+      const queue: Array<{ message: string; kind?: 'success'|'warning'|'error' }> = []
+      if (is_rush) queue.push({ message: PO_RULES.MESSAGES.rush, kind: 'warning' })
+      if (status === 'On Hold') queue.push({ message: PO_RULES.MESSAGES.creditHold, kind: 'warning' })
+      queue.push({ message: isEditOpen ? 'PO updated successfully.' : 'PO created successfully.', kind: 'success' })
+
+      const showQueue = (i = 0) => {
+        if (i >= queue.length) return
+        setToast({ show: true, message: queue[i].message, kind: queue[i].kind })
+        setTimeout(() => showQueue(i + 1), 3200)
+      }
+      showQueue(0)
+
+      // Refresh orders list
+      const { data } = await supabase.from('purchase_orders').select('*').order('created_at', { ascending: false })
+      setOrders(data ?? [])
+      resetForm()
+      setIsAddOpen(false)
+      setIsEditOpen(null)
+    } catch (e: any) {
+      setError(e?.message || 'Failed to save PO.')
+    } finally {
+      setLoading(false)
+    }
   }
 
   const removeOrder = async (id: string) => {
@@ -340,7 +566,7 @@ const PurchaseOrders: React.FC = () => {
     }
   }
 
-  // Approve + Allocate for a single PO
+  // Approve + Allocate for a single PO (final action)
   const approveAndAllocate = async (poId: string) => {
     try {
       setError(null)
@@ -351,9 +577,14 @@ const PurchaseOrders: React.FC = () => {
         .eq('id', poId)
       if (upErr) throw upErr
 
-      // 2) Call RPC allocate_stock
-      const { data: summary, error: rpcErr } = await supabase.rpc('allocate_stock', { p_po_id: poId })
+      // 2) Call RPC allocate_brand_po_finished_first
+      const { data: summary, error: rpcErr } = await supabase.rpc('allocate_brand_po_finished_first', { p_po_id: poId })
       if (rpcErr) throw rpcErr
+      if (summary?.status === 'no_fg') {
+        setToast({ show: true, message: 'No finished goods available. Please create a Production Schedule first.', kind: 'error' })
+        setShowNoFg(true)
+        return
+      }
       if (summary?.status === 'error') {
         const msg = Array.isArray(summary?.errors) && summary.errors.length > 0
           ? (summary.errors[0]?.error || summary.errors[0])
@@ -369,10 +600,31 @@ const PurchaseOrders: React.FC = () => {
         .order('created_at', { ascending: false })
       setOrders(poRows ?? [])
 
-      // 4) Show summary modal and toast
-      setAllocSummary(summary)
+      // 4) Ensure summary has lines for UI; if missing, load from purchase_order_lines
+      let finalSummary: any = summary || {}
+      try {
+        const hasLines = Array.isArray(finalSummary?.lines) && finalSummary.lines.length > 0
+        if (!hasLines) {
+          const { data: pol } = await supabase
+            .from('purchase_order_lines')
+            .select('id, product_name, quantity, allocated_qty, shortfall_qty, status')
+            .eq('purchase_order_id', poId)
+          finalSummary = {
+            ...finalSummary,
+            lines: (pol || []).map((r: any) => ({
+              id: String(r.id),
+              product_name: String(r.product_name || ''),
+              ordered_qty: Number(r.quantity || 0),
+              allocated_qty: Number(r.allocated_qty || 0),
+              shortfall_qty: Number(r.shortfall_qty || 0),
+              status: String(r.status || ''),
+            })),
+          }
+        }
+      } catch {}
+      setAllocSummary(finalSummary)
       setIsAllocOpen(true)
-      setToast({ show: true, message: `Allocation: ${summary?.status ?? 'done'}` })
+      setToast({ show: true, message: `Allocation: ${finalSummary?.status ?? 'done'}` })
     } catch (e: any) {
       setError(e?.message || 'Failed to approve and allocate')
     }
@@ -383,11 +635,27 @@ const PurchaseOrders: React.FC = () => {
       <div className="p-8">
         {toast.show && (
           <div className="fixed top-6 left-1/2 -translate-x-1/2 z-[70]">
-            <div className="flex items-center gap-3 bg-white rounded-xl shadow-2xl border border-neutral-soft/40 px-4 py-3 animate-fade-in">
-              <div className="w-8 h-8 bg-accent-success/15 rounded-full flex items-center justify-center">
-                <CheckCircle2 className="h-5 w-5 text-accent-success" />
+            <div className={`flex items-center gap-3 bg-white rounded-xl shadow-2xl border px-4 py-3 animate-fade-in ${toast.kind==='error' ? 'border-accent-danger/40' : 'border-neutral-soft/40'}`}>
+              <div className={`w-8 h-8 rounded-full flex items-center justify-center ${toast.kind==='error' ? 'bg-accent-danger/10' : 'bg-accent-success/15'}`}>
+                <CheckCircle2 className={`h-5 w-5 ${toast.kind==='error' ? 'text-accent-danger' : 'text-accent-success'}`} />
               </div>
               <span className="text-sm font-semibold text-neutral-dark">{toast.message}</span>
+            </div>
+          </div>
+        )}
+        {/* No Finished Goods Modal */}
+        {showNoFg && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-black/50" onClick={() => setShowNoFg(false)}></div>
+            <div className="relative z-10 w-full max-w-lg bg-white rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden">
+              <div className="px-8 py-6 bg-gradient-to-r from-neutral-light to-neutral-light/80 border-b border-neutral-soft/50">
+                <h2 className="text-xl font-semibold text-neutral-dark">No Finished Goods Available</h2>
+                <p className="text-sm text-neutral-medium mt-1">This purchase order cannot be allocated because the product is not yet produced.</p>
+              </div>
+              <div className="p-6 flex items-center justify-end gap-3">
+                <button className="px-4 py-2 rounded-xl border border-neutral-soft text-neutral-dark hover:bg-neutral-light/60 transition-all" onClick={() => setShowNoFg(false)}>Close</button>
+                <button className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold shadow" onClick={() => { setShowNoFg(false); navigate('/production-schedule') }}>Create Production Schedule</button>
+              </div>
             </div>
           </div>
         )}
@@ -401,6 +669,17 @@ const PurchaseOrders: React.FC = () => {
                 <p className="text-sm text-neutral-medium mt-1">Status: {String(allocSummary?.status || '')}</p>
               </div>
               <div className="p-6">
+                {showBackorderAdvisory && (
+                  <div className="mb-4 p-3 rounded-lg border border-amber-300 bg-amber-50 text-amber-800 text-sm flex items-center justify-between">
+                    <div>
+                      <div className="font-semibold">No finished goods available for this product.</div>
+                      <div>Please create a production schedule.</div>
+                    </div>
+                    <button onClick={() => { setIsAllocOpen(false); navigate('/production-schedule') }} className="ml-4 px-3 py-1.5 rounded-lg bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white text-sm font-medium">
+                      Go to Production Schedule
+                    </button>
+                  </div>
+                )}
                 {Array.isArray(allocSummary?.errors) && allocSummary.errors.length > 0 && (
                   <div className="mb-4 p-3 rounded-lg border border-accent-danger/30 bg-accent-danger/5 text-accent-danger text-sm">
                     {allocSummary.errors.map((e: any, i: number) => (
@@ -441,6 +720,15 @@ const PurchaseOrders: React.FC = () => {
             </div>
           </div>
         )}
+        {/* Substitute Modal */}
+        <SubstituteModal
+          open={showSubModal}
+          items={pendingLines.map(l=>({ product_name: l.product_name }))}
+          productsIndex={productsIndex}
+          onUseSubstitute={applySubstitutesAndApprove}
+          onCancel={()=>{ setShowSubModal(false); setPendingLines([]); setPendingApproveId(null) }}
+        />
+
         {/* Header */}
         <div className="bg-white rounded-2xl shadow-md border border-neutral-soft/20 p-8 mb-8">
           <div className="flex justify-between items-center">
@@ -607,7 +895,7 @@ const PurchaseOrders: React.FC = () => {
                             <div className="flex items-center justify-center space-x-2">
                               <button
                                 className="group/btn px-3 py-3 text-primary-medium hover:text-white hover:bg-primary-medium rounded-xl transition-all duration-300 hover:shadow-lg hover:scale-105 border border-primary-light/30 hover:border-primary-medium"
-                                onClick={() => approveAndAllocate(o.id)}
+                                onClick={() => handleApproveClick(o)}
                                 title="Approve & Allocate"
                               >
                                 Approve
@@ -619,12 +907,15 @@ const PurchaseOrders: React.FC = () => {
                                 setIsEditOpen(o)
                                 setIsAddOpen(true)
                                 // Prefill base form values
+                                const fallbackName = o.customer_name || (customers.find(c=> String(c.id)===String(o.customer_id))?.name || '')
                                 setForm({
                                   date: o.date || '',
-                                  customer: o.customer_name || '',
+                                  customer: fallbackName,
+                                  customer_id: o.customer_id ? String(o.customer_id) : '',
                                   product: o.product_name || '',
                                   packagingType: o.packaging_type || '',
                                   requestedShipDate: o.requested_ship_date || '',
+                                  ship_date: o.requested_ship_date || '',
                                   quantity: String(o.quantity),
                                   caseQty: o.case_qty ? String(o.case_qty) : '',
                                   notes: o.notes || '',
@@ -632,7 +923,8 @@ const PurchaseOrders: React.FC = () => {
                                   paymentTerms: o.payment_terms || '',
                                   status: o.status || 'Open',
                                   comments: o.comments || '',
-                                  location: o.location || ''
+                                  location: o.location || '',
+                                  lines: []
                                 })
                                 // Prefill packaging types (array)
                                 if (Array.isArray(o.packaging_types)) {
@@ -645,7 +937,7 @@ const PurchaseOrders: React.FC = () => {
                                 // Load additional items from purchase_order_items
                                 try {
                                   const { data: items } = await supabase
-                                    .from('purchase_order_items')
+                                    .from('purchase_order_lines')
                                     .select('product_name, quantity')
                                     .eq('purchase_order_id', o.id)
                                   const extras = (items ?? [])
@@ -725,6 +1017,22 @@ const PurchaseOrders: React.FC = () => {
                   onSubmit={(e) => { e.preventDefault(); saveOrder() }}
                   className="p-8 space-y-6"
                 >
+                  {form.customer_id && (customers.find(c => c.id === form.customer_id)?.credit_hold ||
+                    Number(customers.find(c => c.id === form.customer_id)?.overdue_balance || 0) > 0) && (
+                    <div className="mb-3 rounded-lg border border-yellow-300 bg-yellow-50 px-3 py-2 text-sm text-yellow-800">
+                      Customer has credit issues. This PO will be set to <b>On Hold</b>.
+                    </div>
+                  )}
+
+                  {form.ship_date && (() => {
+                    const d = new Date(form.ship_date)
+                    const days = Math.ceil((d.getTime() - Date.now()) / 86400000)
+                    return days <= PO_RULES.RUSH_WINDOW_DAYS
+                  })() && (
+                    <div className="mb-3 rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700">
+                      Rush Order detected. Approval or rush handling is required.
+                    </div>
+                  )}
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     <div className="space-y-2">
                       <label className="flex items-center text-sm font-medium text-neutral-dark">
@@ -746,7 +1054,7 @@ const PurchaseOrders: React.FC = () => {
                         {isCustomerOpen && (
                           <div className="absolute z-[100] mt-2 w-full bg-white border border-neutral-soft rounded-xl shadow-xl max-h-56 overflow-auto">
                             {customers.map(c => (
-                              <button key={c.id} type="button" className={`block w-full text-left px-4 py-2 hover:bg-neutral-light ${form.customer===c.name?'bg-neutral-light':''}`} onClick={()=>{setForm({...form, customer:c.name}); setIsCustomerOpen(false)}}>{c.name}{(c.credit_hold || (c.overdue_balance??0)>0)? ' • On Hold Risk' : ''}</button>
+                              <button key={c.id} type="button" className={`block w-full text-left px-4 py-2 hover:bg-neutral-light ${form.customer===c.name?'bg-neutral-light':''}`} onClick={()=>{setForm({...form, customer:c.name, customer_id: c.id}); setIsCustomerOpen(false)}}>{c.name}{(c.credit_hold || (c.overdue_balance??0)>0)? ' • On Hold Risk' : ''}</button>
                             ))}
                           </div>
                         )}
@@ -820,7 +1128,7 @@ const PurchaseOrders: React.FC = () => {
                         <Calendar className="h-4 w-4 mr-2 text-primary-medium" />
                         Requested Ship Date
                       </label>
-                      <input type="date" className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light" value={form.requestedShipDate} onChange={(e)=>setForm({...form, requestedShipDate:e.target.value})} />
+                      <input type="date" className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light" value={form.requestedShipDate} onChange={(e)=>setForm({...form, requestedShipDate:e.target.value, ship_date: e.target.value})} />
                     </div>
                     <div className="space-y-2">
                       <label className="flex items-center text-sm font-medium text-neutral-dark">Quantity</label>
@@ -903,16 +1211,29 @@ const PurchaseOrders: React.FC = () => {
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
             <div className="absolute inset-0 bg-black/50" onClick={() => setIsViewOpen(null)}></div>
             <div className="relative z-10 w-full max-w-3xl bg-white rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden flex flex-col">
-              <div className="flex items-center justify-between px-8 py-6 bg-gradient-to-r from-neutral-light to-neutral-light/80 border-b border-neutral-soft/50">
-                <div>
-                  <h2 className="text-2xl font-semibold text-neutral-dark">Purchase Order Details</h2>
-                  <p className="text-sm text-neutral-medium mt-1">Order information overview</p>
+              <div className="px-8 py-6 bg-gradient-to-r from-neutral-light to-neutral-light/80 border-b border-neutral-soft/50">
+                <div className="flex items-start justify-between">
+                  <div>
+                    <h2 className="text-2xl font-semibold text-neutral-dark">Purchase Order Details</h2>
+                    <p className="text-sm text-neutral-medium mt-1">PO #: {isViewOpen.id}</p>
+                  </div>
+                  <button className="px-3 py-1.5 rounded-lg border border-neutral-soft text-neutral-dark hover:bg-neutral-light/60" onClick={()=>setIsViewOpen(null)}>Close</button>
                 </div>
-                <button onClick={() => setIsViewOpen(null)} className="p-3 text-neutral-medium hover:text-neutral-dark hover:bg-white/60 rounded-xl transition-all duration-200 hover:shadow-sm">
-                  <X className="h-6 w-6" />
-                </button>
               </div>
-              <div className="p-8 space-y-6">
+              <div className="p-6 space-y-6">
+                {/* Shortage banner when backordered + open auto PRs */}
+                {String(isViewOpen.status || '').toLowerCase() === 'backordered' && viewPrs.length > 0 && (
+                  <div className="flex items-start gap-3 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3">
+                    <div className="mt-0.5">
+                      <span className="inline-flex items-center justify-center w-8 h-8 rounded-full bg-amber-100 text-amber-700 text-sm font-bold">!</span>
+                    </div>
+                    <div>
+                      <div className="text-sm font-semibold text-amber-800">Raw Material Shortages Detected for this PO</div>
+                      <div className="text-xs text-amber-700 mt-0.5">Procurement needs to order materials before this backorder can be produced.</div>
+                    </div>
+                  </div>
+                )}
+
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   <div className="space-y-1">
                     <label className="flex items-center text-xs font-semibold text-neutral-medium uppercase tracking-wide">
@@ -949,11 +1270,16 @@ const PurchaseOrders: React.FC = () => {
                           ? 'bg-accent-danger/10 text-accent-danger border-accent-danger/30'
                           : (st === 'approved' || st === 'allocated')
                             ? 'bg-accent-success/10 text-accent-success border-accent-success/30'
-                            : 'bg-neutral-light/40 text-neutral-dark border-neutral-soft/60'
+                            : (st === 'backordered')
+                              ? 'bg-amber-50 text-amber-700 border-amber-200'
+                              : 'bg-neutral-light/40 text-neutral-dark border-neutral-soft/60'
                         return (
-                          <span className={`inline-flex items-center px-3 py-1.5 rounded-xl text-xs font-semibold border ${statusClass}`}>
-                            {isViewOpen.status || '—'}
-                          </span>
+                          <div className="space-y-1">
+                            <span className={`inline-flex items-center px-3 py-1.5 rounded-xl text-xs font-semibold border ${statusClass}`}>
+                              {isViewOpen.status || '—'}
+                            </span>
+                            <div className="text-[11px] text-neutral-medium">{statusDescription(isViewOpen.status)}</div>
+                          </div>
                         )
                       })()}
                     </div>
@@ -985,7 +1311,101 @@ const PurchaseOrders: React.FC = () => {
                     <div className="text-neutral-dark">{isViewOpen.date || '—'}</div>
                   </div>
                 </div>
-                
+                {/* Line Items (no IDs) */}
+                <div className="space-y-3">
+                  <h3 className="text-base font-semibold text-neutral-dark">Line Items</h3>
+                  <div className="overflow-x-auto border border-neutral-soft/40 rounded-lg">
+                    <table className="min-w-full">
+                      <thead>
+                        <tr className="bg-neutral-light/40 border-b border-neutral-soft/50">
+                          <th className="px-4 py-2 text-left text-xs font-semibold text-neutral-medium uppercase">Product</th>
+                          <th className="px-4 py-2 text-right text-xs font-semibold text-neutral-medium uppercase">Ordered</th>
+                          <th className="px-4 py-2 text-right text-xs font-semibold text-neutral-medium uppercase">Allocated</th>
+                          <th className="px-4 py-2 text-right text-xs font-semibold text-neutral-medium uppercase">Shortfall</th>
+                          <th className="px-4 py-2 text-left text-xs font-semibold text-neutral-medium uppercase">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {viewLoading ? (
+                          <tr><td className="px-4 py-4 text-sm text-neutral-medium" colSpan={5}>Loading…</td></tr>
+                        ) : viewLines.length === 0 ? (
+                          <tr><td className="px-4 py-4 text-sm text-neutral-medium" colSpan={5}>No lines</td></tr>
+                        ) : (
+                          viewLines.map((ln, i) => (
+                            <tr key={i} className="border-t border-neutral-soft/30">
+                              <td className="px-4 py-2 text-sm text-neutral-dark">{ln.product_name}</td>
+                              <td className="px-4 py-2 text-sm text-right">{ln.quantity}</td>
+                              <td className="px-4 py-2 text-sm text-right">{ln.allocated_qty}</td>
+                              <td className={`px-4 py-2 text-sm text-right ${ln.shortfall_qty>0? 'text-amber-700 font-semibold':'text-neutral-dark'}`}>{ln.shortfall_qty}</td>
+                              <td className="px-4 py-2 text-sm text-neutral-dark">{ln.status}</td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                {hasViewShortfall && (
+                  <div className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 flex items-center justify-between text-sm mt-1">
+                    <div>
+                      <div className="font-semibold text-amber-800">This purchase order has unfulfilled quantities.</div>
+                      <div className="text-xs text-amber-700 mt-0.5">Create or update a production batch to cover the shortfall.</div>
+                    </div>
+                    <button
+                      className="px-4 py-2 rounded-lg bg-primary-dark hover:bg-primary-medium text-white text-xs font-semibold shadow-sm"
+                      onClick={() => { const id = String(isViewOpen.id); setIsViewOpen(null); navigate(`/production-schedule?poId=${encodeURIComponent(id)}`) }}
+                    >
+                      Go to Production Schedule
+                    </button>
+                  </div>
+                )}
+
+                {/* Raw Material PRs linked to this PO */}
+                <div className="space-y-3">
+                  <h3 className="text-base font-semibold text-neutral-dark">Raw Material Purchase Requisitions for this PO</h3>
+                  <div className="border border-neutral-soft/40 rounded-xl bg-neutral-light/20">
+                    <div className="px-4 py-3 border-b border-neutral-soft/40 flex items-center justify-between">
+                      <span className="text-xs font-medium text-neutral-medium uppercase tracking-wide">Auto PR from PO Shortfall</span>
+                      {viewPrLoading && <span className="text-[11px] text-neutral-medium">Loading…</span>}
+                    </div>
+                    {viewPrs.length === 0 && !viewPrLoading ? (
+                      <div className="px-4 py-4 text-xs text-neutral-medium">No open raw material purchase requisitions for this PO.</div>
+                    ) : (
+                      <div className="overflow-x-auto">
+                        <table className="min-w-full text-sm">
+                          <thead>
+                            <tr className="bg-neutral-light/40 border-b border-neutral-soft/40">
+                              <th className="px-4 py-2 text-left text-[11px] font-semibold text-neutral-medium uppercase tracking-wide">Item</th>
+                              <th className="px-4 py-2 text-right text-[11px] font-semibold text-neutral-medium uppercase tracking-wide">Required Qty</th>
+                              <th className="px-4 py-2 text-left text-[11px] font-semibold text-neutral-medium uppercase tracking-wide">Needed By</th>
+                              <th className="px-4 py-2 text-left text-[11px] font-semibold text-neutral-medium uppercase tracking-wide">Status</th>
+                              <th className="px-4 py-2 text-left text-[11px] font-semibold text-neutral-medium uppercase tracking-wide">Created</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {viewPrs.map(pr => {
+                              const badge = prStatusBadge(pr.status)
+                              const needed = pr.needed_by ? (() => { try { const d = new Date(pr.needed_by); const mm = String(d.getMonth()+1).padStart(2,'0'); const dd = String(d.getDate()).padStart(2,'0'); const yy = d.getFullYear(); return `${mm}/${dd}/${yy}` } catch { return '-' } })() : '-'
+                              return (
+                                <tr key={pr.id} className="border-t border-neutral-soft/30">
+                                  <td className="px-4 py-2 text-sm text-neutral-dark">{pr.item_name}</td>
+                                  <td className="px-4 py-2 text-sm text-neutral-dark text-right">{pr.required_qty}</td>
+                                  <td className="px-4 py-2 text-sm text-neutral-dark">{needed}</td>
+                                  <td className="px-4 py-2 text-sm">
+                                    <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-semibold ${badge.cls}`}>{badge.label}</span>
+                                  </td>
+                                  <td className="px-4 py-2 text-sm text-neutral-medium">{timeAgo(pr.created_at)}</td>
+                                </tr>
+                              )
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
                 {(isViewOpen.notes || isViewOpen.comments) && (
                   <div className="space-y-1">
                     <label className="flex items-center text-xs font-semibold text-neutral-medium uppercase tracking-wide">

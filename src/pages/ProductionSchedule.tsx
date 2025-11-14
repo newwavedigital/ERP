@@ -1,6 +1,7 @@
 // src/pages/ProductionSchedule.tsx
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Calendar, X, Plus, Eye, Pencil, Trash2 } from "lucide-react";
+import { useLocation } from 'react-router-dom'
+import { Calendar, X, Plus, Eye, Pencil, Trash2, MoreVertical, AlertTriangle } from "lucide-react";
 import { supabase } from "../lib/supabase";
 
 // ─────────────────────────────────────────────────────────────
@@ -29,6 +30,8 @@ type BatchRow = {
   samples_received: boolean | null;
   samples_sent: string | null;      // ISO date
   created_at?: string;
+  source_po_id?: string | null;
+  source_po_line_id?: string | null;
 };
 
 type ScheduleItem = {
@@ -43,6 +46,7 @@ type ScheduleItem = {
   status: string;
   lot?: string;
   po?: string;
+  sourcePoId?: string | null;
 };
 
 // ─────────────────────────────────────────────────────────────
@@ -85,6 +89,7 @@ const fmtDate = (d?: string | null) => {
 // ─────────────────────────────────────────────────────────────
 const ProductionSchedule: React.FC = () => {
   const [open, setOpen] = useState(false);
+  const location = useLocation()
 
   // Reference datasets
   const [customers, setCustomers] = useState<Customer[]>([]);
@@ -92,6 +97,8 @@ const ProductionSchedule: React.FC = () => {
   const [selectedProduct, setSelectedProduct] = useState<{ id: string; product_name: string } | null>(null);
   const [isProductOpen, setIsProductOpen] = useState(false);
   const productRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLButtonElement | null>(null);
+  const menuPopupRef = useRef<HTMLDivElement | null>(null);
   const [formulas, setFormulas] = useState<Formula[]>([]);
 
   // Batches table
@@ -125,6 +132,9 @@ const ProductionSchedule: React.FC = () => {
   const [editItem, setEditItem] = useState<BatchRow | null>(null);
   const [savingEdit, setSavingEdit] = useState(false);
   const [delId, setDelId] = useState<string | null>(null);
+  const [highlightPoId, setHighlightPoId] = useState<string | null>(null)
+  const [menuRowId, setMenuRowId] = useState<string | null>(null)
+  const [menuPosition, setMenuPosition] = useState<{ top: number; left: number } | null>(null)
 
   // Notifications
   type Toast = { id: string; type: 'success' | 'error'; message: string }
@@ -145,6 +155,29 @@ const ProductionSchedule: React.FC = () => {
   }
   const [requirements, setRequirements] = useState<RequirementRow[]>([])
   const [reqLoading, setReqLoading] = useState(false)
+
+  // Shortage modal state
+  type ShortageRow = { material: string; required: number; available: number; shortage: number }
+  const [shortageInfo, setShortageInfo] = useState<{ batchId: string; shortages: ShortageRow[] } | null>(null)
+  const [prListOpenFor, setPrListOpenFor] = useState<string | null>(null)
+  const [prs, setPrs] = useState<any[]>([])
+  const [startDisabled, setStartDisabled] = useState<Record<string, boolean>>({})
+  const [shortagesCache, setShortagesCache] = useState<Record<string, ShortageRow[]>>({})
+  const [prExistsMap, setPrExistsMap] = useState<Record<string, boolean>>({})
+  const SHORTAGE_CACHE_PREFIX = 'batchShortages:'
+
+  const saveShortagesToCache = (batchId: string, shortages: ShortageRow[]) => {
+    try { localStorage.setItem(SHORTAGE_CACHE_PREFIX + batchId, JSON.stringify(shortages)) } catch {}
+  }
+  const removeShortagesFromCache = (batchId: string) => {
+    try { localStorage.removeItem(SHORTAGE_CACHE_PREFIX + batchId) } catch {}
+  }
+  const loadShortagesFromCache = (batchId: string): ShortageRow[] | null => {
+    try {
+      const raw = localStorage.getItem(SHORTAGE_CACHE_PREFIX + batchId)
+      return raw ? (JSON.parse(raw) as ShortageRow[]) : null
+    } catch { return null }
+  }
 
   // Memos for lookups
   const customersMap = useMemo(
@@ -169,7 +202,8 @@ const ProductionSchedule: React.FC = () => {
       supabase.from("customers").select("id, company_name").order("company_name"),
       supabase
         .from("products")
-        .select("id, product_name, product_image_url, unit_of_measure")
+        .select("id, product_name, product_image_url, unit_of_measure, product_type")
+        .eq('product_type', 'Finished Goods')
         .order("product_name", { ascending: true }),
       supabase.from("formulas").select("id, formula_name, product_id"),
     ]);
@@ -177,6 +211,19 @@ const ProductionSchedule: React.FC = () => {
     setProducts(p || []);
     setFormulas(f || []);
   };
+
+  // Helper: cast ID to number if numeric to satisfy RPC/query param types
+  const castBatchId = (v: string): any => (/^\d+$/.test(String(v)) ? Number(v) : v)
+
+  // Helper: sanitize PR note text to hide internal batch reference like 'for Batch-<uuid>'
+  const sanitizePrNote = (note?: string | null): string => {
+    if (!note) return ''
+    try {
+      return note.replace(/\s*for\s+Batch-[a-z0-9-]+/i, '').trim()
+    } catch {
+      return String(note)
+    }
+  }
 
   // Close product dropdown on outside click
   useEffect(() => {
@@ -189,13 +236,29 @@ const ProductionSchedule: React.FC = () => {
     return () => document.removeEventListener('mousedown', handler)
   }, [])
 
+  // Close row action menu on outside click
+  useEffect(() => {
+    if (!menuRowId) return
+    const handler = (e: MouseEvent) => {
+      const target = e.target as Node
+      const clickedInsideButton = !!(menuRef.current && menuRef.current.contains(target))
+      const clickedInsidePopup = !!(menuPopupRef.current && menuPopupRef.current.contains(target))
+      if (!clickedInsideButton && !clickedInsidePopup) {
+        setMenuRowId(null)
+        setMenuPosition(null)
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [menuRowId])
+
   const loadBatches = async () => {
     setLoading(true);
     try {
       const { data, error } = await supabase
         .from("production_batches")
         .select(
-          "id, product_sku, qty, room, start_date, end_date, status, required_capacity, assigned_line, flags, formula_id, customer_id, lot_number, po_number, completed_qty, samples_received, samples_sent, created_at"
+          "id, product_sku, qty, room, start_date, end_date, status, required_capacity, assigned_line, flags, formula_id, customer_id, lot_number, po_number, completed_qty, samples_received, samples_sent, created_at, source_po_id, source_po_line_id"
         )
         .order("start_date", { ascending: false })
         .limit(200);
@@ -214,6 +277,7 @@ const ProductionSchedule: React.FC = () => {
           status: r.status || "Scheduled",
           lot: r.lot_number || "",
           po: r.po_number || "",
+          sourcePoId: r.source_po_id || null,
         })) ?? [];
 
       setItems(mapped);
@@ -226,13 +290,20 @@ const ProductionSchedule: React.FC = () => {
   };
 
   useEffect(() => {
+    // Read poId from query string, if any
+    try {
+      const params = new URLSearchParams(location.search)
+      const poId = params.get('poId')
+      if (poId) setHighlightPoId(poId)
+    } catch {}
+
     // Load lookups first, then batches (so map has names)
     (async () => {
       await loadLookups();
       await loadBatches();
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [location.search]);
 
   // ───────── Helpers for create
   const selectedProductName = useMemo(() => {
@@ -263,8 +334,8 @@ const ProductionSchedule: React.FC = () => {
   // ───────── Create batch
   const onCreate = async () => {
     try {
-      if (!scheduledDate || !selectedProductId || !selectedCustomerId || !qty) {
-        return; // simple guard
+      if (!scheduledDate || !selectedCustomerId || !selectedProductId || !qty) {
+        return;
       }
 
       const productName = selectedProductName || "Product";
@@ -272,7 +343,7 @@ const ProductionSchedule: React.FC = () => {
       const doneQty = Number(completedQty || 0);
 
       const payload: Omit<BatchRow, "id"> = {
-        product_sku: productName, // keeping as text per schema
+        product_sku: productName,
         qty: goalQty,
         room: room || null,
         start_date: scheduledDate,
@@ -290,16 +361,31 @@ const ProductionSchedule: React.FC = () => {
         samples_sent: samplesSent || null,
       };
 
-      const { error } = await supabase.from("production_batches").insert(payload as any).select('id').single();
-      if (error) throw error;
+      // 1️⃣ Insert batch and get ID
+      const { data: created, error: insertErr } = await supabase
+        .from("production_batches")
+        .insert(payload)
+        .select("id")
+        .single();
 
+      if (insertErr) throw insertErr;
+
+      // 2️⃣ Generate required materials (IMPORTANT!)
+      const { error: reqErr } = await supabase.rpc(
+        "fn_generate_requirements_for_batch",
+        { p_batch_id: created.id }
+      );
+      if (reqErr) throw reqErr;
+
+      // 3️⃣ Finalize
       resetCreateForm();
       setOpen(false);
       await loadBatches();
-      pushToast({ type: 'success', message: 'Production schedule created' })
+      pushToast({ type: "success", message: "Production schedule created" });
+
     } catch (e) {
       console.warn("Create batch error:", e);
-      pushToast({ type: 'error', message: 'Failed to create schedule' })
+      pushToast({ type: "error", message: "Failed to create schedule" });
     }
   };
 
@@ -316,7 +402,7 @@ const ProductionSchedule: React.FC = () => {
     const { data, error } = await supabase
       .from("production_batches")
       .select(
-        "id, product_sku, qty, room, start_date, end_date, status, required_capacity, assigned_line, flags, formula_id, customer_id, lot_number, po_number, completed_qty, samples_received, samples_sent, created_at"
+        "id, product_sku, qty, room, start_date, end_date, status, required_capacity, assigned_line, flags, formula_id, customer_id, lot_number, po_number, completed_qty, samples_received, samples_sent, created_at, source_po_id, source_po_line_id"
       )
       .eq("id", id)
       .single();
@@ -342,19 +428,63 @@ const ProductionSchedule: React.FC = () => {
     if (!editItem) return;
     setSavingEdit(true);
     try {
-      const payload = { ...editItem } as any;
-      delete payload.created_at;
+      // Only send editable columns; avoid sending immutable/source link fields
+      const payload: any = {
+        product_sku: editItem.product_sku,
+        qty: editItem.qty,
+        room: editItem.room,
+        start_date: editItem.start_date,
+        end_date: editItem.end_date,
+        status: editItem.status,
+        required_capacity: editItem.required_capacity,
+        assigned_line: editItem.assigned_line,
+        flags: editItem.flags,
+        formula_id: editItem.formula_id,
+        customer_id: editItem.customer_id,
+        lot_number: editItem.lot_number,
+        po_number: editItem.po_number,
+        completed_qty: editItem.completed_qty,
+        samples_received: editItem.samples_received,
+        samples_sent: editItem.samples_sent,
+      };
       const { error } = await supabase
         .from("production_batches")
         .update(payload)
         .eq("id", editItem.id);
       if (error) throw error;
+      // Pull the updated row to reflect instantly without full reload
+      const { data: updated, error: selErr } = await supabase
+        .from("production_batches")
+        .select(
+          "id, product_sku, qty, room, start_date, end_date, status, required_capacity, assigned_line, flags, formula_id, customer_id, lot_number, po_number, completed_qty, samples_received, samples_sent, created_at, source_po_id, source_po_line_id"
+        )
+        .eq("id", editItem.id)
+        .single();
+      if (selErr) throw selErr;
+
+      // Update table row state
+      if (updated) {
+        const updatedRow: ScheduleItem = {
+          id: String(updated.id),
+          product: String(updated.product_sku || ""),
+          customer: customersMap.get(String(updated.customer_id || "")) || "",
+          formula: formulasMap.get(String(updated.formula_id || "")) || "",
+          qty: Number(updated.qty || 0),
+          completedQty: Number(updated.completed_qty || 0),
+          room: String(updated.room || updated.assigned_line || ""),
+          startDate: updated.start_date || "",
+          status: updated.status || "Scheduled",
+          lot: updated.lot_number || "",
+          po: updated.po_number || "",
+          sourcePoId: updated.source_po_id || null,
+        };
+        setItems(prev => prev.map(r => r.id === updatedRow.id ? updatedRow : r));
+      }
       setEditItem(null);
-      await loadBatches();
       pushToast({ type: 'success', message: 'Batch updated' })
-    } catch (e) {
+    } catch (e: any) {
       console.warn("Edit save error:", e);
-      pushToast({ type: 'error', message: 'Failed to update batch' })
+      pushToast({ type: 'error', message: `Failed to update batch: ${e?.message || e}` })
     } finally {
       setSavingEdit(false);
     }
@@ -393,28 +523,75 @@ const ProductionSchedule: React.FC = () => {
     return () => clearTimeout(t)
   }, [selectedFormulaId, qty])
 
+  // Restore shortage caches after batches load so UI persists across reload/navigation
+  useEffect(() => {
+    if (!items || items.length === 0) return
+    const nextDisabled: Record<string, boolean> = {}
+    const nextCache: Record<string, ShortageRow[]> = {}
+    for (const r of items) {
+      const s = loadShortagesFromCache(r.id)
+      if (s && s.length) {
+        nextDisabled[r.id] = true
+        nextCache[r.id] = s
+      }
+    }
+    if (Object.keys(nextDisabled).length) setStartDisabled(prev => ({ ...prev, ...nextDisabled }))
+    if (Object.keys(nextCache).length) setShortagesCache(prev => ({ ...prev, ...nextCache }))
+    // Also detect existing PRs for these batches to persist the indicator via DB
+    ;(async () => {
+      try {
+        const ids = items.map(i => castBatchId(i.id))
+        if (!ids.length) return
+        const { data } = await supabase
+          .from('purchase_requisitions')
+          .select('id, batch_id')
+          .in('batch_id', ids)
+        const map: Record<string, boolean> = {}
+        for (const pr of data || []) {
+          if (pr.batch_id) map[String(pr.batch_id)] = true
+        }
+        setPrExistsMap(map)
+      } catch {}
+    })()
+  }, [items])
+
   // ───────── Row actions (RPC)
   const onStartBatch = async (id: string) => {
     try {
-      const { error } = await supabase.rpc('fn_reserve_for_batch', { p_batch_id: id })
+      const { data, error } = await supabase.rpc('fn_reserve_for_batch', { p_batch_id: castBatchId(id) })
       if (error) throw error
+      // If API returns shortages object, show modal and disable Start for this row
+      if (data && typeof data === 'object' && (data as any).status === 'error' && Array.isArray((data as any).shortages)) {
+        const s = (data as any).shortages as ShortageRow[]
+        setShortageInfo({ batchId: id, shortages: s })
+        setStartDisabled(prev => ({ ...prev, [id]: true }))
+        setShortagesCache(prev => ({ ...prev, [id]: s }))
+        saveShortagesToCache(id, s)
+        pushToast({ type: 'error', message: 'Shortages detected. PRs created.' })
+        return
+      }
+      // Success path
       await loadBatches()
-      pushToast({ type: 'success', message: 'Batch started and materials reserved' })
-    } catch (e) {
-      console.warn(e)
-      pushToast({ type: 'error', message: 'Failed to start batch' })
+      pushToast({ type: 'success', message: 'Batch started successfully' })
+      // If batch can start, clear any cached shortage
+      removeShortagesFromCache(id)
+      setStartDisabled(prev => { const n = { ...prev }; delete n[id]; return n })
+      setShortagesCache(prev => { const n = { ...prev }; delete n[id]; return n })
+    } catch (e: any) {
+      console.warn('Start batch error:', e)
+      pushToast({ type: 'error', message: `Failed to start batch: ${e?.message || e}` })
     }
   }
 
   const onCancelBatch = async (id: string) => {
     try {
-      const { error } = await supabase.rpc('fn_release_reservations', { p_batch_id: id })
+      const { error } = await supabase.rpc('fn_release_reservations', { p_batch_id: castBatchId(id) })
       if (error) throw error
       await loadBatches()
       pushToast({ type: 'success', message: 'Batch cancelled and materials released' })
-    } catch (e) {
-      console.warn(e)
-      pushToast({ type: 'error', message: 'Failed to cancel batch' })
+    } catch (e: any) {
+      console.warn('Cancel batch error:', e)
+      pushToast({ type: 'error', message: `Failed to cancel batch: ${e?.message || e}` })
     }
   }
 
@@ -423,21 +600,21 @@ const ProductionSchedule: React.FC = () => {
   const confirmComplete = async () => {
     if (!completeId) return
     try {
-      const { error } = await supabase.rpc('fn_complete_batch', { p_batch_id: completeId, p_completed_qty: Number(completeQty || 0) })
+      const { error } = await supabase.rpc('fn_complete_batch', { p_batch_id: castBatchId(completeId), p_completed_qty: Number(completeQty || 0) })
       if (error) throw error
       setCompleteId(null)
       setCompleteQty('0')
       await loadBatches()
       pushToast({ type: 'success', message: 'Batch completed' })
-    } catch (e) {
-      console.warn(e)
-      pushToast({ type: 'error', message: 'Failed to complete batch' })
+    } catch (e: any) {
+      console.warn('Complete batch error:', e)
+      pushToast({ type: 'error', message: `Failed to complete batch: ${e?.message || e}` })
     }
   }
 
   const onGeneratePO = async (id: string) => {
     try {
-      const { error } = await supabase.rpc('fn_generate_po_for_batch_shortages', { p_batch_id: id })
+      const { error } = await supabase.rpc('fn_generate_po_for_batch_shortages', { p_batch_id: castBatchId(id) })
       if (error) throw error
       pushToast({ type: 'success', message: 'Purchase Orders generated for shortages' })
     } catch (e) {
@@ -535,7 +712,7 @@ const ProductionSchedule: React.FC = () => {
 
         {/* Table */}
         {filtered.length > 0 && (
-          <div className="bg-white rounded-2xl shadow-md border border-neutral-soft/20 overflow-hidden">
+          <div className="bg-white rounded-2xl shadow-md border border-neutral-soft/20">
             <div className="overflow-x-auto">
               <table className="min-w-full divide-y divide-neutral-soft">
                 <thead className="bg-neutral-light/60">
@@ -544,19 +721,10 @@ const ProductionSchedule: React.FC = () => {
                       Product
                     </th>
                     <th className="px-6 py-3 text-left text-xs font-semibold text-neutral-medium uppercase tracking-wider">
-                      Customer
-                    </th>
-                    <th className="px-6 py-3 text-left text-xs font-semibold text-neutral-medium uppercase tracking-wider">
-                      Formula
-                    </th>
-                    <th className="px-6 py-3 text-left text-xs font-semibold text-neutral-medium uppercase tracking-wider">
                       Qty Goal
                     </th>
                     <th className="px-6 py-3 text-left text-xs font-semibold text-neutral-medium uppercase tracking-wider">
                       Completed
-                    </th>
-                    <th className="px-6 py-3 text-left text-xs font-semibold text-neutral-medium uppercase tracking-wider">
-                      Room
                     </th>
                     <th className="px-6 py-3 text-left text-xs font-semibold text-neutral-medium uppercase tracking-wider">
                       Start Date
@@ -568,27 +736,28 @@ const ProductionSchedule: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody className="bg-white divide-y divide-neutral-soft">
-                  {filtered.map((row) => (
-                    <tr key={row.id} className="hover:bg-neutral-light/40">
+                  {filtered.map((row) => {
+                    const isHighlighted = highlightPoId && row.sourcePoId && String(row.sourcePoId) === highlightPoId
+                    return (
+                    <tr
+                      key={row.id}
+                      className={
+                        isHighlighted
+                          ? "bg-teal-50/60 hover:bg-teal-50 border-l-4 border-teal-400"
+                          : "hover:bg-neutral-light/40"
+                      }
+                      onClick={() => { setHighlightPoId(null); setMenuRowId(null); setMenuPosition(null); }}
+                    >
                       <td className="px-6 py-4 whitespace-nowrap">
                         <div className="text-sm font-medium text-neutral-dark">
                           {row.product}
                         </div>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-neutral-dark">
-                        {row.customer}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-neutral-dark">
-                        {row.formula}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-neutral-dark">
                         {row.qty}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-neutral-dark">
                         {row.completedQty}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-neutral-dark">
-                        {row.room}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-neutral-dark">
                         {fmtDate(row.startDate)}
@@ -603,20 +772,245 @@ const ProductionSchedule: React.FC = () => {
                         </span>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm">
-                        <div className="flex items-center gap-2">
-                          <button className="p-2 rounded-md hover:bg-neutral-light" onClick={() => setViewItem(row)} title="View"><Eye className="h-4 w-4"/></button>
-                          <button className="p-2 rounded-md hover:bg-neutral-light" onClick={async ()=>{ const full = await fetchRowById(row.id); setEditItem(full) }} title="Edit"><Pencil className="h-4 w-4"/></button>
-                          <button className="p-2 rounded-md hover:bg-red-50 text-accent-danger" onClick={() => setDelId(row.id)} title="Delete"><Trash2 className="h-4 w-4"/></button>
-                          <button className="px-3 py-1.5 rounded-md bg-blue-50 text-blue-700 hover:bg-blue-100" onClick={() => onStartBatch(row.id)}>Start</button>
-                          <button className="px-3 py-1.5 rounded-md bg-neutral-light text-neutral-dark hover:bg-neutral-soft" onClick={() => onCancelBatch(row.id)}>Cancel</button>
-                          <button className="px-3 py-1.5 rounded-md bg-green-50 text-green-700 hover:bg-green-100" onClick={() => setCompleteId(row.id)}>Complete</button>
-                          <button className="px-3 py-1.5 rounded-md bg-amber-50 text-amber-700 hover:bg-amber-100" onClick={() => onGeneratePO(row.id)}>Auto-PO</button>
+                        <div className="flex items-center justify-end gap-3">
+                          {/* Action buttons horizontal, smaller */}
+                          <div className="flex flex-row gap-1">
+                            <button
+                              className="px-2.5 py-1 rounded-md bg-blue-50 text-blue-700 hover:bg-blue-100 text-[11px]"
+                              disabled={!!(startDisabled[row.id] || shortagesCache[row.id] || prExistsMap[row.id])}
+                              onClick={(e) => { e.stopPropagation(); onStartBatch(row.id); }}
+                            >
+                              Start
+                            </button>
+                            {shortagesCache[row.id] && (
+                              <button
+                                className="px-2.5 py-1 rounded-md bg-red-50 text-red-700 hover:bg-red-100 text-[11px]"
+                                onClick={(e) => { e.stopPropagation(); setShortageInfo({ batchId: row.id, shortages: shortagesCache[row.id] }); }}
+                                title="View detected material shortages"
+                              >
+                                View Shortage
+                              </button>
+                            )}
+                            {!shortagesCache[row.id] && prExistsMap[row.id] && (
+                              <button
+                                className="px-2.5 py-1 rounded-md bg-amber-50 text-amber-700 hover:bg-amber-100 text-[11px]"
+                                onClick={async (e) => { 
+                                  e.stopPropagation(); 
+                                  const { data } = await supabase
+                                    .from('purchase_requisitions')
+                                    .select('id, item_name, required_qty, needed_by, status, created_at, notes')
+                                    .eq('batch_id', row.id)
+                                    .order('created_at', { ascending: false })
+                                  setPrs(data || [])
+                                  setPrListOpenFor(row.id)
+                                }}
+                                title="View auto-created PRs for this batch"
+                              >
+                                View PRs
+                              </button>
+                            )}
+                            <button
+                              className="px-2.5 py-1 rounded-md bg-neutral-light text-neutral-dark hover:bg-neutral-soft text-[11px]"
+                              onClick={(e) => { e.stopPropagation(); onCancelBatch(row.id); }}
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              className="px-2.5 py-1 rounded-md bg-green-50 text-green-700 hover:bg-green-100 text-[11px]"
+                              onClick={(e) => { e.stopPropagation(); setCompleteId(row.id); }}
+                            >
+                              Complete
+                            </button>
+                            <button
+                              className="px-2.5 py-1 rounded-md bg-amber-50 text-amber-700 hover:bg-amber-100 text-[11px]"
+                              onClick={(e) => { e.stopPropagation(); onGeneratePO(row.id); }}
+                            >
+                              Auto-PO
+                            </button>
+                          </div>
+
+                          {/* More menu for view/edit/delete */}
+                          <div className="relative">
+                            <button
+                              ref={menuRef}
+                              className="p-2 rounded-full hover:bg-neutral-light"
+                              onClick={(e) => { 
+                                e.stopPropagation(); 
+                                if (menuRowId === row.id) {
+                                  setMenuRowId(null);
+                                  setMenuPosition(null);
+                                } else {
+                                  const rect = e.currentTarget.getBoundingClientRect();
+                                  setMenuPosition({
+                                    top: rect.bottom + 4,
+                                    left: rect.right - 128 // 128px = w-32
+                                  });
+                                  setMenuRowId(row.id);
+                                }
+                              }}
+                              title="More actions"
+                            >
+                              <MoreVertical className="h-4 w-4" />
+                            </button>
+                          </div>
                         </div>
                       </td>
                     </tr>
-                  ))}
+                  )})}
                 </tbody>
               </table>
+            </div>
+          </div>
+        )}
+
+        {/* Fixed positioned dropdown menu */}
+        {menuRowId && menuPosition && (
+          <div 
+            ref={menuPopupRef}
+            className="fixed w-32 bg-white border border-neutral-soft rounded-lg shadow-lg z-50 text-xs"
+            style={{ 
+              top: `${menuPosition.top}px`, 
+              left: `${menuPosition.left}px` 
+            }}
+          >
+            <button
+              className="w-full flex items-center px-3 py-2 hover:bg-neutral-light/60"
+              onClick={(e) => { 
+                e.stopPropagation(); 
+                const row = filtered.find(r => r.id === menuRowId);
+                if (row) setViewItem(row); 
+                setMenuRowId(null);
+                setMenuPosition(null);
+              }}
+            >
+              <Eye className="h-3.5 w-3.5 mr-2" /> View
+            </button>
+            <button
+              className="w-full flex items-center px-3 py-2 hover:bg-neutral-light/60"
+              onClick={async (e) => {
+                e.stopPropagation();
+                if (menuRowId) {
+                  const full = await fetchRowById(menuRowId);
+                  setEditItem(full);
+                }
+                setMenuRowId(null);
+                setMenuPosition(null);
+              }}
+            >
+              <Pencil className="h-3.5 w-3.5 mr-2" /> Edit
+            </button>
+            <button
+              className="w-full flex items-center px-3 py-2 hover:bg-red-50 text-accent-danger"
+              onClick={(e) => { 
+                e.stopPropagation(); 
+                setDelId(menuRowId); 
+                setMenuRowId(null);
+                setMenuPosition(null);
+              }}
+            >
+              <Trash2 className="h-3.5 w-3.5 mr-2" /> Delete
+            </button>
+          </div>
+        )}
+
+        {/* Shortage Modal */}
+        {shortageInfo && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-black/50" onClick={() => setShortageInfo(null)}></div>
+            <div className="relative z-10 w-full max-w-3xl bg-white rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden">
+              <div className="px-6 py-4 border-b flex items-center gap-3">
+                <div className="w-8 h-8 rounded-full bg-red-100 text-red-600 flex items-center justify-center">
+                  <AlertTriangle className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-semibold text-neutral-dark">Production Cannot Start – Material Shortage Detected</h3>
+                  <p className="text-sm text-neutral-medium">This batch cannot begin production because required raw materials are insufficient.</p>
+                </div>
+              </div>
+              <div className="p-6 space-y-4">
+                <div className="overflow-x-auto">
+                  <table className="min-w-full text-sm">
+                    <thead>
+                      <tr className="bg-neutral-light/50">
+                        <th className="px-4 py-2 text-left border border-neutral-soft">Material</th>
+                        <th className="px-4 py-2 text-right border border-neutral-soft">Required Qty</th>
+                        <th className="px-4 py-2 text-right border border-neutral-soft">Available Qty</th>
+                        <th className="px-4 py-2 text-right border border-neutral-soft">Shortage</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {shortageInfo.shortages.map((s, idx) => (
+                        <tr key={idx}>
+                          <td className="px-4 py-2 border border-neutral-soft">{s.material}</td>
+                          <td className="px-4 py-2 text-right border border-neutral-soft">{s.required}</td>
+                          <td className="px-4 py-2 text-right border border-neutral-soft">{s.available}</td>
+                          <td className="px-4 py-2 text-right border border-neutral-soft text-accent-danger font-semibold">{s.shortage}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="text-xs text-neutral-medium">Auto-generated purchase requisitions have been created for these items.</div>
+                <div className="flex justify-end gap-3 pt-2">
+                  <button
+                    className="px-5 py-2 rounded-lg bg-primary-dark hover:bg-primary-medium text-white text-sm"
+                    onClick={async () => {
+                      // Load PRs for this batch
+                      const { data } = await supabase
+                        .from('purchase_requisitions')
+                        .select('id, item_name, required_qty, needed_by, status, created_at, notes')
+                        .eq('batch_id', shortageInfo.batchId)
+                        .order('created_at', { ascending: false })
+                      setPrs(data || [])
+                      setPrListOpenFor(shortageInfo.batchId)
+                    }}
+                  >
+                    View Purchase Requisitions
+                  </button>
+                  <button className="px-4 py-2 rounded-lg border" onClick={() => setShortageInfo(null)}>Close</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* PR List Modal (message layout) */}
+        {prListOpenFor && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-black/50" onClick={() => setPrListOpenFor(null)}></div>
+            <div className="relative z-10 w-full max-w-3xl bg-white rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden">
+              <div className="px-6 py-4 border-b flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 rounded-full bg-amber-100 text-amber-700 flex items-center justify-center">
+                    <AlertTriangle className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="text-lg font-semibold">Purchase Requisitions Created</h3>
+                    <p className="text-xs text-neutral-medium">These requisitions were auto-generated due to material shortages. Records are read-only.</p>
+                  </div>
+                </div>
+                <button className="p-2" onClick={() => setPrListOpenFor(null)}><X className="h-5 w-5"/></button>
+              </div>
+              <div className="p-6 space-y-4">
+                {prs.length === 0 && (
+                  <div className="text-sm text-neutral-medium">No purchase requisitions found for this batch.</div>
+                )}
+                {prs.map((p: any) => (
+                  <div key={p.id} className="rounded-xl border border-neutral-soft bg-neutral-light/40 p-4">
+                    <div className="text-sm text-neutral-dark">
+                      <p className="mb-1"><span className="font-semibold">Item:</span> {p.item_name}</p>
+                      <p className="mb-1"><span className="font-semibold">Required Qty:</span> {p.required_qty}</p>
+                      <p className="mb-1"><span className="font-semibold">Needed By:</span> {fmtDate(p.needed_by)}</p>
+                      <p className="mb-1"><span className="font-semibold">Status:</span> {p.status}</p>
+                      <p className="mb-1"><span className="font-semibold">Created:</span> {fmtDate(p.created_at)}</p>
+                      {p.notes && (
+                        <p className="mt-2 text-[13px] text-neutral-dark"><span className="font-semibold">Notes:</span> {sanitizePrNote(p.notes)}</p>
+                      )}
+                    </div>
+                  </div>
+                ))}
+                <div className="pt-2 text-xs text-neutral-medium">For audit purposes, these entries cannot be modified or deleted from this screen.</div>
+              </div>
             </div>
           </div>
         )}
@@ -937,6 +1331,34 @@ const ProductionSchedule: React.FC = () => {
                   </div>
 
                   <div>
+                    <label className="text-sm font-medium">Customer</label>
+                    <select
+                      value={editItem.customer_id || ''}
+                      onChange={(e) => setEditItem({ ...editItem, customer_id: e.target.value || null })}
+                      className="w-full px-3 py-2 border rounded-lg bg-white"
+                    >
+                      <option value="">Select Customer</option>
+                      {customers.map(c => (
+                        <option key={c.id} value={c.id}>{c.company_name}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="text-sm font-medium">Formula</label>
+                    <select
+                      value={editItem.formula_id || ''}
+                      onChange={(e) => setEditItem({ ...editItem, formula_id: e.target.value || null })}
+                      className="w-full px-3 py-2 border rounded-lg bg-white"
+                    >
+                      <option value="">Select Formula</option>
+                      {formulas.map(f => (
+                        <option key={f.id} value={f.id}>{f.formula_name}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
                     <label className="text-sm font-medium">Completed</label>
                     <input
                       type="number"
@@ -948,11 +1370,15 @@ const ProductionSchedule: React.FC = () => {
 
                   <div>
                     <label className="text-sm font-medium">Room</label>
-                    <input
-                      value={editItem.room || ""}
+                    <select
+                      value={editItem.room || ''}
                       onChange={(e) => setEditItem({ ...editItem, room: e.target.value, assigned_line: e.target.value })}
-                      className="w-full px-3 py-2 border rounded-lg"
-                    />
+                      className="w-full px-3 py-2 border rounded-lg bg-white"
+                    >
+                      {roomsList.map(r => (
+                        <option key={r} value={r}>{r}</option>
+                      ))}
+                    </select>
                   </div>
 
                   <div>

@@ -50,9 +50,15 @@ const Inventory: React.FC = () => {
   const [deleting, setDeleting] = useState<boolean>(false)
   const [toast, setToast] = useState<{ show: boolean; message: string }>({ show: false, message: '' })
   // Finished goods state
-  const [fg, setFg] = useState<Array<{ id: string; product_name: string; available_qty: number; reserved_qty: number; location?: string | null }>>([])
+  const [fg, setFg] = useState<Array<{ id: string; product_name: string; available_qty: number; reserved_qty: number; location?: string | null; reorder_point?: number | null; updated_at?: string | null }>>([])
   const [fgLoading, setFgLoading] = useState<boolean>(false)
+  const [fgRefreshing, setFgRefreshing] = useState<boolean>(false)
   const [fgError, setFgError] = useState<string | null>(null)
+  const [fgLastSynced, setFgLastSynced] = useState<string>('')
+  const [highlightedRows, setHighlightedRows] = useState<Record<string, number>>({})
+  const [recentlyAllocated, setRecentlyAllocated] = useState<Record<string, boolean>>({})
+  const [fgBanner, setFgBanner] = useState<{ show: boolean; count: number; poNumber?: string | null }>({ show: false, count: 0, poNumber: null })
+  const [fgPoMap, setFgPoMap] = useState<Record<string, { po_id: string; customer_name: string }>>({})
   // Reservation history modal state
   const [isHistoryOpen, setIsHistoryOpen] = useState<boolean>(false)
   const [historyData, setHistoryData] = useState<Array<{ po_id: string; line_id: string; qty: number; created_at: string }>>([])
@@ -114,31 +120,112 @@ const Inventory: React.FC = () => {
     loadHistory()
   }, [isHistoryOpen, selectedMaterial])
 
-  // Load finished goods and allocated summary
+  // Load finished goods with safe ordering and robust error handling
   const loadFinished = React.useCallback(async () => {
     if (!supabase) return
     setFgLoading(true)
     setFgError(null)
-    // finished_goods
-    const { data: fData, error: fErr } = await supabase
-      .from('finished_goods')
-      .select('id, product_name, available_qty, reserved_qty, location')
-      .order('product_name', { ascending: true })
-    if (fErr) {
+    try {
+      const { data, error } = await supabase
+        .from('finished_goods')
+        .select('id, product_name, available_qty, reserved_qty, location, updated_at')
+        .order('product_name', { ascending: true, nullsFirst: true })
+
+      if (error) {
+        setFg([])
+        setFgError('Cannot load finished goods')
+        setFgLoading(false)
+        setFgRefreshing(false)
+        return
+      }
+
+      const items = (data ?? []).map((r: any) => ({
+        id: String(r.id),
+        product_name: String(r.product_name ?? ''),
+        available_qty: Number(r.available_qty ?? 0),
+        reserved_qty: Number(r.reserved_qty ?? 0),
+        location: r.location ?? null,
+        updated_at: r.updated_at ?? null,
+      }))
+
+      setFg(items)
+      // Fetch latest PO and customer for these products
+      try {
+        const names = Array.from(new Set(items.map((i) => i.product_name).filter(Boolean)))
+        if (names.length) {
+          const { data: pol } = await supabase
+            .from('purchase_order_lines')
+            .select('purchase_order_id, product_name, created_at, update_at')
+            .in('product_name', names)
+          const poIds = Array.from(new Set((pol ?? []).map((l: any) => String(l.purchase_order_id)).filter(Boolean)))
+          let poRows: any[] = []
+          if (poIds.length) {
+            const { data: poData } = await supabase
+              .from('purchase_orders')
+              .select('id, customer_name, status, created_at')
+              .in('id', poIds)
+            poRows = poData ?? []
+          }
+          const poIndex = new Map(poRows.map((p: any) => [String(p.id), p]))
+          const map: Record<string, { po_id: string; customer_name: string }> = {}
+          ;(pol ?? []).sort((a: any, b: any) => new Date(b.update_at || b.created_at || 0).getTime() - new Date(a.update_at || a.created_at || 0).getTime())
+            .forEach((l: any) => {
+              const p = poIndex.get(String(l.purchase_order_id))
+              if (!p) return
+              const st = String(p.status || '').toLowerCase()
+              if (st === 'canceled' || st === 'closed') return
+              const key = String(l.product_name || '')
+              if (!map[key]) map[key] = { po_id: String(p.id), customer_name: String(p.customer_name || '') }
+            })
+          setFgPoMap(map)
+        } else {
+          setFgPoMap({})
+        }
+      } catch {
+        setFgPoMap({})
+      }
+      setFgLoading(false)
+      setFgRefreshing(false)
+      setFgLastSynced(new Date().toLocaleString())
+    } catch {
+      setFg([])
       setFgError('Cannot load finished goods')
       setFgLoading(false)
-      return
+      setFgRefreshing(false)
     }
-    const items = (fData ?? []).map((r: any) => ({ id: String(r.id), product_name: String(r.product_name ?? ''), available_qty: Number(r.available_qty ?? 0), reserved_qty: Number(r.reserved_qty ?? 0), location: r.location ?? null }))
-    setFg(items)
-    setFgLoading(false)
   }, [])
 
   useEffect(() => {
     loadFinished()
     const channel = supabase
       ?.channel('realtime-finished-goods')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'finished_goods' }, () => {
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'finished_goods' }, async (payload: any) => {
+        const oldRow: any = payload?.old || {}
+        const newRow: any = payload?.new || {}
+        const oldRes = Number(oldRow?.reserved_qty ?? 0)
+        const newRes = Number(newRow?.reserved_qty ?? 0)
+        if (newRes !== oldRes) {
+          // mark row highlight
+          const key = String(newRow?.product_name || newRow?.id)
+          setHighlightedRows((prev) => ({ ...prev, [key]: Date.now() }))
+          setRecentlyAllocated((prev) => ({ ...prev, [key]: newRes > oldRes }))
+          // try get latest po_number from reservation log
+          let poNumber: string | null = null
+          try {
+            const { data } = await supabase
+              .from('inventory_reservations')
+              .select('po_id')
+              .order('created_at', { ascending: false })
+              .limit(1)
+            if (data && data.length > 0) poNumber = String(data[0].po_id)
+          } catch {}
+          setFgBanner({ show: true, count: 1, poNumber })
+          // auto hide banner after 5s
+          setTimeout(() => setFgBanner((b) => ({ ...b, show: false })), 5000)
+          // remove highlight after 5s
+          setTimeout(() => setHighlightedRows((prev) => { const p = { ...prev }; delete p[key]; return p }), 5000)
+        }
+        // refresh table
         loadFinished()
       })
       .subscribe()
@@ -526,9 +613,17 @@ const Inventory: React.FC = () => {
             <div className="px-6 py-4 bg-gradient-to-r from-neutral-light/60 via-neutral-light/40 to-neutral-soft/30 border-b border-neutral-soft/40">
               <div className="flex items-center justify-between">
                 <h3 className="text-lg font-semibold text-neutral-dark">Finished Goods Inventory</h3>
-                <button onClick={() => loadFinished()} className="px-3 py-2 text-sm border border-neutral-soft rounded-lg hover:bg-neutral-light/40">Refresh</button>
+                <button onClick={async () => { setFgRefreshing(true); await loadFinished() }} className="px-3 py-2 text-sm border border-neutral-soft rounded-lg hover:bg-neutral-light/40 min-w-[120px] flex items-center justify-center gap-2">
+                  {fgRefreshing ? <span className="animate-spin inline-block w-4 h-4 border-2 border-primary-medium border-t-transparent rounded-full" /> : null}
+                  <span>{fgRefreshing ? 'Refreshing…' : 'Refresh Inventory'}</span>
+                </button>
               </div>
             </div>
+            {fgBanner.show && (
+              <div className="mx-6 mt-4 mb-0 p-3 rounded-lg border border-teal-300 bg-teal-50 text-teal-700 text-sm">
+                ✅ Finished Goods updated — {fgBanner.count} item(s) reserved{fgBanner.poNumber ? ` for PO #${fgBanner.poNumber}` : ''}.
+              </div>
+            )}
             {fgLoading ? (
               <div className="p-10 text-center text-neutral-medium">Loading…</div>
             ) : fgError ? (
@@ -537,27 +632,38 @@ const Inventory: React.FC = () => {
               <div className="p-10 text-center text-neutral-medium">No finished goods found</div>
             ) : (
               <div className="overflow-x-auto">
-                <table className="min-w-full">
+                <table className="min-w-full table-fixed">
                   <thead>
                     <tr className="bg-gradient-to-r from-neutral-light/60 via-neutral-light/40 to-neutral-soft/30 border-b-2 border-neutral-soft/50">
-                      <th className="px-6 py-4 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">Product</th>
-                      <th className="px-6 py-4 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">Location</th>
-                      <th className="px-6 py-4 text-right text-xs font-bold text-neutral-dark uppercase tracking-wider">Available</th>
-                      <th className="px-6 py-4 text-right text-xs font-bold text-neutral-dark uppercase tracking-wider">Reserved</th>
-                      <th className="px-6 py-4 text-right text-xs font-bold text-neutral-dark uppercase tracking-wider">Net Available</th>
+                      <th className="px-6 py-4 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider whitespace-nowrap">Product</th>
+                      <th className="px-6 py-4 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider whitespace-nowrap">Location</th>
+                      <th className="px-6 py-4 text-right text-xs font-bold text-neutral-dark uppercase tracking-wider whitespace-nowrap w-28">Available Qty</th>
+                      <th className="px-6 py-4 text-right text-xs font-bold text-neutral-dark uppercase tracking-wider whitespace-nowrap w-28">Reserved Qty</th>
+                      <th className="px-6 py-4 text-center text-xs font-bold text-neutral-dark uppercase tracking-wider whitespace-nowrap w-32">Status</th>
+                      <th className="px-6 py-4 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider whitespace-nowrap">Customer</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-neutral-soft/20">
                     {fg.map(item => {
                       const allocated = Number(item.reserved_qty || 0)
-                      const net = Number(item.available_qty || 0) - allocated
+                      const key = item.product_name || item.id
+                      const highlighted = highlightedRows[key] !== undefined
+                      const hasStock = Number(item.available_qty || 0) > 0
+                      const status = hasStock ? 'Sufficient' : 'No Stock'
+                      const statusColor = hasStock ? 'text-emerald-600' : 'text-accent-danger'
                       return (
-                        <tr key={item.id} className="hover:bg-neutral-light/20 transition">
-                          <td className="px-6 py-4 text-sm text-neutral-dark font-medium">{item.product_name}</td>
-                          <td className="px-6 py-4 text-sm text-neutral-dark">{item.location || '—'}</td>
-                          <td className="px-6 py-4 text-sm text-neutral-dark text-right">{item.available_qty}</td>
-                          <td className="px-6 py-4 text-sm text-neutral-dark text-right">{allocated}</td>
-                          <td className="px-6 py-4 text-sm text-neutral-dark text-right">{net}</td>
+                        <tr key={item.id} className={`transition ${highlighted ? 'ring-2 ring-teal-400/70 ring-offset-2 ring-offset-teal-50 bg-teal-50/30' : 'hover:bg-neutral-light/20'}`}>
+                          <td className="px-6 py-4 text-sm text-neutral-dark font-medium flex items-center gap-2 whitespace-nowrap">
+                            {item.product_name}
+                            {recentlyAllocated[key] && highlighted && (
+                              <span className="ml-2 text-xs px-2 py-0.5 rounded-full bg-teal-100 text-teal-700 border border-teal-300">Recently Allocated</span>
+                            )}
+                          </td>
+                          <td className="px-6 py-4 text-sm text-neutral-dark whitespace-nowrap">{item.location || '—'}</td>
+                          <td className="px-6 py-4 text-sm text-neutral-dark text-right whitespace-nowrap">{item.available_qty}</td>
+                          <td className="px-6 py-4 text-sm text-neutral-dark text-right whitespace-nowrap">{allocated}</td>
+                          <td className={`px-6 py-4 text-sm font-medium text-center whitespace-nowrap ${statusColor}`}>{status}</td>
+                          <td className="px-6 py-4 text-sm text-neutral-dark whitespace-nowrap">{fgPoMap[item.product_name]?.customer_name || '—'}</td>
                         </tr>
                       )
                     })}
@@ -565,6 +671,9 @@ const Inventory: React.FC = () => {
                 </table>
               </div>
             )}
+            <div className="px-6 py-3 text-xs text-neutral-medium border-t border-neutral-soft/40 bg-white/60 flex items-center gap-2">
+              <Clock className="w-3.5 h-3.5" /> Last synced at {fgLastSynced || '—'}
+            </div>
           </div>
         ) : (
           <>

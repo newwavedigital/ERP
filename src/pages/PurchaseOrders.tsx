@@ -44,7 +44,8 @@ const PurchaseOrders: React.FC = () => {
   const [showBackorderAdvisory, setShowBackorderAdvisory] = useState(false)
   const [viewLines, setViewLines] = useState<Array<{ product_name: string; quantity: number; allocated_qty: number; shortfall_qty: number; status: string }>>([])
   const [viewLoading, setViewLoading] = useState(false)
-  const [viewPrs, setViewPrs] = useState<Array<{ id: string; item_name: string; required_qty: number; needed_by: string | null; status: string; created_at: string | null }>>([])
+  const [viewShipments, setViewShipments] = useState<any[]>([])
+  const [viewPrs, setViewPrs] = useState<Array<{ id: string; item_name: string; required_qty: number; needed_by: string | null; status: string; created_at: string | null; notes?: string | null }>>([])
   const [viewPrLoading, setViewPrLoading] = useState(false)
   const [form, setForm] = useState({
     date: '',
@@ -107,6 +108,136 @@ const PurchaseOrders: React.FC = () => {
     loadLines()
   }, [isViewOpen?.id])
 
+  // Load shipments when View modal opens
+  useEffect(() => {
+    const loadShipments = async () => {
+      try {
+        setViewShipments([])
+        if (!isViewOpen?.id) return
+        const poId = String(isViewOpen.id)
+        // Ensure po_line_id belongs to this PO
+        const { data: pol } = await supabase
+          .from('purchase_order_lines')
+          .select('id')
+          .eq('purchase_order_id', poId)
+        const lineIds = Array.isArray(pol) ? pol.map((r:any)=> String(r.id)) : []
+        if (lineIds.length === 0) { setViewShipments([]); return }
+        const { data, error } = await supabase
+          .from('shipments')
+          .select('id, po_id, po_line_id, shipped_qty, shipment_date, eta, status, notes')
+          .eq('po_id', poId)
+          .in('po_line_id', lineIds)
+          .order('shipment_date', { ascending: true })
+        if (!error && Array.isArray(data)) setViewShipments(data)
+      } catch {}
+    }
+    loadShipments()
+  }, [isViewOpen?.id])
+
+  // Realtime: auto-refresh lines, shipments, and PRs for this PO
+  useEffect(() => {
+    if (!isViewOpen?.id) return
+    const poId = String(isViewOpen.id)
+
+    const refreshLines = async () => {
+      try {
+        const { data } = await supabase
+          .from('purchase_order_lines')
+          .select('product_name, quantity, allocated_qty, shortfall_qty, status')
+          .eq('purchase_order_id', poId)
+          .order('created_at', { ascending: true })
+        setViewLines((data || []).map((r: any) => ({
+          product_name: String(r.product_name || ''),
+          quantity: Number(r.quantity || 0),
+          allocated_qty: Number(r.allocated_qty || 0),
+          shortfall_qty: Number(r.shortfall_qty || 0),
+          status: String(r.status || ''),
+        })))
+      } catch {}
+    }
+
+    const refreshShipments = async () => {
+      try {
+        const { data: pol } = await supabase
+          .from('purchase_order_lines')
+          .select('id')
+          .eq('purchase_order_id', poId)
+        const lineIds = Array.isArray(pol) ? pol.map((r:any)=> String(r.id)) : []
+        if (lineIds.length === 0) { setViewShipments([]); return }
+        const { data } = await supabase
+          .from('shipments')
+          .select('id, po_id, po_line_id, shipped_qty, shipment_date, eta, status, notes')
+          .eq('po_id', poId)
+          .in('po_line_id', lineIds)
+          .order('shipment_date', { ascending: true })
+        setViewShipments(data || [])
+      } catch {}
+    }
+
+    const refreshPrs = async () => {
+      try {
+        const { data: batches } = await supabase
+          .from('production_batches')
+          .select('id')
+          .eq('source_po_id', poId)
+        const batchIds: string[] = Array.isArray(batches) ? batches.map((b: any) => String(b.id)) : []
+
+        const { data: prByPo } = await supabase
+          .from('purchase_requisitions')
+          .select('id, item_name, required_qty, needed_by, status, created_at, notes')
+          .eq('po_id', poId)
+          .order('created_at', { ascending: false })
+
+        let prByBatch: any[] = []
+        if (batchIds.length > 0) {
+          const { data: pr2 } = await supabase
+            .from('purchase_requisitions')
+            .select('id, item_name, required_qty, needed_by, status, created_at, notes')
+            .in('batch_id', batchIds)
+            .order('created_at', { ascending: false })
+          prByBatch = Array.isArray(pr2) ? pr2 : []
+        }
+
+        let all: any[] = [...(prByPo || []), ...prByBatch]
+        if (all.length === 0) {
+          const { data: prByNotes } = await supabase
+            .from('purchase_requisitions')
+            .select('id, item_name, required_qty, needed_by, status, created_at, notes')
+            .ilike('notes', `%${poId}%`)
+            .order('created_at', { ascending: false })
+          if (Array.isArray(prByNotes)) all = [...all, ...prByNotes]
+        }
+        const seen = new Set<string>()
+        const uniq = all.filter((r: any) => { const id = String(r.id); if (seen.has(id)) return false; seen.add(id); return true })
+        setViewPrs(uniq.map((r: any) => ({
+          id: String(r.id),
+          item_name: String(r.item_name || ''),
+          required_qty: Number(r.required_qty || 0),
+          needed_by: r.needed_by || null,
+          status: String(r.status || 'Open'),
+          created_at: r.created_at || null,
+          notes: r.notes || null,
+        })))
+      } catch {}
+    }
+
+    const channel = supabase
+      .channel(`po_view_${poId}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'purchase_order_lines', filter: `purchase_order_id=eq.${poId}` }, () => { refreshLines() })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'shipments', filter: `po_id=eq.${poId}` }, () => { refreshShipments() })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'production_batches', filter: `source_po_id=eq.${poId}` }, () => { refreshPrs() })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'purchase_requisitions' }, (payload: any) => {
+        const row: any = payload?.new || payload?.old || {}
+        const byPo = String(row?.po_id || '') === poId
+        const byNotes = typeof row?.notes === 'string' && row.notes.includes(poId)
+        const byBatch = !!row?.batch_id
+        if (byPo || byNotes || byBatch) refreshPrs()
+      })
+      .subscribe()
+
+    return () => { try { supabase.removeChannel(channel) } catch {} }
+  }, [isViewOpen?.id])
+
   // Load related purchase_requisitions when View modal opens
   useEffect(() => {
     const loadPrs = async () => {
@@ -115,23 +246,69 @@ const PurchaseOrders: React.FC = () => {
         setViewPrs([])
         if (!isViewOpen?.id) { setViewPrLoading(false); return }
         const poId = String(isViewOpen.id)
-        const { data, error } = await supabase
+        // Find batches created from this PO
+        const { data: batches } = await supabase
+          .from('production_batches')
+          .select('id')
+          .eq('source_po_id', poId)
+
+        const batchIds: string[] = Array.isArray(batches) ? batches.map((b: any) => String(b.id)) : []
+
+        // Query 1: PRs directly linked to this PO (do not filter by status to avoid case/value mismatches)
+        const { data: prByPo, error: errPo } = await supabase
           .from('purchase_requisitions')
-          .select('id, item_name, required_qty, needed_by, status, created_at, source, notes')
-          .eq('source', 'Auto PR from PO Shortfall')
-          .eq('status', 'Open')
-          .ilike('notes', `%${poId}%`)
+          .select('id, item_name, required_qty, needed_by, status, created_at, notes')
+          .eq('po_id', poId)
           .order('created_at', { ascending: false })
-        if (!error && Array.isArray(data)) {
-          setViewPrs(data.map((r: any) => ({
-            id: String(r.id),
-            item_name: String(r.item_name || ''),
-            required_qty: Number(r.required_qty || 0),
-            needed_by: r.needed_by || null,
-            status: String(r.status || 'Open'),
-            created_at: r.created_at || null,
-          })))
+
+        // Query 2: PRs linked via batches created from this PO
+        let prByBatch: any[] = []
+        if (batchIds.length > 0) {
+          const { data: pr2 } = await supabase
+            .from('purchase_requisitions')
+            .select('id, item_name, required_qty, needed_by, status, created_at, notes')
+            .in('batch_id', batchIds)
+            .order('created_at', { ascending: false })
+          prByBatch = Array.isArray(pr2) ? pr2 : []
         }
+
+        let all: any[] = []
+        if (!errPo) all = [...(prByPo || []), ...prByBatch]
+
+        // Fallback 1: search by notes containing poId
+        if (all.length === 0) {
+          const { data: prByNotes } = await supabase
+            .from('purchase_requisitions')
+            .select('id, item_name, required_qty, needed_by, status, created_at, notes')
+            .ilike('notes', `%${poId}%`)
+            .order('created_at', { ascending: false })
+          if (Array.isArray(prByNotes)) all = [...all, ...prByNotes]
+        }
+
+        // Fallback 2: search by notes containing any batch id
+        if (all.length === 0 && batchIds.length > 0) {
+          for (const bid of batchIds) {
+            const { data: prByBatchNotes } = await supabase
+              .from('purchase_requisitions')
+              .select('id, item_name, required_qty, needed_by, status, created_at, notes')
+              .ilike('notes', `%${bid}%`)
+              .order('created_at', { ascending: false })
+            if (Array.isArray(prByBatchNotes)) all = [...all, ...prByBatchNotes]
+          }
+        }
+
+        // Deduplicate and set
+        const seen = new Set<string>()
+        const uniq = all.filter((r: any) => { const id = String(r.id); if (seen.has(id)) return false; seen.add(id); return true })
+        setViewPrs(uniq.map((r: any) => ({
+          id: String(r.id),
+          item_name: String(r.item_name || ''),
+          required_qty: Number(r.required_qty || 0),
+          needed_by: r.needed_by || null,
+          status: String(r.status || 'Open'),
+          created_at: r.created_at || null,
+          notes: r.notes || null,
+        })))
       } finally {
         setViewPrLoading(false)
       }
@@ -150,31 +327,6 @@ const PurchaseOrders: React.FC = () => {
     if (s === 'closed') return 'Closed: fulfilled and completed.'
     if (s === 'canceled') return 'Canceled: the order has been canceled.'
     return '—'
-  }
-
-  const prStatusBadge = (st: string) => {
-    const s = String(st || '').toLowerCase()
-    if (s === 'approved') return { label: 'Approved', cls: 'bg-emerald-100 text-emerald-800' }
-    if (s === 'closed' || s === 'completed') return { label: 'Closed', cls: 'bg-gray-100 text-gray-700' }
-    return { label: 'Open', cls: 'bg-amber-100 text-amber-800' }
-  }
-
-  const timeAgo = (iso: string | null) => {
-    if (!iso) return '—'
-    try {
-      const dt = new Date(iso)
-      const diff = Date.now() - dt.getTime()
-      const sec = Math.floor(diff / 1000)
-      if (sec < 60) return 'Just now'
-      const min = Math.floor(sec / 60)
-      if (min < 60) return `${min} min ago`
-      const hr = Math.floor(min / 60)
-      if (hr < 24) return `${hr} hour${hr === 1 ? '' : 's'} ago`
-      const day = Math.floor(hr / 24)
-      return `${day} day${day === 1 ? '' : 's'} ago`
-    } catch {
-      return iso || '—'
-    }
   }
 
   const hasViewShortfall = useMemo(
@@ -1361,6 +1513,42 @@ const PurchaseOrders: React.FC = () => {
                   </div>
                 )}
 
+                {/* Shipments */}
+                <div className="space-y-3">
+                  <h3 className="text-base font-semibold text-neutral-dark">Shipments</h3>
+                  <div className="border border-neutral-soft/40 rounded-xl bg-neutral-light/20">
+                    <div className="px-4 py-3 border-b border-neutral-soft/40 flex items-center justify-between">
+                      <span className="text-xs font-medium text-neutral-medium uppercase tracking-wide">Shipments</span>
+                    </div>
+                    {(!Array.isArray(viewShipments) || viewShipments.length === 0) ? (
+                      <div className="px-4 py-4 text-xs text-neutral-medium">No shipments created for this PO yet.</div>
+                    ) : (
+                      <div className="divide-y divide-neutral-soft/40">
+                        {viewShipments.map((s:any, idx:number) => {
+                          const fmt = (d:any) => {
+                            if (!d) return '-'
+                            try { const dt = new Date(d); return dt.toLocaleDateString() } catch { return String(d) }
+                          }
+                          return (
+                            <div key={s.id || idx} className="p-4">
+                              <div className="flex items-start justify-between mb-2">
+                                <div className="text-sm font-semibold text-neutral-dark">Shipment #{idx + 1}</div>
+                                <div className="text-xs px-2 py-1 rounded-lg border border-neutral-soft text-neutral-dark bg-white">{fmt(s.shipment_date)}</div>
+                              </div>
+                              <div className="grid grid-cols-1 md:grid-cols-2 gap-y-1 gap-x-6">
+                                <div className="text-sm text-neutral-dark"><span className="font-semibold">Shipped Qty:</span> {s.shipped_qty ?? '-'}</div>
+                                <div className="text-sm text-neutral-dark"><span className="font-semibold">Status:</span> {s.status ?? '-'}</div>
+                                <div className="text-sm text-neutral-dark"><span className="font-semibold">ETA Date:</span> {fmt(s.eta)}</div>
+                                <div className="text-sm text-neutral-dark md:col-span-2"><span className="font-semibold">Notes:</span> {s.notes || '-'}</div>
+                              </div>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
                 {/* Raw Material PRs linked to this PO */}
                 <div className="space-y-3">
                   <h3 className="text-base font-semibold text-neutral-dark">Raw Material Purchase Requisitions for this PO</h3>
@@ -1372,35 +1560,20 @@ const PurchaseOrders: React.FC = () => {
                     {viewPrs.length === 0 && !viewPrLoading ? (
                       <div className="px-4 py-4 text-xs text-neutral-medium">No open raw material purchase requisitions for this PO.</div>
                     ) : (
-                      <div className="overflow-x-auto">
-                        <table className="min-w-full text-sm">
-                          <thead>
-                            <tr className="bg-neutral-light/40 border-b border-neutral-soft/40">
-                              <th className="px-4 py-2 text-left text-[11px] font-semibold text-neutral-medium uppercase tracking-wide">Item</th>
-                              <th className="px-4 py-2 text-right text-[11px] font-semibold text-neutral-medium uppercase tracking-wide">Required Qty</th>
-                              <th className="px-4 py-2 text-left text-[11px] font-semibold text-neutral-medium uppercase tracking-wide">Needed By</th>
-                              <th className="px-4 py-2 text-left text-[11px] font-semibold text-neutral-medium uppercase tracking-wide">Status</th>
-                              <th className="px-4 py-2 text-left text-[11px] font-semibold text-neutral-medium uppercase tracking-wide">Created</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {viewPrs.map(pr => {
-                              const badge = prStatusBadge(pr.status)
-                              const needed = pr.needed_by ? (() => { try { const d = new Date(pr.needed_by); const mm = String(d.getMonth()+1).padStart(2,'0'); const dd = String(d.getDate()).padStart(2,'0'); const yy = d.getFullYear(); return `${mm}/${dd}/${yy}` } catch { return '-' } })() : '-'
-                              return (
-                                <tr key={pr.id} className="border-t border-neutral-soft/30">
-                                  <td className="px-4 py-2 text-sm text-neutral-dark">{pr.item_name}</td>
-                                  <td className="px-4 py-2 text-sm text-neutral-dark text-right">{pr.required_qty}</td>
-                                  <td className="px-4 py-2 text-sm text-neutral-dark">{needed}</td>
-                                  <td className="px-4 py-2 text-sm">
-                                    <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-semibold ${badge.cls}`}>{badge.label}</span>
-                                  </td>
-                                  <td className="px-4 py-2 text-sm text-neutral-medium">{timeAgo(pr.created_at)}</td>
-                                </tr>
-                              )
-                            })}
-                          </tbody>
-                        </table>
+                      <div className="divide-y divide-neutral-soft/40">
+                        {viewPrs.map(pr => {
+                          const cleanNotes = (() => {
+                            const raw = pr.notes || ''
+                            try { return raw.replace(/\s*for\s+Batch-[a-z0-9-]+/i, '').trim() } catch { return raw }
+                          })()
+                          return (
+                            <div key={pr.id} className="p-4">
+                              <div className="text-sm text-neutral-dark"><span className="font-semibold">Item:</span> {pr.item_name}</div>
+                              <div className="text-sm text-neutral-dark"><span className="font-semibold">Required Qty:</span> {pr.required_qty}</div>
+                              <div className="text-sm text-neutral-dark mt-2"><span className="font-semibold">Notes:</span> {cleanNotes || '-'}</div>
+                            </div>
+                          )
+                        })}
                       </div>
                     )}
                   </div>

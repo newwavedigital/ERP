@@ -45,6 +45,9 @@ const PurchaseOrders: React.FC = () => {
   const [viewLines, setViewLines] = useState<Array<{ product_name: string; quantity: number; allocated_qty: number; shortfall_qty: number; status: string }>>([])
   const [viewLoading, setViewLoading] = useState(false)
   const [viewShipments, setViewShipments] = useState<any[]>([])
+  const [viewCopackRes, setViewCopackRes] = useState<any[]>([])
+  const [viewFormula, setViewFormula] = useState<any | null>(null)
+  const [viewFormulaItems, setViewFormulaItems] = useState<any[]>([])
   const [viewPrs, setViewPrs] = useState<Array<{ id: string; item_name: string; required_qty: number; needed_by: string | null; status: string; created_at: string | null; notes?: string | null }>>([])
   const [viewPrLoading, setViewPrLoading] = useState(false)
   const [form, setForm] = useState({
@@ -63,6 +66,8 @@ const PurchaseOrders: React.FC = () => {
     status: 'Open',
     comments: '',
     location: '',
+    is_copack: false,
+    client_materials_required: false,
     lines: [] as Array<{ sku?: string; product_name: string; qty: number; is_discontinued?: boolean; substitute_sku?: string | null }>
   })
   const customerRef = useRef<HTMLDivElement>(null)
@@ -77,7 +82,6 @@ const PurchaseOrders: React.FC = () => {
       if (statusRef.current && !statusRef.current.contains(e.target as Node)) setIsStatusOpen(false)
       if (rushRef.current && !rushRef.current.contains(e.target as Node)) setIsRushOpen(false)
     }
-
     document.addEventListener('mousedown', handle)
     return () => document.removeEventListener('mousedown', handle)
   }, [])
@@ -107,6 +111,153 @@ const PurchaseOrders: React.FC = () => {
     }
     loadLines()
   }, [isViewOpen?.id])
+
+  // Local Copack components (ensure they are defined before return and in component scope)
+  const CopackAllocatedMaterials: React.FC<{ data: any[] }> = ({ data }) => (
+    <div className="space-y-3">
+      <h3 className="text-base font-semibold text-neutral-dark">Allocated Raw Materials (Client-Supplied)</h3>
+      <div className="border border-neutral-soft/40 rounded-xl bg-neutral-light/20">
+        <div className="px-4 py-3 border-b border-neutral-soft/40 flex items-center justify-between">
+          <span className="text-xs font-medium text-neutral-medium uppercase tracking-wide">Client Materials Allocation</span>
+        </div>
+        {(!Array.isArray(data) || data.length === 0) ? (
+          <div className="px-4 py-4 text-xs text-neutral-medium">No client-supplied materials were allocated for this PO.</div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-sm">
+              <thead>
+                <tr className="bg-neutral-light/40 border-b border-neutral-soft/40">
+                  <th className="px-4 py-2 text-left text-[11px] font-semibold text-neutral-medium uppercase tracking-wide">Material Name</th>
+                  <th className="px-4 py-2 text-right text-[11px] font-semibold text-neutral-medium uppercase tracking-wide">Reserved Qty</th>
+                  <th className="px-4 py-2 text-left text-[11px] font-semibold text-neutral-medium uppercase tracking-wide">Reservation Date</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.map((r:any, i:number) => (
+                  <tr key={r.id || i} className="border-t border-neutral-soft/30">
+                    <td className="px-4 py-2 text-sm text-neutral-dark">{r.product_name || '-'}</td>
+                    <td className="px-4 py-2 text-sm text-right">{r.qty ?? 0}</td>
+                    <td className="px-4 py-2 text-sm text-neutral-dark">{(() => { try { return new Date(r.created_at).toLocaleString() } catch { return r.created_at || '-' } })()}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+
+  const CopackBOMMaterials: React.FC<{ data: any[]; poQty: number; formulaName?: string }>
+    = ({ data, poQty, formulaName }) => (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <h3 className="text-base font-semibold text-neutral-dark">Client Materials Used</h3>
+        {formulaName && <div className="text-xs px-2 py-1 rounded-lg border border-neutral-soft text-neutral-dark bg-white">Formula: {formulaName}</div>}
+      </div>
+      <div className="border border-neutral-soft/40 rounded-xl bg-neutral-light/20">
+        <div className="px-4 py-3 border-b border-neutral-soft/40 flex items-center justify-between">
+          <span className="text-xs font-medium text-neutral-medium uppercase tracking-wide">Bill of Materials</span>
+        </div>
+        {(!Array.isArray(data) || data.length === 0) ? (
+          <div className="px-4 py-4 text-xs text-neutral-medium">No material BOM found for this copack product.</div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-sm">
+              <thead>
+                <tr className="bg-neutral-light/40 border-b border-neutral-soft/40">
+                  <th className="px-4 py-2 text-left text-[11px] font-semibold text-neutral-medium uppercase tracking-wide">Material</th>
+                  <th className="px-4 py-2 text-left text-[11px] font-semibold text-neutral-medium uppercase tracking-wide">Per Unit Usage</th>
+                  <th className="px-4 py-2 text-right text-[11px] font-semibold text-neutral-medium uppercase tracking-wide">Total Required</th>
+                  <th className="px-4 py-2 text-left text-[11px] font-semibold text-neutral-medium uppercase tracking-wide">UOM</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.map((fi:any, i:number) => {
+                  const name = fi?.inventory_materials?.product_name || '-'
+                  const per = Number(fi?.qty_per_unit || 0)
+                  const uom = fi?.uom || ''
+                  const total = per * Number(poQty || 0)
+                  return (
+                    <tr key={fi.id || i} className="border-t border-neutral-soft/30">
+                      <td className="px-4 py-2 text-sm text-neutral-dark">{name}</td>
+                      <td className="px-4 py-2 text-sm text-neutral-dark">{per} {uom}</td>
+                      <td className="px-4 py-2 text-sm text-right">{total}</td>
+                      <td className="px-4 py-2 text-sm text-neutral-dark">{uom}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+  // Load Copack-specific data when viewing a Copack PO
+  useEffect(() => {
+    const loadCopack = async () => {
+      try {
+        setViewCopackRes([])
+        setViewFormula(null)
+        setViewFormulaItems([])
+        if (!isViewOpen?.id || !isViewOpen?.is_copack) return
+        const poId = String(isViewOpen.id)
+        // 1) Copack reservations for this PO (active only). Allow broader bucket naming just in case.
+        const { data: res } = await supabase
+          .from('inventory_reservations')
+          .select(`id, po_id, line_id, product_name, bucket, sku, qty, created_at, batch_id, material_id, status, is_consumed,
+                   inventory_materials:inventory_materials!fk_res_material ( id, product_name )`)
+          .eq('po_id', poId)
+          .or('bucket.eq.copack_materials,bucket.eq.copack,bucket.eq.client_materials,bucket.eq.copack_client')
+        setViewCopackRes(res || [])
+        // 2) Formula by product_id (fallback: find product id by product_name)
+        let productId: string | null = isViewOpen.product_id ? String(isViewOpen.product_id) : null
+        if (!productId && isViewOpen.product_name) {
+          const nm = String(isViewOpen.product_name || '').trim()
+          const { data: prodRow } = await supabase
+            .from('products')
+            .select('id')
+            .ilike('product_name', `%${nm}%`)
+            .maybeSingle()
+          productId = prodRow?.id ? String(prodRow.id) : null
+        }
+        let formula: any = null
+        if (productId) {
+          const { data: f, error: fErr } = await supabase
+            .from('formulas')
+            .select('id, formula_name')
+            .eq('product_id', productId)
+            .maybeSingle()
+          formula = fErr ? null : (f as any)
+        }
+        setViewFormula(formula)
+        // 3) Formula items + inventory material names (explicit FK alias for reliability)
+        if (formula?.id) {
+          const { data: items } = await supabase
+            .from('formula_items')
+            .select(`
+              id,
+              qty_per_unit,
+              uom,
+              inventory_materials:inventory_materials!formula_items_material_id_fkey ( id, product_name )
+            `)
+            .eq('formula_id', formula.id)
+          setViewFormulaItems(items || [])
+        }
+      } catch {}
+    }
+    loadCopack()
+  }, [isViewOpen?.id, isViewOpen?.is_copack, isViewOpen?.product_id, isViewOpen?.product_name])
+
+  // Close View modal on Escape
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setIsViewOpen(null)
+    }
+    if (isViewOpen) window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [isViewOpen])
 
   // Load shipments when View modal opens
   useEffect(() => {
@@ -352,7 +503,7 @@ const PurchaseOrders: React.FC = () => {
       })
 
       if (discontinuedItems.length === 0) {
-        await approveAndAllocate(po.id)
+        await approveAndAllocate(po) // pass full PO
         return
       }
 
@@ -392,7 +543,9 @@ const PurchaseOrders: React.FC = () => {
       setPendingLines([])
       const id = pendingApproveId
       setPendingApproveId(null)
-      await approveAndAllocate(id)
+      // find the full PO object so we can decide RPC by is_copack
+      const poObj = (orders || []).find((o:any) => String(o.id) === String(id)) || { id }
+      await approveAndAllocate(poObj)
     } catch (e: any) {
       setToast({ show: true, message: e?.message || 'Failed to apply substitutes', kind: 'error' })
     }
@@ -527,6 +680,8 @@ const PurchaseOrders: React.FC = () => {
       status: 'Open',
       comments: '',
       location: '',
+      is_copack: false,
+      client_materials_required: false,
       lines: []
     })
   }
@@ -540,6 +695,8 @@ const PurchaseOrders: React.FC = () => {
       customer_id: form.customer_id || selectedCustomerId || null,
       ship_date: form.ship_date,
       location: form.location,
+      is_copack: !!form.is_copack,
+      client_materials_required: !!form.client_materials_required,
       lines: (form.lines || []).map(l => ({
         sku: (l as any).sku,
         product_name: l.product_name,
@@ -585,6 +742,8 @@ const PurchaseOrders: React.FC = () => {
             location: draft.location || null,
             status,
             is_rush,
+            is_copack: !!draft.is_copack,
+            client_materials_required: !!draft.client_materials_required,
             notes: form.notes || null,
             invoice: form.invoice || null,
             payment_terms: form.paymentTerms || null,
@@ -607,6 +766,8 @@ const PurchaseOrders: React.FC = () => {
             location: draft.location || null,
             status,
             is_rush,
+            is_copack: !!draft.is_copack,
+            client_materials_required: !!draft.client_materials_required,
             notes: form.notes || null,
             invoice: form.invoice || null,
             payment_terms: form.paymentTerms || null,
@@ -719,66 +880,42 @@ const PurchaseOrders: React.FC = () => {
   }
 
   // Approve + Allocate for a single PO (final action)
-  const approveAndAllocate = async (poId: string) => {
+  const approveAndAllocate = async (po: any) => {
+    const poId = String(po.id)
     try {
       setError(null)
-      // 1) Mark PO approved
+
+      // 1. Mark PO as approved
       const { error: upErr } = await supabase
         .from('purchase_orders')
         .update({ status: 'approved' })
         .eq('id', poId)
       if (upErr) throw upErr
 
-      // 2) Call RPC allocate_brand_po_finished_first
-      const { data: summary, error: rpcErr } = await supabase.rpc('allocate_brand_po_finished_first', { p_po_id: poId })
+      // 2. Decide which RPC to call
+      const isCopack = !!po.is_copack
+      const rpcName = isCopack ? 'allocate_copack_po_materials' : 'allocate_brand_po_finished_first'
+      const { data: summary, error: rpcErr } = await supabase.rpc(rpcName, { p_po_id: poId })
       if (rpcErr) throw rpcErr
-      if (summary?.status === 'no_fg') {
-        setToast({ show: true, message: 'No finished goods available. Please create a Production Schedule first.', kind: 'error' })
-        setShowNoFg(true)
-        return
-      }
-      if (summary?.status === 'error') {
-        const msg = Array.isArray(summary?.errors) && summary.errors.length > 0
-          ? (summary.errors[0]?.error || summary.errors[0])
-          : 'Allocation RPC returned error'
-        setToast({ show: true, message: `Allocation failed: ${String(msg)}` })
-        return
-      }
 
-      // 3) Refresh purchase orders
+      // 3. Refresh PO list
       const { data: poRows } = await supabase
         .from('purchase_orders')
         .select('*')
         .order('created_at', { ascending: false })
       setOrders(poRows ?? [])
 
-      // 4) Ensure summary has lines for UI; if missing, load from purchase_order_lines
-      let finalSummary: any = summary || {}
-      try {
-        const hasLines = Array.isArray(finalSummary?.lines) && finalSummary.lines.length > 0
-        if (!hasLines) {
-          const { data: pol } = await supabase
-            .from('purchase_order_lines')
-            .select('id, product_name, quantity, allocated_qty, shortfall_qty, status')
-            .eq('purchase_order_id', poId)
-          finalSummary = {
-            ...finalSummary,
-            lines: (pol || []).map((r: any) => ({
-              id: String(r.id),
-              product_name: String(r.product_name || ''),
-              ordered_qty: Number(r.quantity || 0),
-              allocated_qty: Number(r.allocated_qty || 0),
-              shortfall_qty: Number(r.shortfall_qty || 0),
-              status: String(r.status || ''),
-            })),
-          }
-        }
-      } catch {}
-      setAllocSummary(finalSummary)
+      // 4. Allocation modal + toast
+      setAllocSummary(summary || null)
       setIsAllocOpen(true)
-      setToast({ show: true, message: `Allocation: ${finalSummary?.status ?? 'done'}` })
+      setToast({
+        show: true,
+        message: `Allocation result: ${String(summary?.status || 'done')}`,
+        kind: summary?.status === 'allocated' ? 'success' : 'warning',
+      })
     } catch (e: any) {
       setError(e?.message || 'Failed to approve and allocate')
+      setToast({ show: true, message: e?.message || 'Allocation failed', kind: 'error' })
     }
   }
 
@@ -821,6 +958,38 @@ const PurchaseOrders: React.FC = () => {
                 <p className="text-sm text-neutral-medium mt-1">Status: {String(allocSummary?.status || '')}</p>
               </div>
               <div className="p-6">
+                {/* Copack materials table */}
+                {Array.isArray(allocSummary?.lines_materials) && allocSummary.lines_materials.length > 0 && (
+                  <div className="mb-6">
+                    <h3 className="text-sm font-semibold text-neutral-dark mb-2">Materials Allocation</h3>
+                    <div className="overflow-x-auto">
+                      <table className="min-w-full">
+                        <thead>
+                          <tr className="bg-neutral-light/40 border-b border-neutral-soft/50">
+                            <th className="px-6 py-3 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">Material</th>
+                            <th className="px-6 py-3 text-right text-xs font-bold text-neutral-dark uppercase tracking-wider">Required</th>
+                            <th className="px-6 py-3 text-right text-xs font-bold text-neutral-dark uppercase tracking-wider">Client Inventory</th>
+                            <th className="px-6 py-3 text-right text-xs font-bold text-neutral-dark uppercase tracking-wider">Allocated</th>
+                            <th className="px-6 py-3 text-right text-xs font-bold text-neutral-dark uppercase tracking-wider">Shortfall</th>
+                            <th className="px-6 py-3 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">Status</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-neutral-soft/20">
+                          {allocSummary.lines_materials.map((ln:any, i:number)=> (
+                            <tr key={i} className="group">
+                              <td className="px-6 py-3 text-sm text-neutral-dark">{ln.material || ln.material_name || '-'}</td>
+                              <td className="px-6 py-3 text-sm text-right">{ln.required ?? ln.required_qty ?? 0}</td>
+                              <td className="px-6 py-3 text-sm text-right">{ln.client_inventory ?? 0}</td>
+                              <td className="px-6 py-3 text-sm text-right">{ln.allocated ?? 0}</td>
+                              <td className={`px-6 py-3 text-sm text-right ${Number(ln.shortfall || 0) > 0 ? 'text-amber-700 font-semibold' : ''}`}>{ln.shortfall ?? 0}</td>
+                              <td className="px-6 py-3 text-sm">{ln.status || '-'}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
                 {showBackorderAdvisory && (
                   <div className="mb-4 p-3 rounded-lg border border-amber-300 bg-amber-50 text-amber-800 text-sm flex items-center justify-between">
                     <div>
@@ -1033,7 +1202,12 @@ const PurchaseOrders: React.FC = () => {
                             <div className="text-sm font-medium text-neutral-dark truncate max-w-[260px]">{o.customer_name || o.customer_id}</div>
                           </td>
                           <td className="px-8 py-6">
-                            <div className="text-sm text-neutral-dark truncate max-w-[260px]">{o.product_name || o.product_id}</div>
+                            <div className="text-sm text-neutral-dark truncate max-w-[260px] flex items-center gap-2">
+                              <span className="truncate">{o.product_name || o.product_id}</span>
+                              {o.is_copack && (
+                                <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-indigo-100 text-indigo-700">COPACK</span>
+                              )}
+                            </div>
                           </td>
                           <td className="px-8 py-6">{o.quantity}</td>
                           <td className="px-8 py-6">{o.requested_ship_date || '-'}</td>
@@ -1076,6 +1250,8 @@ const PurchaseOrders: React.FC = () => {
                                   status: o.status || 'Open',
                                   comments: o.comments || '',
                                   location: o.location || '',
+                                  is_copack: !!o.is_copack,
+                                  client_materials_required: !!o.client_materials_required,
                                   lines: []
                                 })
                                 // Prefill packaging types (array)
@@ -1242,6 +1418,27 @@ const PurchaseOrders: React.FC = () => {
                     </div>
                   </div>
 
+                  {/* Copack toggles */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div className="space-y-2">
+                      <label className="flex items-center text-sm font-medium text-neutral-dark">Copack Settings</label>
+                      <div className="flex items-center gap-6 px-3 py-3 border border-neutral-soft rounded-lg bg-white">
+                        <label className="flex items-center gap-2 text-sm text-neutral-dark">
+                          <input type="checkbox" className="h-4 w-4" checked={form.is_copack} onChange={(e)=>setForm(prev=>({...prev,is_copack:e.target.checked, client_materials_required: e.target.checked ? true : prev.client_materials_required}))} />
+                          <span>This is a Copack Order</span>
+                        </label>
+                        <label className="flex items-center gap-2 text-sm text-neutral-dark">
+                          <input type="checkbox" className="h-4 w-4" checked={form.client_materials_required} onChange={(e)=>setForm(prev=>({...prev,client_materials_required:e.target.checked}))} />
+                          <span>Client-supplied materials required</span>
+                        </label>
+                      </div>
+                      {form.is_copack && !form.client_materials_required && (
+                        <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">Copack orders require client-supplied materials.</div>
+                      )}
+                    </div>
+                    <div />
+                  </div>
+
                   {/* Additional Products moved to full width below */}
                   <div className="space-y-2">
                     <div className="flex items-center justify-between mb-1">
@@ -1361,31 +1558,17 @@ const PurchaseOrders: React.FC = () => {
         )}
         {isViewOpen && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-            <div className="absolute inset-0 bg-black/50" onClick={() => setIsViewOpen(null)}></div>
-            <div className="relative z-10 w-full max-w-3xl bg-white rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden flex flex-col">
-              <div className="px-8 py-6 bg-gradient-to-r from-neutral-light to-neutral-light/80 border-b border-neutral-soft/50">
-                <div className="flex items-start justify-between">
-                  <div>
-                    <h2 className="text-2xl font-semibold text-neutral-dark">Purchase Order Details</h2>
-                    <p className="text-sm text-neutral-medium mt-1">PO #: {isViewOpen.id}</p>
-                  </div>
-                  <button className="px-3 py-1.5 rounded-lg border border-neutral-soft text-neutral-dark hover:bg-neutral-light/60" onClick={()=>setIsViewOpen(null)}>Close</button>
-                </div>
-              </div>
-              <div className="p-6 space-y-6">
-                {/* Shortage banner when backordered + open auto PRs */}
-                {String(isViewOpen.status || '').toLowerCase() === 'backordered' && viewPrs.length > 0 && (
-                  <div className="flex items-start gap-3 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3">
-                    <div className="mt-0.5">
-                      <span className="inline-flex items-center justify-center w-8 h-8 rounded-full bg-amber-100 text-amber-700 text-sm font-bold">!</span>
-                    </div>
+            <div className="fixed inset-0 bg-black/30 backdrop-blur-sm flex items-center justify-center z-50" onClick={()=>setIsViewOpen(null)}>
+              <div className="w-[900px] bg-white rounded-2xl shadow-xl max-h-[90vh] flex flex-col" onClick={(e)=>e.stopPropagation()}>
+                <div className="px-8 py-6 bg-gradient-to-r from-neutral-light to-neutral-light/80 border-b border-neutral-soft/50">
+                  <div className="flex items-start justify-between">
                     <div>
-                      <div className="text-sm font-semibold text-amber-800">Raw Material Shortages Detected for this PO</div>
-                      <div className="text-xs text-amber-700 mt-0.5">Procurement needs to order materials before this backorder can be produced.</div>
+                      <h2 className="text-2xl font-semibold text-neutral-dark">Purchase Order Details</h2>
+                      {/* PO number and advisory intentionally hidden per request */}
                     </div>
                   </div>
-                )}
-
+                </div>
+                <div className="p-8 space-y-6 flex-1 overflow-y-auto">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   <div className="space-y-1">
                     <label className="flex items-center text-xs font-semibold text-neutral-medium uppercase tracking-wide">
@@ -1428,7 +1611,7 @@ const PurchaseOrders: React.FC = () => {
                         return (
                           <div className="space-y-1">
                             <span className={`inline-flex items-center px-3 py-1.5 rounded-xl text-xs font-semibold border ${statusClass}`}>
-                              {isViewOpen.status || '—'}
+                              {isViewOpen.status || '—'} {isViewOpen.is_copack && (<span className="ml-2 inline-flex px-2 py-0.5 rounded-full text-[10px] font-semibold bg-indigo-100 text-indigo-700">COPACK</span>)}
                             </span>
                             <div className="text-[11px] text-neutral-medium">{statusDescription(isViewOpen.status)}</div>
                           </div>
@@ -1513,6 +1696,20 @@ const PurchaseOrders: React.FC = () => {
                   </div>
                 )}
 
+                {/* Copack-only sections */}
+                {isViewOpen.is_copack && (
+                  <>
+                    <CopackAllocatedMaterials data={viewCopackRes} />
+                    {Array.isArray(viewFormulaItems) && viewFormulaItems.length > 0 && (
+                      <CopackBOMMaterials
+                        data={viewFormulaItems}
+                        poQty={Number(isViewOpen.quantity || 0)}
+                        formulaName={viewFormula?.formula_name}
+                      />
+                    )}
+                  </>
+                )}
+
                 {/* Shipments */}
                 <div className="space-y-3">
                   <h3 className="text-base font-semibold text-neutral-dark">Shipments</h3>
@@ -1595,6 +1792,7 @@ const PurchaseOrders: React.FC = () => {
                   <button onClick={() => setIsViewOpen(null)} className="px-5 py-2.5 rounded-xl border border-neutral-soft text-neutral-dark hover:bg-neutral-light/60 transition-all">
                     Close
                   </button>
+                </div>
                 </div>
               </div>
             </div>

@@ -6,6 +6,7 @@ import { Status } from '../domain/enums'
 import { validatePODraft } from '../rules/po.rules'
 import { PO_RULES } from '../config/rules-config'
 import SubstituteModal from '../components/SubstituteModal'
+import CopackAllocationSummary from '../components/CopackAllocationSummary'
 
 const PurchaseOrders: React.FC = () => {
   const [isAddOpen, setIsAddOpen] = useState(false)
@@ -16,6 +17,7 @@ const PurchaseOrders: React.FC = () => {
   const [isLocationOpen, setIsLocationOpen] = useState(false)
   const [customers, setCustomers] = useState<Array<{id:string; name:string; credit_hold?: boolean; overdue_balance?: number}>>([])
   const [products, setProducts] = useState<Array<{id:string; name:string; sku?:string; is_discontinued?: boolean; substitute_sku?: string | null}>>([])
+  const [materials, setMaterials] = useState<Array<{id:string; name:string; category?: string; is_client_supplied?: boolean}>>([])
   const [orders, setOrders] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -33,6 +35,8 @@ const PurchaseOrders: React.FC = () => {
   const [toast, setToast] = useState<{ show: boolean; message: string; kind?: 'success' | 'warning' | 'error' }>({ show: false, message: '', kind: 'success' })
   const [isAllocOpen, setIsAllocOpen] = useState(false)
   const [allocSummary, setAllocSummary] = useState<any | null>(null)
+  const [allocContext, setAllocContext] = useState<{ is_copack?: boolean; operation_supplies_materials?: boolean } | null>(null)
+  const [copackSummary, setCopackSummary] = useState<any | null>(null)
   const [isDeleteOpen, setIsDeleteOpen] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState<any | null>(null)
   const [deleting, setDeleting] = useState(false)
@@ -68,6 +72,7 @@ const PurchaseOrders: React.FC = () => {
     location: '',
     is_copack: false,
     client_materials_required: false,
+    operation_supplies_materials: false,
     lines: [] as Array<{ sku?: string; product_name: string; qty: number; is_discontinued?: boolean; substitute_sku?: string | null }>
   })
   const customerRef = useRef<HTMLDivElement>(null)
@@ -147,6 +152,117 @@ const PurchaseOrders: React.FC = () => {
       </div>
     </div>
   )
+
+  const CopackMaterialSettings: React.FC<{ form: any; setForm: React.Dispatch<React.SetStateAction<any>> }> = ({ form, setForm }) => {
+    const [warn, setWarn] = useState<string | null>(null)
+
+    const isCopack = !!form.is_copack
+    const cmr = !!form.client_materials_required
+    const ops = !!form.operation_supplies_materials
+
+    const bothOff = isCopack && !cmr && !ops
+    const bothOn = isCopack && cmr && ops
+
+    const showWarn = (msg: string) => {
+      setWarn(msg)
+      setTimeout(() => setWarn(null), 2000)
+    }
+
+    const onToggleCopack = (checked: boolean) => {
+      if (!checked) {
+        setForm((prev: any) => ({ ...prev, is_copack: false, client_materials_required: false, operation_supplies_materials: false, product: '' }))
+      } else {
+        setForm((prev: any) => ({ ...prev, is_copack: true, product: '' }))
+      }
+    }
+
+    const onToggleCMR = (checked: boolean) => {
+      if (!isCopack) return
+      if (checked) {
+        // RULE 3: enabling CMR forces OPS off
+        if (ops) showWarn('Only one material source can be enabled for a Copack order.')
+        setForm((prev: any) => ({ ...prev, client_materials_required: true, operation_supplies_materials: false, product: '' }))
+      } else {
+        // Allow turning off; validation will show error if both off
+        setForm((prev: any) => ({ ...prev, client_materials_required: false, product: '' }))
+      }
+    }
+
+    const onToggleOPS = (checked: boolean) => {
+      if (!isCopack) return
+      if (checked) {
+        // RULE 4: enabling OPS forces CMR off
+        if (cmr) showWarn('Only one material source can be enabled for a Copack order.')
+        setForm((prev: any) => ({ ...prev, operation_supplies_materials: true, client_materials_required: false, product: '' }))
+      } else {
+        // Allow turning off; validation will show error if both off
+        setForm((prev: any) => ({ ...prev, operation_supplies_materials: false, product: '' }))
+      }
+    }
+
+    return (
+      <div className="bg-white rounded-xl border border-neutral-soft/40 shadow-sm">
+        <div className="p-5">
+          <h3 className="text-lg font-semibold text-neutral-dark mb-1">Copack Material Source</h3>
+          <div className="divide-y">
+            <div className="flex items-center justify-between py-3">
+              <div className="text-sm text-neutral-dark">This is a Copack Order</div>
+              <button
+                type="button"
+                onClick={() => onToggleCopack(!isCopack)}
+                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${isCopack ? 'bg-primary-medium' : 'bg-neutral-soft'}`}
+                aria-pressed={isCopack}
+              >
+                <span className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${isCopack ? 'translate-x-5' : 'translate-x-1'}`} />
+              </button>
+            </div>
+
+            <div className="flex items-center justify-between py-3 border-b">
+              <div className="text-sm text-neutral-dark">Client-supplied materials required</div>
+              <button
+                type="button"
+                onClick={() => onToggleCMR(!cmr)}
+                disabled={!isCopack}
+                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${cmr && isCopack ? 'bg-primary-medium' : 'bg-neutral-soft'} ${!isCopack ? 'opacity-50 cursor-not-allowed' : ''}`}
+                aria-pressed={cmr}
+              >
+                <span className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${cmr && isCopack ? 'translate-x-5' : 'translate-x-1'}`} />
+              </button>
+            </div>
+
+            <div className="flex items-center justify-between py-3">
+              <div className="text-sm text-neutral-dark">Operations will supply the materials</div>
+              <button
+                type="button"
+                onClick={() => onToggleOPS(!ops)}
+                disabled={!isCopack}
+                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${ops && isCopack ? 'bg-primary-medium' : 'bg-neutral-soft'} ${!isCopack ? 'opacity-50 cursor-not-allowed' : ''}`}
+                aria-pressed={ops}
+              >
+                <span className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${ops && isCopack ? 'translate-x-5' : 'translate-x-1'}`} />
+              </button>
+            </div>
+          </div>
+
+          {isCopack && bothOff && (
+            <div className="mt-3 p-3 rounded-lg border border-red-300 bg-red-50 text-red-700 text-sm">
+              Copack orders must select a material source.
+            </div>
+          )}
+          {warn && (
+            <div className="mt-3 p-3 rounded-lg border border-amber-300 bg-amber-50 text-amber-800 text-sm">
+              {warn}
+            </div>
+          )}
+          {isCopack && bothOn && (
+            <div className="mt-3 p-3 rounded-lg border border-amber-300 bg-amber-50 text-amber-800 text-sm">
+              Only one material source can be enabled for a Copack order.
+            </div>
+          )}
+        </div>
+      </div>
+    )
+  }
 
   const CopackBOMMaterials: React.FC<{ data: any[]; poQty: number; formulaName?: string }>
     = ({ data, poQty, formulaName }) => (
@@ -560,6 +676,49 @@ const PurchaseOrders: React.FC = () => {
     return idx
   }, [products])
 
+  // Normalize various allocation RPC payloads to CopackAllocationSummary shape
+  const normalizeCopackSummary = (raw: any, poId: string) => {
+    let src = Array.isArray(raw?.lines)
+      ? raw.lines
+      : Array.isArray(raw?.lines_materials)
+        ? raw.lines_materials
+        : []
+    // Fallback: scan any array-valued fields for material-like rows
+    if (src.length === 0 && raw && typeof raw === 'object') {
+      const arrays = Object.values(raw).filter(Array.isArray) as any[]
+      const candidates = arrays.flat().filter((r: any) => r && (r.material_name || r.material || r.name))
+      if (candidates.length) src = candidates
+    }
+    const lines = src.map((ln: any) => {
+      const required = Number(ln.required_qty ?? ln.required ?? ln.required_total ?? 0)
+      const allocated = Number(ln.allocated_qty ?? ln.allocated ?? 0)
+      const shortfall = Number(ln.shortfall_qty ?? ln.shortfall ?? Math.max(0, required - allocated))
+      const isClient = !!(ln.is_client_material ?? ln.is_client ?? (typeof ln.client_inventory !== 'undefined'))
+      return {
+        po_line_id: String(ln.po_line_id ?? ln.line_id ?? ''),
+        product: String(ln.product ?? ln.product_name ?? ''),
+        material_id: String(ln.material_id ?? ln.id ?? ''),
+        material_name: String(ln.material_name ?? ln.material ?? ln.name ?? '-'),
+        required_qty: required,
+        allocated_qty: allocated,
+        shortfall_qty: shortfall,
+        is_client_material: isClient,
+      }
+    })
+    const total_required = lines.reduce((s: number, l: any) => s + Number(l.required_qty || 0), 0)
+    const total_allocated = lines.reduce((s: number, l: any) => s + Number(l.allocated_qty || 0), 0)
+    const total_shortfall = lines.reduce((s: number, l: any) => s + Number(l.shortfall_qty || 0), 0)
+    const status = String(raw?.status || (total_shortfall > 0 ? 'backordered' : 'allocated')).toLowerCase()
+    return {
+      po_id: String(raw?.po_id || poId),
+      status,
+      total_required,
+      total_allocated,
+      total_shortfall,
+      lines,
+    }
+  }
+
   // When allocation summary opens with backordered status, detect full shortfall and absence of finished_goods
   useEffect(() => {
     const check = async () => {
@@ -567,6 +726,8 @@ const PurchaseOrders: React.FC = () => {
         setShowBackorderAdvisory(false)
         const sum: any = allocSummary
         if (!sum || String(sum?.status || '').toLowerCase() !== 'backordered') return
+        // Skip FG advisory for Copack or OPS-supplied materials
+        if (allocContext?.is_copack || allocContext?.operation_supplies_materials) return
         const lines: any[] = Array.isArray(sum?.lines) ? sum.lines : []
         if (lines.length === 0) return
         const allShortfall = lines.every((ln: any) => Number(ln?.allocated || ln?.allocated_qty || 0) === 0 && Number(ln?.shortfall || ln?.shortfall_qty || 0) > 0)
@@ -585,7 +746,7 @@ const PurchaseOrders: React.FC = () => {
       } catch {}
     }
     check()
-  }, [allocSummary])
+  }, [allocSummary, allocContext?.is_copack, allocContext?.operation_supplies_materials])
 
   // substitute hook available if needed
 
@@ -629,16 +790,21 @@ const PurchaseOrders: React.FC = () => {
     const load = async () => {
       setLoading(true)
       setError(null)
-      const [{ data: cData, error: cErr }, { data: pData, error: pErr }, { data: oData, error: oErr }] = await Promise.all([
+      const [{ data: cData, error: cErr }, { data: pData, error: pErr }, { data: oData, error: oErr }, { data: mData, error: mErr }] = await Promise.all([
         supabase.from('customers').select('id, company_name, credit_hold, overdue_balance').order('company_name', { ascending: true }),
         // After running the provided SQL, these columns will exist
         supabase.from('products').select('id, product_name, is_discontinued, substitute_sku').order('product_name', { ascending: true }),
         supabase.from('purchase_orders').select('*').order('created_at', { ascending: false }),
+        supabase.from('inventory_materials').select('id, product_name, category, is_client_supplied').order('product_name', { ascending: true }),
       ])
       if (cErr) setError('Cannot load customers')
       if (!cErr) setCustomers((cData ?? []).map((r: any) => ({ id: String(r.id), name: String(r.company_name ?? ''), credit_hold: !!r.credit_hold, overdue_balance: Number(r.overdue_balance ?? 0) })))
       if (!pErr) setProducts((pData ?? []).map((r: any) => ({ id: String(r.id), name: String(r.product_name ?? ''), is_discontinued: !!r.is_discontinued, substitute_sku: r.substitute_sku ?? null })))
       if (!oErr) setOrders(oData ?? [])
+      if (!mErr) {
+        const all = (mData ?? [])
+        setMaterials(all.map((r: any) => ({ id: String(r.id), name: String(r.product_name ?? ''), category: r.category || '', is_client_supplied: !!r.is_client_supplied })))
+      }
       setLoading(false)
     }
     load()
@@ -682,6 +848,7 @@ const PurchaseOrders: React.FC = () => {
       location: '',
       is_copack: false,
       client_materials_required: false,
+      operation_supplies_materials: false,
       lines: []
     })
   }
@@ -697,6 +864,7 @@ const PurchaseOrders: React.FC = () => {
       location: form.location,
       is_copack: !!form.is_copack,
       client_materials_required: !!form.client_materials_required,
+      operation_supplies_materials: !!form.operation_supplies_materials,
       lines: (form.lines || []).map(l => ({
         sku: (l as any).sku,
         product_name: l.product_name,
@@ -704,6 +872,19 @@ const PurchaseOrders: React.FC = () => {
         is_discontinued: (l as any).is_discontinued,
         substitute_sku: (l as any).substitute_sku,
       })),
+    }
+
+    // Enforce Copack sourcing strict rules before proceeding
+    if (draft.is_copack) {
+      const count = (draft.client_materials_required ? 1 : 0) + (draft.operation_supplies_materials ? 1 : 0)
+      if (count !== 1) {
+        setToast({
+          show: true,
+          message: count === 0 ? 'Copack orders must select a material source.' : 'Only one material source can be enabled for a Copack order.',
+          kind: count === 0 ? 'error' : 'warning'
+        })
+        return
+      }
     }
 
     const customer = customers.find(c => c.id === draft.customer_id) || null
@@ -744,6 +925,7 @@ const PurchaseOrders: React.FC = () => {
             is_rush,
             is_copack: !!draft.is_copack,
             client_materials_required: !!draft.client_materials_required,
+            operation_supplies_materials: !!draft.operation_supplies_materials,
             notes: form.notes || null,
             invoice: form.invoice || null,
             payment_terms: form.paymentTerms || null,
@@ -768,6 +950,7 @@ const PurchaseOrders: React.FC = () => {
             is_rush,
             is_copack: !!draft.is_copack,
             client_materials_required: !!draft.client_materials_required,
+            operation_supplies_materials: !!draft.operation_supplies_materials,
             notes: form.notes || null,
             invoice: form.invoice || null,
             payment_terms: form.paymentTerms || null,
@@ -879,39 +1062,105 @@ const PurchaseOrders: React.FC = () => {
     }
   }
 
+  // Helper to run RPC with skip/error handling
+  const runRpc = async (name: string, poId: string) => {
+    const { data, error } = await supabase.rpc(name, { p_po_id: poId })
+    if (error) return { status: 'error', message: error.message, data: null }
+    const status = (data as any)?.status || (data ? 'ok' : 'ok')
+    return { status: String(status).toLowerCase(), message: (data as any)?.message || null, data }
+  }
+
   // Approve + Allocate for a single PO (final action)
   const approveAndAllocate = async (po: any) => {
     const poId = String(po.id)
     try {
       setError(null)
 
-      // 1. Mark PO as approved
-      const { error: upErr } = await supabase
+      // Load the most recent PO to decide the flow
+      const { data: poRow, error: fetchErr } = await supabase
         .from('purchase_orders')
-        .update({ status: 'approved' })
+        .select('*')
         .eq('id', poId)
-      if (upErr) throw upErr
+        .maybeSingle()
+      if (fetchErr) throw fetchErr
+      const poRec: any = poRow || po
 
-      // 2. Decide which RPC to call
-      const isCopack = !!po.is_copack
-      const rpcName = isCopack ? 'allocate_copack_po_materials' : 'allocate_brand_po_finished_first'
-      const { data: summary, error: rpcErr } = await supabase.rpc(rpcName, { p_po_id: poId })
-      if (rpcErr) throw rpcErr
+      // 1) Mark as approved (idempotent)
+      await supabase.from('purchase_orders').update({ status: 'approved' }).eq('id', poId)
 
-      // 3. Refresh PO list
-      const { data: poRows } = await supabase
+      let finalSummary: any = null
+
+      if (!!poRec.is_copack) {
+        // COPACK MODE — strictly call only copack RPCs in order
+        const seq = [
+          'fn_copack_material_check',
+          'fn_allocate_copack_dual_pr',
+          'allocate_copack_po_client_materials',
+          'allocate_copack_po_ops_materials',
+        ]
+        for (const name of seq) {
+          const res = await runRpc(name, poId)
+          if (res.status === 'error') {
+            setToast({ show: true, message: res.message || 'RPC Error', kind: 'error' })
+            // Continue? Spec says continue on skipped only; for error, surface and break
+            break
+          }
+          if (name === 'fn_allocate_copack_dual_pr' && res.data) finalSummary = res.data
+          // continue on 'skipped' or 'ok'
+        }
+
+        // 4) Refresh PO list (refreshPO)
+        const { data: poRows } = await supabase
+          .from('purchase_orders')
+          .select('*')
+          .order('created_at', { ascending: false })
+        setOrders(poRows ?? [])
+
+        // Show Copack summary modal
+        setAllocContext({ is_copack: true, operation_supplies_materials: !!poRec.operation_supplies_materials })
+        const normalized = normalizeCopackSummary(finalSummary || {}, poId)
+        setCopackSummary(normalized)
+        setToast({
+          show: true,
+          message: `Allocation result: ${String((finalSummary as any)?.status || 'done')}`,
+          kind: (finalSummary as any)?.status === 'allocated' ? 'success' : 'warning',
+        })
+        return
+      }
+
+      // BRAND MODE — strictly call only brand RPCs in order
+      const brandSeq = [
+        'allocate_brand_po_finished_first',
+        'fn_allocate_po_to_finished_goods',
+        'fn_generate_pr_for_po_shortfall',
+      ]
+      let brandSummary: any = null
+      for (const name of brandSeq) {
+        const res = await runRpc(name, poId)
+        if (res.status === 'error') {
+          setToast({ show: true, message: res.message || 'RPC Error', kind: 'error' })
+          break
+        }
+        if ((name === 'allocate_brand_po_finished_first' || name === 'fn_allocate_po_to_finished_goods') && res.data) {
+          brandSummary = res.data
+        }
+      }
+
+      // Refresh PO list
+      const { data: poRows2 } = await supabase
         .from('purchase_orders')
         .select('*')
         .order('created_at', { ascending: false })
-      setOrders(poRows ?? [])
+      setOrders(poRows2 ?? [])
 
-      // 4. Allocation modal + toast
-      setAllocSummary(summary || null)
+      // Show Brand allocation modal
+      setAllocContext({ is_copack: false, operation_supplies_materials: false })
+      setAllocSummary(brandSummary || null)
       setIsAllocOpen(true)
       setToast({
         show: true,
-        message: `Allocation result: ${String(summary?.status || 'done')}`,
-        kind: summary?.status === 'allocated' ? 'success' : 'warning',
+        message: `Allocation result: ${String((brandSummary as any)?.status || 'done')}`,
+        kind: (brandSummary as any)?.status === 'allocated' ? 'success' : 'warning',
       })
     } catch (e: any) {
       setError(e?.message || 'Failed to approve and allocate')
@@ -990,7 +1239,7 @@ const PurchaseOrders: React.FC = () => {
                     </div>
                   </div>
                 )}
-                {showBackorderAdvisory && (
+                {showBackorderAdvisory && !(allocContext?.is_copack || allocContext?.operation_supplies_materials) && (
                   <div className="mb-4 p-3 rounded-lg border border-amber-300 bg-amber-50 text-amber-800 text-sm flex items-center justify-between">
                     <div>
                       <div className="font-semibold">No finished goods available for this product.</div>
@@ -1035,7 +1284,7 @@ const PurchaseOrders: React.FC = () => {
                   </table>
                 </div>
                 <div className="mt-6 flex justify-end">
-                  <button className="px-5 py-2.5 rounded-xl border border-neutral-soft text-neutral-dark hover:bg-neutral-light/60 transition-all" onClick={() => setIsAllocOpen(false)}>Close</button>
+                  <button className="px-5 py-2.5 rounded-xl border border-neutral-soft text-neutral-dark hover:bg-neutral-light/60 transition-all" onClick={() => { setIsAllocOpen(false); setAllocContext(null) }}>Close</button>
                 </div>
               </div>
             </div>
@@ -1049,6 +1298,11 @@ const PurchaseOrders: React.FC = () => {
           onUseSubstitute={applySubstitutesAndApprove}
           onCancel={()=>{ setShowSubModal(false); setPendingLines([]); setPendingApproveId(null) }}
         />
+
+        {/* Copack Allocation (dual PR) modal */}
+        {copackSummary && (
+          <CopackAllocationSummary summary={copackSummary} onClose={() => setCopackSummary(null)} />
+        )}
 
         {/* Header */}
         <div className="bg-white rounded-2xl shadow-md border border-neutral-soft/20 p-8 mb-8">
@@ -1252,6 +1506,7 @@ const PurchaseOrders: React.FC = () => {
                                   location: o.location || '',
                                   is_copack: !!o.is_copack,
                                   client_materials_required: !!o.client_materials_required,
+                                  operation_supplies_materials: !!o.operation_supplies_materials,
                                   lines: []
                                 })
                                 // Prefill packaging types (array)
@@ -1395,8 +1650,17 @@ const PurchaseOrders: React.FC = () => {
                       <label className="flex items-center text-sm font-medium text-neutral-dark">Product</label>
                       <select className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light" value={form.product} onChange={(e)=>setForm({...form, product:e.target.value})}>
                         <option value="">Select Product</option>
-                        {products.map(p => (
-                          <option key={p.id} value={p.name}>{p.name}{p.is_discontinued? ' • Discontinued' : ''}</option>
+                        {(!form.is_copack
+                          ? products
+                          : form.client_materials_required
+                            ? materials.filter(m => m.is_client_supplied)
+                            : form.operation_supplies_materials
+                              ? materials.filter(m => !m.is_client_supplied)
+                              : []
+                        ).map((p: any) => (
+                          <option key={p.id} value={p.name}>
+                            {p.name}{!form.is_copack && p.is_discontinued ? ' • Discontinued' : ''}
+                          </option>
                         ))}
                       </select>
                     </div>
@@ -1418,26 +1682,8 @@ const PurchaseOrders: React.FC = () => {
                     </div>
                   </div>
 
-                  {/* Copack toggles */}
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    <div className="space-y-2">
-                      <label className="flex items-center text-sm font-medium text-neutral-dark">Copack Settings</label>
-                      <div className="flex items-center gap-6 px-3 py-3 border border-neutral-soft rounded-lg bg-white">
-                        <label className="flex items-center gap-2 text-sm text-neutral-dark">
-                          <input type="checkbox" className="h-4 w-4" checked={form.is_copack} onChange={(e)=>setForm(prev=>({...prev,is_copack:e.target.checked, client_materials_required: e.target.checked ? true : prev.client_materials_required}))} />
-                          <span>This is a Copack Order</span>
-                        </label>
-                        <label className="flex items-center gap-2 text-sm text-neutral-dark">
-                          <input type="checkbox" className="h-4 w-4" checked={form.client_materials_required} onChange={(e)=>setForm(prev=>({...prev,client_materials_required:e.target.checked}))} />
-                          <span>Client-supplied materials required</span>
-                        </label>
-                      </div>
-                      {form.is_copack && !form.client_materials_required && (
-                        <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">Copack orders require client-supplied materials.</div>
-                      )}
-                    </div>
-                    <div />
-                  </div>
+                  {/* Copack Material Settings */}
+                  <CopackMaterialSettings form={form} setForm={setForm} />
 
                   {/* Additional Products moved to full width below */}
                   <div className="space-y-2">
@@ -1681,7 +1927,7 @@ const PurchaseOrders: React.FC = () => {
                   </div>
                 </div>
 
-                {hasViewShortfall && (
+                {hasViewShortfall && !isViewOpen?.is_copack && !isViewOpen?.operation_supplies_materials && (
                   <div className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 flex items-center justify-between text-sm mt-1">
                     <div>
                       <div className="font-semibold text-amber-800">This purchase order has unfulfilled quantities.</div>

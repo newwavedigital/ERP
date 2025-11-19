@@ -1,5 +1,5 @@
 import React from 'react'
-import { createBrowserRouter, RouterProvider } from 'react-router-dom'
+import { createHashRouter, RouterProvider } from 'react-router-dom'
 import Layout from './components/Layout.tsx'
 import Dashboard from './pages/Dashboard.tsx'
 import Products from './pages/Products.tsx'
@@ -15,7 +15,7 @@ import TeamChat from './pages/TeamChat.tsx'
 import AIInsights from './pages/AIInsights.tsx'
 
 const App: React.FC = () => {
-  const router = createBrowserRouter([
+  const router = createHashRouter([
     {
       element: <Layout />,
       children: [

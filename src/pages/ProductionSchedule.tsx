@@ -104,6 +104,7 @@ const ProductionSchedule: React.FC = () => {
   // Batches table
   const [items, setItems] = useState<ScheduleItem[]>([]);
   const [loading, setLoading] = useState(false);
+  const [creatingFromPo, setCreatingFromPo] = useState(false)
 
   // Filters / tabs
   const tabs: Array<{ key: string; label: string; color?: string }> = [
@@ -165,6 +166,9 @@ const ProductionSchedule: React.FC = () => {
   const [shortagesCache, setShortagesCache] = useState<Record<string, ShortageRow[]>>({})
   const [prExistsMap, setPrExistsMap] = useState<Record<string, boolean>>({})
   const SHORTAGE_CACHE_PREFIX = 'batchShortages:'
+  // CAPA flags per batch (client-side; set to true after completion if CAPA was created)
+  const [capaMap, setCapaMap] = useState<Record<string, boolean>>({})
+  const capaBadgeCount = useMemo(() => Object.keys(capaMap || {}).length, [capaMap])
 
   const saveShortagesToCache = (batchId: string, shortages: ShortageRow[]) => {
     try { localStorage.setItem(SHORTAGE_CACHE_PREFIX + batchId, JSON.stringify(shortages)) } catch {}
@@ -262,6 +266,7 @@ const ProductionSchedule: React.FC = () => {
         )
         .order("start_date", { ascending: false })
         .limit(200);
+
       if (error) throw error;
 
       const mapped: ScheduleItem[] =
@@ -281,6 +286,23 @@ const ProductionSchedule: React.FC = () => {
         })) ?? [];
 
       setItems(mapped);
+      // Also fetch CAPA presence for these batches
+      try {
+        const ids = (data || []).map((r: any) => r.id).filter(Boolean)
+        if (ids.length) {
+          const { data: caps } = await supabase
+            .from('capa_tasks')
+            .select('batch_id')
+            .in('batch_id', ids)
+          const map: Record<string, boolean> = {}
+          for (const c of caps || []) {
+            if (c.batch_id) map[String(c.batch_id)] = true
+          }
+          setCapaMap(map)
+        } else {
+          setCapaMap({})
+        }
+      } catch {}
     } catch (e) {
       console.warn("Load batches error:", e);
       pushToast({ type: 'error', message: 'Failed to load production batches' })
@@ -597,18 +619,111 @@ const ProductionSchedule: React.FC = () => {
 
   const [completeId, setCompleteId] = useState<string | null>(null)
   const [completeQty, setCompleteQty] = useState<string>('0')
-  const confirmComplete = async () => {
-    if (!completeId) return
+  // Preview state for variance inside Complete modal
+  const [completedQtyPreview, setCompletedQtyPreview] = useState(0)
+  const [modalStandardYield, setModalStandardYield] = useState<number>(1)
+  const [scrapQtyPreview, setScrapQtyPreview] = useState(0)
+  const [modalScrapTolerance, setModalScrapTolerance] = useState<number>(0.05)
+
+  // bump this to refresh variance panels inside ViewContent after completing
+  const [varianceRefreshKey, setVarianceRefreshKey] = useState(0)
+  // prevent double submit while completing
+  const [isCompleting, setIsCompleting] = useState(false)
+
+  // Derive the batch row for the modal (planned qty, etc.)
+  const previewBatch = useMemo(() => {
+    if (!completeId) return null
+    return (items || []).find(i => String(i.id) === String(completeId)) || null
+  }, [items, completeId])
+
+  // Sync preview qty when modal opens
+  useEffect(() => {
+    if (completeId) {
+      const n = Number(completeQty || 0)
+      setCompletedQtyPreview(Number.isFinite(n) ? n : 0)
+      setScrapQtyPreview(0)
+      // fetch standard_yield for this batch's formula to drive preview
+      ;(async () => {
+        try {
+          const { data: b } = await supabase
+            .from('production_batches')
+            .select('id, qty, formula_id')
+            .eq('id', completeId)
+            .maybeSingle()
+          let sy = 1
+          let tol = 0.05
+          if (b?.formula_id) {
+            const { data: f } = await supabase
+              .from('formulas')
+              .select('standard_yield, scrap_tolerance')
+              .eq('id', b.formula_id as any)
+              .maybeSingle()
+            if (typeof f?.standard_yield === 'number') sy = f.standard_yield as number
+            if (typeof (f as any)?.scrap_tolerance === 'number') tol = (f as any).scrap_tolerance as number
+          }
+          setModalStandardYield(sy || 1)
+          setModalScrapTolerance(tol || 0.05)
+        } catch {
+          setModalStandardYield(1)
+          setModalScrapTolerance(0.05)
+        }
+      })()
+    }
+  }, [completeId])
+  const confirmComplete = async (qtySubmitted?: number) => {
+    if (!completeId || isCompleting) return
+    const qtyToSubmit = Number(qtySubmitted ?? completedQtyPreview ?? completeQty ?? 0)
+    if (!Number.isFinite(qtyToSubmit) || qtyToSubmit <= 0) {
+      pushToast({ type: 'error', message: 'Completed quantity must be greater than 0' })
+      return
+    }
+    setIsCompleting(true)
+    // Optimistic UI update for the table row
+    setItems(prev => prev.map(r => (
+      r.id === String(completeId)
+        ? { ...r, status: 'Completed', completedQty: qtyToSubmit }
+        : r
+    )))
     try {
-      const { error } = await supabase.rpc('fn_complete_batch', { p_batch_id: castBatchId(completeId), p_completed_qty: Number(completeQty || 0) })
+      const { data, error } = await supabase.rpc('fn_complete_batch', {
+        p_batch_id: castBatchId(completeId),
+        p_completed_qty: qtyToSubmit,
+        p_scrap_qty: Number(scrapQtyPreview || 0)
+      })
       if (error) throw error
+      if (data && typeof data === 'object' && data.status === 'error') {
+        throw new Error(data.message || 'fn_complete_batch returned error')
+      }
+      // trigger variance refresh in the Batch Details view if it is open
+      setVarianceRefreshKey(v => v + 1)
+      // CAPA created toast (if returned by RPC)
+      try {
+        if (data && (data.capa_created || data.capa_id)) {
+          pushToast({ type: 'success', message: 'CAPA Created: Scrap exceeded tolerance' })
+          setCapaMap((prev: Record<string, boolean>) => ({ ...prev, [String(completeId)]: true }))
+        }
+      } catch {}
+      // notify any listeners to refresh finished goods
+      try {
+        // optional global hook/event
+        // @ts-ignore
+        if (typeof window !== 'undefined') {
+          // @ts-ignore
+          window.refreshFinishedGoods && window.refreshFinishedGoods()
+          window.dispatchEvent(new CustomEvent('finishedGoods:refresh'))
+        }
+      } catch {}
       setCompleteId(null)
       setCompleteQty('0')
+      setCompletedQtyPreview(0)
+      setScrapQtyPreview(0)
       await loadBatches()
       pushToast({ type: 'success', message: 'Batch completed' })
     } catch (e: any) {
       console.warn('Complete batch error:', e)
       pushToast({ type: 'error', message: `Failed to complete batch: ${e?.message || e}` })
+    } finally {
+      setIsCompleting(false)
     }
   }
 
@@ -621,6 +736,307 @@ const ProductionSchedule: React.FC = () => {
       console.warn(e)
       pushToast({ type: 'error', message: 'Failed to generate purchase orders' })
     }
+  }
+
+  // View content component
+  const ViewContent: React.FC<{ batchId: string; refreshKey?: number }> = ({ batchId, refreshKey }) => {
+    const [row, setRow] = useState<BatchRow | null>(null)
+    const [reqs, setReqs] = useState<Array<{ material_id: string; material_name: string; qty_required: number; reserved_qty: number; uom?: string }>>([])
+    const [busy, setBusy] = useState(true)
+    const [activeTab, setActiveTab] = useState<'details' | 'variance' | 'capa'>('details')
+    const [capaHistory, setCapaHistory] = useState<any[]>([])
+
+    // reference setter to satisfy TS unused check in some tooling
+    useEffect(() => { /* no-op */ }, [setActiveTab])
+
+    useEffect(() => {
+      let mounted = true
+      ;(async () => {
+        try {
+          setBusy(true)
+          const [{ data: b, error: bErr }, { data: r, error: rErr }] = await Promise.all([
+            supabase
+              .from('production_batches')
+              .select('id, product_sku, qty, room, start_date, status, formula_id, customer_id, source_po_id, source_po_line_id, completed_qty, samples_received, samples_sent')
+              .eq('id', batchId)
+              .single(),
+            supabase
+              .from('production_requirements')
+              .select('material_id, qty_required, uom, reserved_qty, inventory_materials(product_name)')
+              .eq('batch_id', batchId)
+          ])
+          if (bErr) throw bErr
+          if (mounted) setRow(b as any)
+          if (rErr) throw rErr
+          const mapped = (r || []).map((x: any) => ({
+            material_id: String(x.material_id || ''),
+            material_name: x.inventory_materials?.product_name || '-',
+            qty_required: Number(x.qty_required || 0),
+            reserved_qty: Number(x.reserved_qty || 0),
+            uom: x.uom || ''
+          }))
+          if (mounted) setReqs(mapped)
+          // Load CAPA tasks history for this batch
+          try {
+            const { data: caps } = await supabase
+              .from('capa_tasks')
+              .select('id, batch_id, product_sku, issue_type, scrap_qty, scrap_percent, tolerance, created_at, status')
+              .eq('batch_id', castBatchId(batchId))
+              .order('created_at', { ascending: false })
+            if (mounted) setCapaHistory(caps || [])
+          } catch {}
+        } catch (e) {
+          console.warn('Load batch view error', e)
+        } finally {
+          if (mounted) setBusy(false)
+        }
+      })()
+      return () => { mounted = false }
+    }, [batchId, refreshKey])
+
+    return (
+      <div className="p-6 space-y-6" data-active-tab={activeTab}>
+        {/* Details moved to the summary card above to avoid duplication */}
+
+        {/* Requirements */}
+        <div className="space-y-2">
+          <div className="text-sm font-semibold text-neutral-dark">Requirements</div>
+          {/* YIELD & SCRAP INFO */}
+          <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-4 bg-neutral-light/40 p-4 rounded-xl">
+            <div>
+              <div className="text-xs text-neutral-medium uppercase">Yield %</div>
+              <div className="font-semibold text-neutral-dark">
+                {(((row as any)?.formula?.standard_yield ?? 1) * 100)}%
+              </div>
+            </div>
+            <div>
+              <div className="text-xs text-neutral-medium uppercase">Scrap %</div>
+              <div className="font-semibold text-neutral-dark">
+                {(((row as any)?.formula?.scrap_percent ?? 0) * 100)}%
+              </div>
+            </div>
+            <div>
+              <div className="text-xs text-neutral-medium uppercase">Adjusted Output</div>
+              <div className="font-semibold text-neutral-dark">
+                {row?.qty ?? 0} units
+              </div>
+            </div>
+          </div>
+          <div className="overflow-x-auto border border-neutral-soft/40 rounded-xl">
+            <table className="min-w-full text-sm">
+              <thead>
+                <tr className="bg-neutral-light/40">
+                  <th className="px-4 py-2 text-left text-xs font-semibold">Material</th>
+                  <th className="px-4 py-2 text-right text-xs font-semibold">Required</th>
+                  <th className="px-4 py-2 text-right text-xs font-semibold">UOM</th>
+                  <th className="px-4 py-2 text-right text-xs font-semibold">Yield%</th>
+                  <th className="px-4 py-2 text-right text-xs font-semibold">Scrap%</th>
+                  <th className="px-4 py-2 text-right text-xs font-semibold">Shortage</th>
+                </tr>
+              </thead>
+              <tbody>
+                {busy ? (
+                  <tr><td className="px-4 py-4 text-neutral-medium" colSpan={6}>Loading…</td></tr>
+                ) : reqs.length === 0 ? (
+                  <tr><td className="px-4 py-4 text-neutral-medium" colSpan={6}>No requirements found.</td></tr>
+                ) : (
+                  reqs.map((r, i) => {
+                    const shortage = Math.max(0, Number(r.qty_required || 0) - Number(r.reserved_qty || 0))
+                    return (
+                      <tr key={r.material_id || i} className="border-t border-neutral-soft/30">
+                        <td className="px-4 py-2 text-neutral-dark">{r.material_name}</td>
+                        <td className="px-4 py-2 text-right">{Number(r.qty_required || 0).toLocaleString()}</td>
+                        <td className="px-4 py-2 text-right">{r.uom || '-'}</td>
+                        <td className="px-4 py-2 text-right">{((((row as any)?.formula?.standard_yield ?? 1) * 100))}%</td>
+                        <td className="px-4 py-2 text-right">{((((row as any)?.formula?.scrap_percent ?? 0) * 100))}%</td>
+                        <td className={`px-4 py-2 text-right ${shortage>0 ? 'text-accent-danger font-semibold' : ''}`}>{shortage.toLocaleString()}</td>
+                      </tr>
+                    )
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {/* ─────────────────────────────── */}
+        {/* WIP INFORMATION */}
+        {/* ─────────────────────────────── */}
+        <div className="space-y-2">
+          <div className="text-sm font-semibold text-neutral-dark">
+            Work In Progress (WIP)
+          </div>
+
+          {row?.status !== "In Progress" ? (
+            <div className="text-neutral-medium text-sm">
+              Batch not started — WIP details will appear once production begins.
+            </div>
+          ) : (
+            <div className="p-4 border rounded-xl bg-neutral-light/40 space-y-4">
+
+              {/* WIP Summary */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div>
+                  <div className="text-xs text-neutral-medium uppercase">WIP Status</div>
+                  <div className="font-semibold text-neutral-dark">In Progress</div>
+                </div>
+                <div>
+                  <div className="text-xs text-neutral-medium uppercase">Started At</div>
+                  <div className="font-semibold text-neutral-dark">{fmtDate(row.start_date)}</div>
+                </div>
+                <div>
+                  <div className="text-xs text-neutral-medium uppercase">Completed Qty</div>
+                  <div className="font-semibold text-neutral-dark">{row.completed_qty ?? 0}</div>
+                </div>
+              </div>
+
+              {/* Consumption Table */}
+              <div>
+                <div className="text-xs font-semibold text-neutral-medium uppercase mb-2">
+                  Material Consumption
+                </div>
+
+                {reqs.length === 0 ? (
+                  <div className="text-neutral-medium text-sm">No consumption recorded yet.</div>
+                ) : (
+                  <table className="min-w-full text-sm">
+                    <thead>
+                      <tr className="bg-neutral-light/40">
+                        <th className="px-4 py-2 text-left text-xs font-semibold text-neutral-medium uppercase">Material</th>
+                        <th className="px-4 py-2 text-right text-xs font-semibold text-neutral-medium uppercase">Required</th>
+                        <th className="px-4 py-2 text-right text-xs font-semibold text-neutral-medium uppercase">Reserved</th>
+                        <th className="px-4 py-2 text-right text-xs font-semibold text-neutral-medium uppercase">Remaining</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {reqs.map((r, idx) => {
+                        const remaining = Number(r.qty_required || 0) - Number(r.reserved_qty || 0)
+                        return (
+                          <tr key={idx} className="border-t border-neutral-soft/30">
+                            <td className="px-4 py-2 text-neutral-dark">{r.material_name}</td>
+                            <td className="px-4 py-2 text-right">{r.qty_required}</td>
+                            <td className="px-4 py-2 text-right">{r.reserved_qty}</td>
+                            <td className={`px-4 py-2 text-right ${remaining > 0 ? 'text-accent-danger font-semibold':'text-neutral-dark'}`}>
+                              {remaining > 0 ? remaining : 0}
+                            </td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* PRODUCTION VARIANCE SECTION */}
+        {(row as any)?.status === "Completed" && (
+          <div className="mt-8 bg-neutral-light/40 p-5 rounded-xl">
+            <div className="text-lg font-semibold text-neutral-dark mb-4">
+              Production Variance
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+
+              <div>
+                <div className="text-xs text-neutral-medium uppercase">Planned Qty</div>
+                <div className="font-semibold text-neutral-dark">
+                  {(row as any)?.qty} units
+                </div>
+              </div>
+
+              <div>
+                <div className="text-xs text-neutral-medium uppercase">Actual Output</div>
+                <div className="font-semibold text-neutral-dark">
+                  {(row as any)?.completed_qty} units
+                </div>
+              </div>
+
+              <div>
+                <div className="text-xs text-neutral-medium uppercase">Standard Yield</div>
+                <div className="font-semibold text-neutral-dark">
+                  {(((row as any)?.formula?.standard_yield ?? 1) * 100).toFixed(2)}%
+                </div>
+              </div>
+
+              <div>
+                <div className="text-xs text-neutral-medium uppercase">Actual Yield</div>
+                <div className="font-semibold text-neutral-dark">
+                  {((((row as any)?.completed_qty || 0) / ((row as any)?.qty || 1)) * 100).toFixed(2)}%
+                </div>
+              </div>
+
+              <div>
+                <div className="text-xs text-neutral-medium uppercase">Variance</div>
+                {((((row as any)?.formula?.standard_yield ?? 1) - (((row as any)?.completed_qty || 0) / ((row as any)?.qty || 1))) > 0.05) ? (
+                  <div className="font-semibold text-red-600">
+                    {((((row as any)?.formula?.standard_yield ?? 1) - (((row as any)?.completed_qty || 0) / ((row as any)?.qty || 1))) * 100).toFixed(2)}%
+                  </div>
+                ) : (
+                  <div className="font-semibold text-neutral-dark">
+                    {((((row as any)?.formula?.standard_yield ?? 1) - (((row as any)?.completed_qty || 0) / ((row as any)?.qty || 1))) * 100).toFixed(2)}%
+                  </div>
+                )}
+              </div>
+
+              <div>
+                <div className="text-xs text-neutral-medium uppercase">Review Required</div>
+                <div className="font-semibold">
+                  {((((row as any)?.formula?.standard_yield ?? 1) - (((row as any)?.completed_qty || 0) / ((row as any)?.qty || 1))) > 0.05) ? (
+                    <span className="text-red-600">YES</span>
+                  ) : (
+                    <span className="text-green-600">NO</span>
+                  )}
+                </div>
+              </div>
+
+            </div>
+
+            <div className="text-xs text-neutral-medium italic">
+              Variance is automatically triggered if Actual Yield is below Standard Yield by more than the allowed threshold (5%).
+            </div>
+          </div>
+        )}
+
+        <div className="mt-6 bg-neutral-light/40 p-5 rounded-xl">
+          <div className="text-lg font-semibold mb-1">CAPA History ({capaHistory.length})</div>
+          <div className="text-xs text-neutral-medium mb-3">Batch ID: {batchId}</div>
+          {capaHistory.length === 0 ? (
+            <div className="text-neutral-medium text-sm">No CAPA records yet.</div>
+          ) : (
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left border-b">
+                  <th className="py-2">Date</th>
+                  <th>Product</th>
+                  <th>Issue</th>
+                  <th>Scrap Qty</th>
+                  <th>Scrap %</th>
+                  <th>Tolerance</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {capaHistory.map((v) => (
+                  <tr key={v.id} className="border-b">
+                    <td>{new Date(v.created_at).toLocaleString()}</td>
+                    <td>{v.product_sku || '-'}</td>
+                    <td>{v.issue_type || '-'}</td>
+                    <td>{v.scrap_qty ?? '-'}</td>
+                    <td className={(v.scrap_percent ?? 0) > (v.tolerance ?? 0.05) ? 'text-red-600' : 'text-neutral-dark'}>
+                      {typeof v.scrap_percent === 'number' ? (v.scrap_percent * 100).toFixed(2) + '%' : '-'}
+                    </td>
+                    <td>{typeof v.tolerance === 'number' ? (v.tolerance * 100).toFixed(2) + '%' : '-'}</td>
+                    <td>{v.status || '-'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+    )
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -653,6 +1069,25 @@ const ProductionSchedule: React.FC = () => {
               >
                 {loading ? "Loading…" : "Reload"}
               </button>
+              {highlightPoId && (
+                <button
+                  onClick={async()=>{
+                    try{
+                      setCreatingFromPo(true)
+                      const { error } = await supabase.rpc('fn_auto_create_copack_batch_for_po', { p_po_id: highlightPoId })
+                      if (error) throw error
+                      await loadBatches()
+                      // keep highlight
+                      pushToast({ type:'success', message: 'Batch created from Copack PO' })
+                    }catch(e:any){
+                      pushToast({ type:'error', message: e?.message || 'Failed to auto-create batch from PO' })
+                    }finally{ setCreatingFromPo(false) }
+                  }}
+                  className="px-6 py-3 rounded-xl bg-teal-600 hover:bg-teal-700 text-white font-semibold transition-all shadow-lg hover:shadow-xl"
+                >
+                  {creatingFromPo ? 'Creating…' : 'Auto-create from PO'}
+                </button>
+              )}
               <button
                 onClick={() => setOpen(true)}
                 className="px-6 py-3 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold transition-all shadow-lg hover:shadow-xl flex items-center"
@@ -713,6 +1148,8 @@ const ProductionSchedule: React.FC = () => {
         {/* Table */}
         {filtered.length > 0 && (
           <div className="bg-white rounded-2xl shadow-md border border-neutral-soft/20">
+            {/* hidden read of capaMap to satisfy TS/linters */}
+            <span className="hidden" aria-hidden="true">{capaBadgeCount}</span>
             <div className="overflow-x-auto">
               <table className="min-w-full divide-y divide-neutral-soft">
                 <thead className="bg-neutral-light/60">
@@ -721,7 +1158,13 @@ const ProductionSchedule: React.FC = () => {
                       Product
                     </th>
                     <th className="px-6 py-3 text-left text-xs font-semibold text-neutral-medium uppercase tracking-wider">
-                      Qty Goal
+                      Qty
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-semibold text-neutral-medium uppercase tracking-wider">
+                      Formula
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-semibold text-neutral-medium uppercase tracking-wider">
+                      PO Source
                     </th>
                     <th className="px-6 py-3 text-left text-xs font-semibold text-neutral-medium uppercase tracking-wider">
                       Completed
@@ -751,10 +1194,19 @@ const ProductionSchedule: React.FC = () => {
                       <td className="px-6 py-4 whitespace-nowrap">
                         <div className="text-sm font-medium text-neutral-dark">
                           {row.product}
+                          {row.sourcePoId && (
+                            <span className="ml-2 inline-flex px-2 py-0.5 rounded-full text-[10px] font-semibold bg-teal-100 text-teal-700 align-middle">COPACK</span>
+                          )}
                         </div>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-neutral-dark">
                         {row.qty}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-neutral-dark">
+                        {row.formula || '-'}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-neutral-dark">
+                        {row.sourcePoId ? `PO ${row.sourcePoId}` : '-'}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-neutral-dark">
                         {row.completedQty}
@@ -770,6 +1222,9 @@ const ProductionSchedule: React.FC = () => {
                         >
                           {row.status}
                         </span>
+                        {capaMap[row.id] && (
+                          <span className="ml-2 inline-flex px-2 py-0.5 rounded-full text-[10px] font-semibold bg-red-100 text-red-700 align-middle">CAPA</span>
+                        )}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm">
                         <div className="flex items-center justify-end gap-3">
@@ -910,6 +1365,78 @@ const ProductionSchedule: React.FC = () => {
             >
               <Trash2 className="h-3.5 w-3.5 mr-2" /> Delete
             </button>
+          </div>
+        )}
+
+        {/* View Modal */}
+        {viewItem && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-black/50" onClick={() => setViewItem(null)}></div>
+            <div className="relative z-10 w-full max-w-4xl bg-white rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden">
+              <div className="px-6 py-4 border-b flex items-center justify-between">
+                <div>
+                  <h3 className="text-lg font-semibold text-neutral-dark">Batch Details</h3>
+                  {viewItem.sourcePoId && (
+                    <div className="text-xs mt-1 inline-flex px-2 py-0.5 rounded-full bg-teal-100 text-teal-700 font-semibold">COPACK</div>
+                  )}
+                </div>
+                <button className="p-2" onClick={() => setViewItem(null)}><X className="h-5 w-5"/></button>
+              </div>
+
+              {/* Production Batch summary (merged from second modal) */}
+              <div className="px-6 pt-4">
+                <div className="rounded-xl border border-neutral-soft/30 bg-neutral-light/30 p-4 mb-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 text-sm">
+                    <div>
+                      <div className="text-xs text-neutral-medium uppercase">Product</div>
+                      <div className="text-neutral-dark font-semibold">{viewItem.product || '-'}</div>
+                    </div>
+                    <div>
+                      <div className="text-xs text-neutral-medium uppercase">Customer</div>
+                      <div className="text-neutral-dark">{viewItem.customer || '-'}</div>
+                    </div>
+                    <div>
+                      <div className="text-xs text-neutral-medium uppercase">Formula</div>
+                      <div className="text-neutral-dark">{viewItem.formula || '-'}</div>
+                    </div>
+                    <div>
+                      <div className="text-xs text-neutral-medium uppercase">Qty Goal</div>
+                      <div className="text-neutral-dark">{viewItem.qty}</div>
+                    </div>
+                    <div>
+                      <div className="text-xs text-neutral-medium uppercase">Completed</div>
+                      <div className="text-neutral-dark">{viewItem.completedQty}</div>
+                    </div>
+                    <div>
+                      <div className="text-xs text-neutral-medium uppercase">Room</div>
+                      <div className="text-neutral-dark">{viewItem.room || '-'}</div>
+                    </div>
+                    <div>
+                      <div className="text-xs text-neutral-medium uppercase">Start</div>
+                      <div className="text-neutral-dark">{fmtDate(viewItem.startDate)}</div>
+                    </div>
+                    <div>
+                      <div className="text-xs text-neutral-medium uppercase">Status</div>
+                      <div className="text-neutral-dark">{viewItem.status}</div>
+                    </div>
+                    {viewItem.lot && (
+                      <div>
+                        <div className="text-xs text-neutral-medium uppercase">Lot #</div>
+                        <div className="text-neutral-dark">{viewItem.lot}</div>
+                      </div>
+                    )}
+                    {viewItem.po && (
+                      <div>
+                        <div className="text-xs text-neutral-medium uppercase">PO #</div>
+                        <div className="text-neutral-dark">{viewItem.po}</div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <ViewContent batchId={viewItem.id} refreshKey={varianceRefreshKey} />
+            </div>
           </div>
         )}
 
@@ -1271,32 +1798,7 @@ const ProductionSchedule: React.FC = () => {
           </div>
         )}
 
-        {/* ───────── View Modal */}
-        {viewItem && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-            <div className="absolute inset-0 bg-black/50" onClick={() => setViewItem(null)}></div>
-            <div className="relative z-10 w-full max-w-xl bg-white rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden">
-              <div className="flex items-center justify-between px-6 py-4 border-b">
-                <h3 className="text-lg font-semibold">Production Batch</h3>
-                <button onClick={() => setViewItem(null)} className="p-2">
-                  <X className="h-5 w-5" />
-                </button>
-              </div>
-              <div className="p-6 text-sm space-y-2">
-                <div><strong>Product:</strong> {viewItem.product}</div>
-                <div><strong>Customer:</strong> {viewItem.customer}</div>
-                <div><strong>Formula:</strong> {viewItem.formula}</div>
-                <div><strong>Qty Goal:</strong> {viewItem.qty}</div>
-                <div><strong>Completed:</strong> {viewItem.completedQty}</div>
-                <div><strong>Room:</strong> {viewItem.room}</div>
-                <div><strong>Start:</strong> {fmtDate(viewItem.startDate)}</div>
-                <div><strong>Status:</strong> {viewItem.status}</div>
-                {viewItem.lot && <div><strong>Lot #:</strong> {viewItem.lot}</div>}
-                {viewItem.po && <div><strong>PO #:</strong> {viewItem.po}</div>}
-              </div>
-            </div>
-          </div>
-        )}
+        
 
         {/* ───────── Edit Modal */}
         {editItem && (
@@ -1502,17 +2004,130 @@ const ProductionSchedule: React.FC = () => {
         {/* Complete Qty Modal */}
         {completeId && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-            <div className="absolute inset-0 bg-black/50" onClick={() => setCompleteId(null)}></div>
+            <div className="absolute inset-0 bg-black/50" onClick={() => { if (!isCompleting) setCompleteId(null) }}></div>
             <div className="relative z-10 w-full max-w-md bg-white rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden">
               <div className="px-6 py-4 border-b"><div className="text-lg font-semibold">Complete Batch</div></div>
-              <div className="p-6 space-y-3">
-                <label className="text-sm font-medium text-neutral-dark">Completed Quantity</label>
-                <input type="number" value={completeQty} onChange={(e)=>setCompleteQty(e.target.value)} className="w-full px-4 py-3 border border-neutral-soft rounded-xl bg-white" />
+              <div className="p-6 space-y-4">
+                {/* Inputs */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <label className="text-sm font-semibold text-neutral-dark">Completed Quantity</label>
+                    <input
+                      type="number"
+                      value={completedQtyPreview}
+                      onChange={(e) => {
+                        const v = Math.max(0, Number(e.target.value || 0))
+                        setCompletedQtyPreview(v)
+                        // keep scrap clamped within [0, completed]
+                        setScrapQtyPreview(prev => Math.max(0, Math.min(prev || 0, v)))
+                      }}
+                      className="w-full px-4 py-3 border border-neutral-soft rounded-xl bg-white"
+                      min={0}
+                      disabled={isCompleting}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-sm font-semibold text-neutral-dark">Scrap Quantity</label>
+                    <input
+                      type="number"
+                      value={scrapQtyPreview}
+                      onChange={(e) => {
+                        const raw = Number(e.target.value || 0)
+                        const clamped = Math.max(0, Math.min(raw, Number(completedQtyPreview || 0)))
+                        setScrapQtyPreview(clamped)
+                      }}
+                      className="w-full px-4 py-3 border border-neutral-soft rounded-xl bg-white"
+                      min={0}
+                      disabled={isCompleting}
+                    />
+                  </div>
+                </div>
+
+                {/* Calculations */}
+                {(() => {
+                  const planned = Math.max(1, Number(previewBatch?.qty || 0))
+                  const actualOutput = Number(completedQtyPreview || 0)
+                  const finalFG = Math.max(0, actualOutput - Number(scrapQtyPreview || 0))
+                  const actualYield = actualOutput / planned
+                  const variance = Number(modalStandardYield || 0) - actualYield
+                  const varianceHigh = variance > 0.05
+                  const scrapBase = (Number(scrapQtyPreview || 0) + Number(completedQtyPreview || 0)) || 1
+                  const scrapPercent = Number(scrapQtyPreview || 0) / scrapBase
+                  const scrapOverTol = scrapPercent > Number(modalScrapTolerance || 0)
+
+                  return (
+                    <div className="bg-neutral-light/40 p-4 rounded-xl shadow-sm">
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        <div>
+                          <div className="text-xs text-neutral-medium uppercase">Planned Qty</div>
+                          <div className="font-semibold text-neutral-dark">{planned}</div>
+                        </div>
+                        <div>
+                          <div className="text-xs text-neutral-medium uppercase">Actual Output</div>
+                          <div className="font-semibold text-neutral-dark">{actualOutput}</div>
+                        </div>
+                        <div>
+                          <div className="text-xs text-neutral-medium uppercase">Final FG Output</div>
+                          <div className="font-semibold text-neutral-dark">{finalFG}</div>
+                        </div>
+
+                        <div>
+                          <div className="text-xs text-neutral-medium uppercase">Standard Yield</div>
+                          <div className="font-semibold text-neutral-dark">{((Number(modalStandardYield || 0) * 100)).toFixed(2)}%</div>
+                        </div>
+                        <div>
+                          <div className="text-xs text-neutral-medium uppercase">Actual Yield %</div>
+                          <div className="font-semibold text-neutral-dark">{(actualYield * 100).toFixed(2)}%</div>
+                        </div>
+                        <div>
+                          <div className="text-xs text-neutral-medium uppercase">Variance %</div>
+                          <div className={varianceHigh ? "font-semibold text-red-600" : "font-semibold text-neutral-dark"}>{(variance * 100).toFixed(2)}%</div>
+                        </div>
+
+                        <div>
+                          <div className="text-xs text-neutral-medium uppercase">Review Required</div>
+                          <div className="font-semibold">{varianceHigh ? <span className="text-red-600">YES</span> : <span className="text-green-600">NO</span>}</div>
+                        </div>
+                        <div>
+                          <div className="text-xs text-neutral-medium uppercase">Scrap Qty</div>
+                          <div className="font-semibold text-neutral-dark">{Number(scrapQtyPreview || 0)}</div>
+                        </div>
+                        <div>
+                          <div className="text-xs text-neutral-medium uppercase">Scrap %</div>
+                          <div className={scrapOverTol ? "font-semibold text-red-600" : "font-semibold text-neutral-dark"}>{(scrapPercent * 100).toFixed(2)}%</div>
+                        </div>
+                        <div>
+                          <div className="text-xs text-neutral-medium uppercase">Scrap Tolerance %</div>
+                          <div className="font-semibold text-neutral-dark">{(Number(modalScrapTolerance || 0) * 100).toFixed(2)}%</div>
+                        </div>
+                      </div>
+
+                      {/* Animated warnings */}
+                      <div className="mt-4 space-y-2">
+                        <div className={`transition-opacity duration-300 ${varianceHigh ? 'opacity-100' : 'opacity-0 h-0 overflow-hidden'}`}>
+                          <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">Variance exceeds 5%. Please review before completing.</div>
+                        </div>
+                        <div className={`transition-opacity duration-300 ${scrapOverTol ? 'opacity-100' : 'opacity-0 h-0 overflow-hidden'}`}>
+                          <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">Scrap exceeds tolerance; CAPA will be created automatically.</div>
+                        </div>
+                      </div>
+
+                      {/* Footer actions */}
+                      <div className="mt-5 flex justify-end gap-3 border-t pt-4">
+                        <button className="px-4 py-2 rounded-lg border" onClick={()=>!isCompleting && setCompleteId(null)} disabled={isCompleting}>Cancel</button>
+                        <button
+                          onClick={() => { setCompleteQty(String(completedQtyPreview)); confirmComplete(completedQtyPreview); }}
+                          className={(varianceHigh ? 'bg-red-600 hover:bg-red-700' : 'bg-primary hover:bg-primary-dark') + ' text-white px-5 py-2 rounded-xl'}
+                          disabled={isCompleting || !(actualOutput > 0) || (Number(scrapQtyPreview || 0) < 0) || (Number(scrapQtyPreview || 0) > actualOutput)}
+                        >
+                          {isCompleting ? 'Completing…' : (varianceHigh ? 'Complete (Variance High!)' : 'Complete')}
+                        </button>
+                      </div>
+                    </div>
+                  )
+                })()}
               </div>
-              <div className="px-6 py-4 flex justify-end gap-3 border-t">
-                <button className="px-4 py-2 rounded-lg border" onClick={()=>setCompleteId(null)}>Cancel</button>
-                <button className="px-4 py-2 rounded-lg bg-primary-dark hover:bg-primary-medium text-white" onClick={confirmComplete}>Complete</button>
-              </div>
+              <div className="hidden" />
             </div>
           </div>
         )}

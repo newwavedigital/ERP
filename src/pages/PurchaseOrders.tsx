@@ -47,6 +47,7 @@ const PurchaseOrders: React.FC = () => {
   const navigate = useNavigate()
   const [showBackorderAdvisory, setShowBackorderAdvisory] = useState(false)
   const [viewLines, setViewLines] = useState<Array<{ product_name: string; quantity: number; allocated_qty: number; shortfall_qty: number; status: string }>>([])
+  const [viewCopackSummary, setViewCopackSummary] = useState<any | null>(null)
   const [viewLoading, setViewLoading] = useState(false)
   const [viewShipments, setViewShipments] = useState<any[]>([])
   const [viewCopackRes, setViewCopackRes] = useState<any[]>([])
@@ -264,11 +265,11 @@ const PurchaseOrders: React.FC = () => {
     )
   }
 
-  const CopackBOMMaterials: React.FC<{ data: any[]; poQty: number; formulaName?: string }>
-    = ({ data, poQty, formulaName }) => (
+  const CopackBOMMaterials: React.FC<{ data: any[]; poQty: number; formulaName?: string; opsMode?: boolean }>
+    = ({ data, poQty, formulaName, opsMode }) => (
     <div className="space-y-3">
       <div className="flex items-center justify-between">
-        <h3 className="text-base font-semibold text-neutral-dark">Client Materials Used</h3>
+        <h3 className="text-base font-semibold text-neutral-dark">{opsMode ? 'Operations Materials Used' : 'Client Materials Used'}</h3>
         {formulaName && <div className="text-xs px-2 py-1 rounded-lg border border-neutral-soft text-neutral-dark bg-white">Formula: {formulaName}</div>}
       </div>
       <div className="border border-neutral-soft/40 rounded-xl bg-neutral-light/20">
@@ -600,6 +601,35 @@ const PurchaseOrders: React.FC = () => {
     () => viewLines.some(l => Number(l.shortfall_qty || 0) > 0),
     [viewLines]
   )
+
+  // Build Copack materials allocation rows for View modal when is_copack
+  const viewCopackAllocRows = useMemo(() => {
+    try {
+      const lines = Array.isArray(viewCopackSummary?.lines) ? viewCopackSummary.lines : []
+      return lines.map((l: any) => ({
+        material_name: l.material_name,
+        required_qty: Number(l.required_qty || 0),
+        allocated_qty: Number(l.allocated_qty || 0),
+        shortfall_qty: Number(l.shortfall_qty || 0),
+        is_client_material: !!l.is_client_material,
+      }))
+    } catch { return [] }
+  }, [viewCopackSummary])
+
+  // Load Copack view summary when viewing a Copack PO
+  useEffect(() => {
+    const load = async () => {
+      try {
+        if (!isViewOpen?.is_copack || !isViewOpen?.id) { setViewCopackSummary(null); return }
+        const poId = String(isViewOpen.id)
+        const { data, error } = await supabase.rpc('fn_allocate_copack_dual_pr', { p_po_id: poId })
+        if (error) { setViewCopackSummary(null); return }
+        const normalized = normalizeCopackSummary(data || {}, poId)
+        setViewCopackSummary(normalized)
+      } catch { setViewCopackSummary(null) }
+    }
+    load()
+  }, [isViewOpen?.id, isViewOpen?.is_copack])
 
   // Pre-approval check: discontinued + substitutes
   const handleApproveClick = async (po: any) => {
@@ -1892,40 +1922,74 @@ const PurchaseOrders: React.FC = () => {
                     <div className="text-neutral-dark">{isViewOpen.date || '—'}</div>
                   </div>
                 </div>
-                {/* Line Items (no IDs) */}
-                <div className="space-y-3">
-                  <h3 className="text-base font-semibold text-neutral-dark">Line Items</h3>
-                  <div className="overflow-x-auto border border-neutral-soft/40 rounded-lg">
-                    <table className="min-w-full">
-                      <thead>
-                        <tr className="bg-neutral-light/40 border-b border-neutral-soft/50">
-                          <th className="px-4 py-2 text-left text-xs font-semibold text-neutral-medium uppercase">Product</th>
-                          <th className="px-4 py-2 text-right text-xs font-semibold text-neutral-medium uppercase">Ordered</th>
-                          <th className="px-4 py-2 text-right text-xs font-semibold text-neutral-medium uppercase">Allocated</th>
-                          <th className="px-4 py-2 text-right text-xs font-semibold text-neutral-medium uppercase">Shortfall</th>
-                          <th className="px-4 py-2 text-left text-xs font-semibold text-neutral-medium uppercase">Status</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {viewLoading ? (
-                          <tr><td className="px-4 py-4 text-sm text-neutral-medium" colSpan={5}>Loading…</td></tr>
-                        ) : viewLines.length === 0 ? (
-                          <tr><td className="px-4 py-4 text-sm text-neutral-medium" colSpan={5}>No lines</td></tr>
-                        ) : (
-                          viewLines.map((ln, i) => (
-                            <tr key={i} className="border-t border-neutral-soft/30">
-                              <td className="px-4 py-2 text-sm text-neutral-dark">{ln.product_name}</td>
-                              <td className="px-4 py-2 text-sm text-right">{ln.quantity}</td>
-                              <td className="px-4 py-2 text-sm text-right">{ln.allocated_qty}</td>
-                              <td className={`px-4 py-2 text-sm text-right ${ln.shortfall_qty>0? 'text-amber-700 font-semibold':'text-neutral-dark'}`}>{ln.shortfall_qty}</td>
-                              <td className="px-4 py-2 text-sm text-neutral-dark">{ln.status}</td>
-                            </tr>
-                          ))
-                        )}
-                      </tbody>
-                    </table>
+                {/* Line Items / Copack Materials */}
+                {!isViewOpen?.is_copack ? (
+                  <div className="space-y-3">
+                    <h3 className="text-base font-semibold text-neutral-dark">Line Items</h3>
+                    <div className="overflow-x-auto border border-neutral-soft/40 rounded-lg">
+                      <table className="min-w-full">
+                        <thead>
+                          <tr className="bg-neutral-light/40 border-b border-neutral-soft/50">
+                            <th className="px-4 py-2 text-left text-xs font-semibold text-neutral-medium uppercase">Product</th>
+                            <th className="px-4 py-2 text-right text-xs font-semibold text-neutral-medium uppercase">Ordered</th>
+                            <th className="px-4 py-2 text-right text-xs font-semibold text-neutral-medium uppercase">Allocated</th>
+                            <th className="px-4 py-2 text-right text-xs font-semibold text-neutral-medium uppercase">Shortfall</th>
+                            <th className="px-4 py-2 text-left text-xs font-semibold text-neutral-medium uppercase">Status</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {viewLoading ? (
+                            <tr><td className="px-4 py-4 text-sm text-neutral-medium" colSpan={5}>Loading…</td></tr>
+                          ) : viewLines.length === 0 ? (
+                            <tr><td className="px-4 py-4 text-sm text-neutral-medium" colSpan={5}>No lines</td></tr>
+                          ) : (
+                            viewLines.map((ln, i) => (
+                              <tr key={i} className="border-t border-neutral-soft/30">
+                                <td className="px-4 py-2 text-sm text-neutral-dark">{ln.product_name}</td>
+                                <td className="px-4 py-2 text-sm text-right">{ln.quantity}</td>
+                                <td className="px-4 py-2 text-sm text-right">{ln.allocated_qty}</td>
+                                <td className={`px-4 py-2 text-sm text-right ${ln.shortfall_qty>0? 'text-amber-700 font-semibold':'text-neutral-dark'}`}>{ln.shortfall_qty}</td>
+                                <td className="px-4 py-2 text-sm text-neutral-dark">{ln.status}</td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
                   </div>
-                </div>
+                ) : (
+                  <div className="space-y-3">
+                    <h3 className="text-base font-semibold text-neutral-dark">Materials Allocation</h3>
+                    <div className="overflow-x-auto border border-neutral-soft/40 rounded-lg">
+                      <table className="min-w-full">
+                        <thead>
+                          <tr className="bg-neutral-light/40 border-b border-neutral-soft/50">
+                            <th className="px-4 py-2 text-left text-xs font-semibold text-neutral-medium uppercase">Material</th>
+                            <th className="px-4 py-2 text-right text-xs font-semibold text-neutral-medium uppercase">Required</th>
+                            <th className="px-4 py-2 text-right text-xs font-semibold text-neutral-medium uppercase">Allocated</th>
+                            <th className="px-4 py-2 text-right text-xs font-semibold text-neutral-medium uppercase">Shortfall</th>
+                            <th className="px-4 py-2 text-left text-xs font-semibold text-neutral-medium uppercase">Type</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {viewCopackAllocRows.length === 0 ? (
+                            <tr><td className="px-4 py-4 text-sm text-neutral-medium" colSpan={5}>No materials</td></tr>
+                          ) : (
+                            viewCopackAllocRows.map((ln: any, i: number) => (
+                              <tr key={i} className="border-t border-neutral-soft/30">
+                                <td className="px-4 py-2 text-sm text-neutral-dark">{ln.material_name}</td>
+                                <td className="px-4 py-2 text-sm text-right">{ln.required_qty}</td>
+                                <td className="px-4 py-2 text-sm text-right">{ln.allocated_qty}</td>
+                                <td className={`px-4 py-2 text-sm text-right ${ln.shortfall_qty>0? 'text-amber-700 font-semibold':'text-neutral-dark'}`}>{ln.shortfall_qty}</td>
+                                <td className="px-4 py-2 text-sm text-neutral-dark">{ln.is_client_material ? 'Client Material' : 'OPS Material'}</td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
 
                 {hasViewShortfall && !isViewOpen?.is_copack && !isViewOpen?.operation_supplies_materials && (
                   <div className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 flex items-center justify-between text-sm mt-1">
@@ -1945,12 +2009,16 @@ const PurchaseOrders: React.FC = () => {
                 {/* Copack-only sections */}
                 {isViewOpen.is_copack && (
                   <>
-                    <CopackAllocatedMaterials data={viewCopackRes} />
+                    {/* Show client allocation box only when client materials mode is ON */}
+                    {!!isViewOpen.client_materials_required && !isViewOpen.operation_supplies_materials && (
+                      <CopackAllocatedMaterials data={viewCopackRes} />
+                    )}
                     {Array.isArray(viewFormulaItems) && viewFormulaItems.length > 0 && (
                       <CopackBOMMaterials
                         data={viewFormulaItems}
                         poQty={Number(isViewOpen.quantity || 0)}
                         formulaName={viewFormula?.formula_name}
+                        opsMode={!!isViewOpen.operation_supplies_materials}
                       />
                     )}
                   </>

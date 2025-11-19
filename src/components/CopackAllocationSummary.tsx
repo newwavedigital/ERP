@@ -72,14 +72,12 @@ const CopackAllocationSummary: React.FC<CopackSummaryProps> = ({ summary, onClos
           </div>
 
           {/* Client-Supplied Material Requests */}
-          <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <h3 className="text-base font-semibold text-neutral-dark">Client-Supplied Material Requests</h3>
-              <Badge tone="indigo">Client Requests</Badge>
-            </div>
-            {clientShorts.length === 0 ? (
-              <EmptyCard>No items to display.</EmptyCard>
-            ) : (
+          {clientShorts.length > 0 && (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <h3 className="text-base font-semibold text-neutral-dark">Client-Supplied Material Requests</h3>
+                <Badge tone="indigo">Client Requests</Badge>
+              </div>
               <div className="overflow-x-auto border border-neutral-soft/40 rounded-xl">
                 <table className="min-w-full text-sm">
                   <thead>
@@ -108,18 +106,16 @@ const CopackAllocationSummary: React.FC<CopackSummaryProps> = ({ summary, onClos
                   </tbody>
                 </table>
               </div>
-            )}
-          </div>
+            </div>
+          )}
 
           {/* Operations PRs */}
-          <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <h3 className="text-base font-semibold text-neutral-dark">Operations Purchase Requisitions</h3>
-              <Badge tone="amber">Ops PRs</Badge>
-            </div>
-            {opsShorts.length === 0 ? (
-              <EmptyCard>No items to display.</EmptyCard>
-            ) : (
+          {opsShorts.length > 0 && (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <h3 className="text-base font-semibold text-neutral-dark">Operations Purchase Requisitions</h3>
+                <Badge tone="amber">Ops PRs</Badge>
+              </div>
               <div className="overflow-x-auto border border-neutral-soft/40 rounded-xl">
                 <table className="min-w-full text-sm">
                   <thead>
@@ -148,8 +144,8 @@ const CopackAllocationSummary: React.FC<CopackSummaryProps> = ({ summary, onClos
                   </tbody>
                 </table>
               </div>
-            )}
-          </div>
+            </div>
+          )}
 
           {/* BOM Allocation Summary (Expandable) */}
           <div className="space-y-3">

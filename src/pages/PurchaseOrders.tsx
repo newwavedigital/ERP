@@ -20,6 +20,7 @@ const PurchaseOrders: React.FC = () => {
   const [isLocationOpen, setIsLocationOpen] = useState(false)
   const [customers, setCustomers] = useState<Array<{id:string; name:string; credit_hold?: boolean; overdue_balance?: number}>>([])
   const [products, setProducts] = useState<Array<{id:string; name:string; sku?:string; is_discontinued?: boolean; substitute_sku?: string | null}>>([])
+  const [materials, setMaterials] = useState<Array<{id:string; name:string; category?: string; is_client_supplied?: boolean}>>([])
   const [orders, setOrders] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -63,8 +64,6 @@ const PurchaseOrders: React.FC = () => {
   // Bundle/KIT packaging rule state
   const [isBundleBlocked, setIsBundleBlocked] = useState(false)
   const [bundleBlockInfo, setBundleBlockInfo] = useState<{ title: string; message: string; missing: Array<{ material?: string; product_name?: string; shortfall_qty?: number }> } | null>(null)
-  // Filtered products for the Product dropdown
-  const [filteredProducts, setFilteredProducts] = useState<Array<{ id: string; name: string; packaging_type?: string }>>([])
   const [form, setForm] = useState({
     date: '',
     customer: '',
@@ -688,121 +687,6 @@ const PurchaseOrders: React.FC = () => {
     return idx
   }, [products])
 
-  // Unified product filtering per ruleset
-  const filterProducts = useMemo(() => {
-    return async (
-      packagingTypesSel: string[],
-      selectedCustomerId: string,
-      isCopack: boolean,
-      clientSupplied: boolean,
-      opsSupplied: boolean,
-    ) => {
-      try {
-        // Always fetch finished goods; filter packaging types client-side
-        const pt = (packagingTypesSel || []).map((t) => String(t).toLowerCase())
-        const { data: prodRows } = await supabase
-          .from('products')
-          .select('id, product_name, product_type, packaging_type')
-          .eq('product_type', 'Finished Goods')
-          .order('product_name', { ascending: true })
-        let candidates = (prodRows || []).map((r: any) => ({ id: String(r.id), name: String(r.product_name || ''), packaging_type: r.packaging_type }))
-
-        // Client-side packaging filter
-        if (pt.length > 0) {
-          const hasAnyPackaging = candidates.some((c) => !!c.packaging_type)
-          if (hasAnyPackaging) {
-            if (pt.includes('bundle')) {
-              candidates = candidates.filter((c) => String(c.packaging_type || '').toLowerCase() === 'bundle')
-            } else {
-              candidates = candidates.filter((c) => pt.includes(String(c.packaging_type || '').toLowerCase()))
-            }
-          } // else: skip filtering when no products have packaging_type populated
-        }
-
-        if (!isCopack) return candidates
-
-        // Copack: additional rules
-        const ids = candidates.map((c) => c.id)
-        if (ids.length === 0) return []
-
-        // Fetch formulas for candidates
-        const { data: forms } = await supabase
-          .from('formulas')
-          .select('id, product_id')
-          .in('product_id', ids as any)
-        const byProduct: Record<string, string[]> = {}
-        for (const f of forms || []) {
-          const pid = String((f as any).product_id)
-          const fid = String((f as any).id)
-          if (!byProduct[pid]) byProduct[pid] = []
-          byProduct[pid].push(fid)
-        }
-
-        // OPS-supplied: allow any with formula
-        if (opsSupplied) {
-          return candidates.filter((c) => Array.isArray(byProduct[c.id]) && byProduct[c.id].length > 0)
-        }
-
-        // Client-supplied: require BOM 100% client-supplied for selected customer
-        if (clientSupplied) {
-          if (!selectedCustomerId) return []
-          // Collect all formula_ids
-          const fids = Object.values(byProduct).flat()
-          if (fids.length === 0) return []
-          // Pull items joined with inventory_materials flags
-          // Attempt a denormalized select; if not available, fallback will filter none
-          const { data: items } = await supabase
-            .from('formula_items')
-            .select('formula_id, inventory_material_id, inventory_materials ( id, is_client_supplied, client_id )')
-            .in('formula_id', fids as any)
-
-          const okProducts = new Set<string>()
-          const badProducts = new Set<string>()
-          // Build map formula_id -> all materials OK?
-          const byFormula: Record<string, boolean> = {}
-          for (const it of items || []) {
-            const fid = String((it as any).formula_id)
-            const mat = (it as any).inventory_materials || {}
-            const ok = !!mat?.is_client_supplied && String(mat?.client_id || '') === String(selectedCustomerId)
-            if (byFormula[fid] === undefined) byFormula[fid] = ok
-            else byFormula[fid] = byFormula[fid] && ok
-          }
-          // A product is OK if any of its formulas are fully client-supplied for customer
-          for (const pid of Object.keys(byProduct)) {
-            const fidsFor = byProduct[pid]
-            const hasOk = fidsFor?.some((fid) => byFormula[fid] === true)
-            if (hasOk) okProducts.add(pid)
-            else badProducts.add(pid)
-          }
-          return candidates.filter((c) => okProducts.has(c.id))
-        }
-
-        // If copack but neither flag is set, allow selection (return unfiltered candidates)
-        return candidates
-      } catch {
-        return []
-      }
-    }
-  }, [supabase])
-
-  // Rebuild filteredProducts whenever dependencies change
-  useEffect(() => {
-    (async () => {
-      const list = await filterProducts(
-        selectedPackagingTypes,
-        String(form.customer_id || ''),
-        !!form.is_copack,
-        !!form.client_materials_required,
-        !!form.operation_supplies_materials,
-      )
-      setFilteredProducts(list)
-      // Clear selected product if it no longer passes the filter
-      if (form.product && !list.some((p) => p.name === form.product)) {
-        setForm((prev:any) => ({ ...prev, product: '' }))
-      }
-    })()
-  }, [filterProducts, selectedPackagingTypes, form.customer_id, form.is_copack, form.client_materials_required, form.operation_supplies_materials])
-
   // RPC response typing (subset)
   type AllocationSummary = { status?: string; total_shortfall?: number; lines?: any[] }
   // Normalize various allocation RPC payloads to CopackAllocationSummary shape
@@ -919,20 +803,21 @@ const PurchaseOrders: React.FC = () => {
     const load = async () => {
       setLoading(true)
       setError(null)
-      const [
-        { data: cData, error: cErr },
-        { data: pData, error: pErr },
-        { data: oData, error: oErr },
-      ] = await Promise.all([
+      const [{ data: cData, error: cErr }, { data: pData, error: pErr }, { data: oData, error: oErr }, { data: mData, error: mErr }] = await Promise.all([
         supabase.from('customers').select('id, company_name, credit_hold, overdue_balance').order('company_name', { ascending: true }),
         // After running the provided SQL, these columns will exist
         supabase.from('products').select('id, product_name, is_discontinued, substitute_sku').order('product_name', { ascending: true }),
         supabase.from('purchase_orders').select('*').order('created_at', { ascending: false }),
+        supabase.from('inventory_materials').select('id, product_name, category, is_client_supplied').order('product_name', { ascending: true }),
       ])
       if (cErr) setError('Cannot load customers')
       if (!cErr) setCustomers((cData ?? []).map((r: any) => ({ id: String(r.id), name: String(r.company_name ?? ''), credit_hold: !!r.credit_hold, overdue_balance: Number(r.overdue_balance ?? 0) })))
       if (!pErr) setProducts((pData ?? []).map((r: any) => ({ id: String(r.id), name: String(r.product_name ?? ''), is_discontinued: !!r.is_discontinued, substitute_sku: r.substitute_sku ?? null })))
       if (!oErr) setOrders(oData ?? [])
+      if (!mErr) {
+        const all = (mData ?? [])
+        setMaterials(all.map((r: any) => ({ id: String(r.id), name: String(r.product_name ?? ''), category: r.category || '', is_client_supplied: !!r.is_client_supplied })))
+      }
       setLoading(false)
     }
     load()
@@ -1949,25 +1834,21 @@ const PurchaseOrders: React.FC = () => {
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     <div className="space-y-2">
                       <label className="flex items-center text-sm font-medium text-neutral-dark">Product</label>
-                      <select
-                        className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light disabled:opacity-60"
-                        value={form.product}
-                        onChange={(e)=>setForm({...form, product:e.target.value})}
-                        disabled={!String(form.customer_id || form.customer) && selectedPackagingTypes.length === 0}
-                      >
-                        <option value="">{(!String(form.customer_id || form.customer) && selectedPackagingTypes.length===0) ? 'Select customer or packaging type to start' : 'Select Product'}</option>
-                        {filteredProducts.map((p: any) => (
+                      <select className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light" value={form.product} onChange={(e)=>setForm({...form, product:e.target.value})}>
+                        <option value="">Select Product</option>
+                        {(!form.is_copack
+                          ? products
+                          : form.client_materials_required
+                            ? materials.filter(m => m.is_client_supplied)
+                            : form.operation_supplies_materials
+                              ? materials.filter(m => !m.is_client_supplied)
+                              : []
+                        ).map((p: any) => (
                           <option key={p.id} value={p.name}>
-                            {p.name}
+                            {p.name}{!form.is_copack && p.is_discontinued ? ' • Discontinued' : ''}
                           </option>
                         ))}
                       </select>
-                      {(!String(form.customer_id || form.customer) && selectedPackagingTypes.length===0) && (
-                        <div className="text-xs text-neutral-medium">Select a customer or at least one packaging type to see products.</div>
-                      )}
-                      {String(form.customer_id) && selectedPackagingTypes.length>0 && filteredProducts.length===0 && (
-                        <div className="text-xs text-amber-700">No products match the selected packaging type. Try a different type or update product packaging assignments.</div>
-                      )}
                     </div>
                     {/* Packaging Type placed next to Product */}
                     <div className="space-y-2">

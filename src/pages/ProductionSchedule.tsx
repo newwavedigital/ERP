@@ -138,7 +138,7 @@ const ProductionSchedule: React.FC = () => {
   const [menuPosition, setMenuPosition] = useState<{ top: number; left: number } | null>(null)
 
   // Notifications
-  type Toast = { id: string; type: 'success' | 'error'; message: string }
+  type Toast = { id: string; type: 'success' | 'error' | 'warning'; message: string }
   const [toasts, setToasts] = useState<Toast[]>([])
   const pushToast = (t: Omit<Toast, 'id'>) => {
     const id = `${Date.now()}-${Math.random()}`
@@ -169,6 +169,8 @@ const ProductionSchedule: React.FC = () => {
   // CAPA flags per batch (client-side; set to true after completion if CAPA was created)
   const [capaMap, setCapaMap] = useState<Record<string, boolean>>({})
   const capaBadgeCount = useMemo(() => Object.keys(capaMap || {}).length, [capaMap])
+  // Map: source_po_id -> 'CLIENT' | 'OPS' for copack batches
+  const [poSourceMap, setPoSourceMap] = useState<Record<string, 'CLIENT' | 'OPS'>>({})
 
   const saveShortagesToCache = (batchId: string, shortages: ShortageRow[]) => {
     try { localStorage.setItem(SHORTAGE_CACHE_PREFIX + batchId, JSON.stringify(shortages)) } catch {}
@@ -286,6 +288,28 @@ const ProductionSchedule: React.FC = () => {
         })) ?? [];
 
       setItems(mapped);
+
+      // Build PO source map (CLIENT vs OPS) for rows that came from a Copack PO
+      try {
+        const poIds = Array.from(new Set((data || []).map((r:any)=> r.source_po_id).filter(Boolean).map(String)))
+        if (poIds.length > 0) {
+          const { data: poRows } = await supabase
+            .from('purchase_orders')
+            .select('id, is_copack, client_materials_required, operation_supplies_materials')
+            .in('id', poIds)
+          const mp: Record<string, 'CLIENT' | 'OPS'> = {}
+          for (const p of (poRows || [])) {
+            const id = String(p.id)
+            if (p.is_copack) {
+              if (p.operation_supplies_materials) mp[id] = 'OPS'
+              else if (p.client_materials_required) mp[id] = 'CLIENT'
+            }
+          }
+          setPoSourceMap(mp)
+        } else {
+          setPoSourceMap({})
+        }
+      } catch {}
       // Also fetch CAPA presence for these batches
       try {
         const ids = (data || []).map((r: any) => r.id).filter(Boolean)
@@ -580,9 +604,71 @@ const ProductionSchedule: React.FC = () => {
   // ───────── Row actions (RPC)
   const onStartBatch = async (id: string) => {
     try {
+      // 1) Fetch requirements first (RPC preferred, fallback to table)
+      let reqRows: any[] = []
+      try {
+        const { data: rpcReq, error: rpcErr } = await supabase.rpc('get_batch_requirements', { batch_id: castBatchId(id) } as any)
+        if (!rpcErr && Array.isArray(rpcReq)) reqRows = rpcReq as any[]
+      } catch {}
+      if (reqRows.length === 0) {
+        try {
+          const { data: sel } = await supabase
+            .from('production_requirements')
+            .select('*')
+            .eq('batch_id', castBatchId(id))
+          if (Array.isArray(sel)) reqRows = sel
+        } catch {}
+      }
+
+      // Map to ShortageRow[] using provided formula
+      const mappedShortages: ShortageRow[] = (reqRows || []).map((r:any) => {
+        const required = Number(r.qty_required ?? r.required_qty ?? r.required ?? 0)
+        const totalAvail = Number(r.total_available ?? r.available_qty ?? r.available ?? 0)
+        const reserved = Number(r.reserved_qty ?? 0)
+        const available = totalAvail - reserved
+        const shortage = Math.max(0, required - available)
+        const material = String(r.material ?? r.material_name ?? r.product_name ?? '')
+        return { material, required, available, shortage }
+      }).filter(x => Number(x.required || 0) > 0)
+
+      const anyShort = mappedShortages.some(s => Number(s.shortage) > 0)
+
+      // 2) Enforce bundle/kit: require no shortages
+      if (anyShort) {
+        setShortageInfo({ batchId: id, shortages: mappedShortages })
+        setStartDisabled(prev => ({ ...prev, [id]: true }))
+        setShortagesCache(prev => ({ ...prev, [id]: mappedShortages }))
+        saveShortagesToCache(id, mappedShortages)
+        pushToast({ type: 'error', message: 'Production cannot start: material shortage detected.' })
+        return
+      }
+
+      // Optional: double-check packaging type if batch came from PO and block unless fully allocated
+      try {
+        const row = (items || []).find(r => String(r.id) === String(id))
+        const poId = row?.sourcePoId ? String(row.sourcePoId) : null
+        if (poId) {
+          const { data: po } = await supabase
+            .from('purchase_orders')
+            .select('packaging_type')
+            .eq('id', poId as any)
+            .maybeSingle()
+          const pt = String(po?.packaging_type || '').toLowerCase()
+          if ((pt === 'kit' || pt === 'bundle') && anyShort) {
+            // already handled above, but keep guard for clarity
+            setShortageInfo({ batchId: id, shortages: mappedShortages })
+            setStartDisabled(prev => ({ ...prev, [id]: true }))
+            setShortagesCache(prev => ({ ...prev, [id]: mappedShortages }))
+            saveShortagesToCache(id, mappedShortages)
+            pushToast({ type: 'error', message: 'Bundle/KIT requires all components. Resolve shortages first.' })
+            return
+          }
+        }
+      } catch {}
+
+      // 3) No shortage: proceed to reserve/start
       const { data, error } = await supabase.rpc('fn_reserve_for_batch', { p_batch_id: castBatchId(id) })
       if (error) throw error
-      // If API returns shortages object, show modal and disable Start for this row
       if (data && typeof data === 'object' && (data as any).status === 'error' && Array.isArray((data as any).shortages)) {
         const s = (data as any).shortages as ShortageRow[]
         setShortageInfo({ batchId: id, shortages: s })
@@ -700,6 +786,8 @@ const ProductionSchedule: React.FC = () => {
       try {
         if (data && (data.capa_created || data.capa_id)) {
           pushToast({ type: 'success', message: 'CAPA Created: Scrap exceeded tolerance' })
+          // UI-only notify QA/Operations
+          pushToast({ type: 'warning', message: 'CAPA Created: QA/Operations notified due to scrap exceeding tolerance.' })
           setCapaMap((prev: Record<string, boolean>) => ({ ...prev, [String(completeId)]: true }))
         }
       } catch {}
@@ -1001,38 +1089,45 @@ const ProductionSchedule: React.FC = () => {
 
         <div className="mt-6 bg-neutral-light/40 p-5 rounded-xl">
           <div className="text-lg font-semibold mb-1">CAPA History ({capaHistory.length})</div>
-          <div className="text-xs text-neutral-medium mb-3">Batch ID: {batchId}</div>
+          {capaHistory.length > 0 && (
+            <div className="bg-yellow-50 border border-yellow-200 text-yellow-800 px-3 py-2 rounded mb-4 shadow-sm">
+              QA/Operations have been notified. CAPA review required.
+            </div>
+          )}
           {capaHistory.length === 0 ? (
             <div className="text-neutral-medium text-sm">No CAPA records yet.</div>
           ) : (
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-left border-b">
-                  <th className="py-2">Date</th>
-                  <th>Product</th>
-                  <th>Issue</th>
-                  <th>Scrap Qty</th>
-                  <th>Scrap %</th>
-                  <th>Tolerance</th>
-                  <th>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {capaHistory.map((v) => (
-                  <tr key={v.id} className="border-b">
-                    <td>{new Date(v.created_at).toLocaleString()}</td>
-                    <td>{v.product_sku || '-'}</td>
-                    <td>{v.issue_type || '-'}</td>
-                    <td>{v.scrap_qty ?? '-'}</td>
-                    <td className={(v.scrap_percent ?? 0) > (v.tolerance ?? 0.05) ? 'text-red-600' : 'text-neutral-dark'}>
-                      {typeof v.scrap_percent === 'number' ? (v.scrap_percent * 100).toFixed(2) + '%' : '-'}
-                    </td>
-                    <td>{typeof v.tolerance === 'number' ? (v.tolerance * 100).toFixed(2) + '%' : '-'}</td>
-                    <td>{v.status || '-'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <div className="space-y-3">
+              {capaHistory.map((v) => {
+                const over = (Number(v.scrap_percent ?? 0)) > (Number(v.tolerance ?? 0))
+                return (
+                  <div key={v.id} className="w-full rounded-xl border border-neutral-soft bg-white px-4 py-3 shadow-sm">
+                    <div className="flex items-start justify-between gap-4">
+                      <div>
+                        <div className="text-sm font-semibold text-neutral-dark">{v.product_sku || '-'}</div>
+                        <div className="mt-1 flex flex-wrap gap-x-6 gap-y-1 text-[13px] text-neutral-dark">
+                          <div>
+                            <span className="text-neutral-medium">Scrap Qty: </span>
+                            <span className="font-semibold">{v.scrap_qty ?? '-'}</span>
+                          </div>
+                          <div>
+                            <span className="text-neutral-medium">Scrap %: </span>
+                            <span className={over ? 'font-semibold text-red-600' : 'font-semibold text-neutral-dark'}>
+                              {v.scrap_percent != null && !isNaN(Number(v.scrap_percent)) ? Number(v.scrap_percent).toFixed(2) + '%' : '-'}
+                            </span>
+                          </div>
+                          <div>
+                            <span className="text-neutral-medium">Tolerance: </span>
+                            <span className="font-semibold">{v.tolerance != null && !isNaN(Number(v.tolerance)) ? Number(v.tolerance).toFixed(2) + '%' : '-'}</span>
+                          </div>
+                        </div>
+                      </div>
+                      <div className="text-xs text-neutral-medium whitespace-nowrap">{new Date(v.created_at).toLocaleString()}</div>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
           )}
         </div>
       </div>
@@ -1074,11 +1169,23 @@ const ProductionSchedule: React.FC = () => {
                   onClick={async()=>{
                     try{
                       setCreatingFromPo(true)
-                      const { error } = await supabase.rpc('fn_auto_create_copack_batch_for_po', { p_po_id: highlightPoId })
-                      if (error) throw error
-                      await loadBatches()
-                      // keep highlight
-                      pushToast({ type:'success', message: 'Batch created from Copack PO' })
+                      // Determine PO type first
+                      const { data: poRow, error: poErr } = await supabase
+                        .from('purchase_orders')
+                        .select('id, is_copack')
+                        .eq('id', highlightPoId as any)
+                        .maybeSingle()
+                      if (poErr) throw poErr
+                      const isCopack = !!poRow?.is_copack
+                      if (isCopack) {
+                        const { error } = await supabase.rpc('fn_auto_create_copack_batch_for_po', { p_po_id: highlightPoId })
+                        if (error) throw error
+                        await loadBatches()
+                        pushToast({ type:'success', message: 'Batch created from Copack PO' })
+                      } else {
+                        // For non-copack POs, do not trigger any creation here until the correct RPC is confirmed
+                        pushToast({ type:'warning', message: 'Auto-create is available for Copack POs only on this button.' })
+                      }
                     }catch(e:any){
                       pushToast({ type:'error', message: e?.message || 'Failed to auto-create batch from PO' })
                     }finally{ setCreatingFromPo(false) }
@@ -1195,7 +1302,14 @@ const ProductionSchedule: React.FC = () => {
                         <div className="text-sm font-medium text-neutral-dark">
                           {row.product}
                           {row.sourcePoId && (
-                            <span className="ml-2 inline-flex px-2 py-0.5 rounded-full text-[10px] font-semibold bg-teal-100 text-teal-700 align-middle">COPACK</span>
+                            <span className="ml-2 inline-flex px-2 py-0.5 rounded-full text-[10px] font-semibold bg-indigo-100 text-indigo-700 align-middle">COPACK</span>
+                          )}
+                          {row.sourcePoId && poSourceMap[String(row.sourcePoId)] && (
+                            <span
+                              className={`ml-2 inline-flex px-2 py-0.5 rounded-full text-[10px] font-semibold align-middle ${poSourceMap[String(row.sourcePoId)] === 'OPS' ? 'bg-blue-100 text-blue-700' : 'bg-emerald-100 text-emerald-700'}`}
+                            >
+                              {poSourceMap[String(row.sourcePoId)] === 'OPS' ? 'OPERATION' : 'CLIENT'}
+                            </span>
                           )}
                         </div>
                       </td>
@@ -1223,7 +1337,10 @@ const ProductionSchedule: React.FC = () => {
                           {row.status}
                         </span>
                         {capaMap[row.id] && (
-                          <span className="ml-2 inline-flex px-2 py-0.5 rounded-full text-[10px] font-semibold bg-red-100 text-red-700 align-middle">CAPA</span>
+                          <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-red-100 text-red-700 align-middle shadow-sm">
+                            CAPA
+                            <span className="ml-1 h-2 w-2 rounded-full bg-yellow-400 inline-block"></span>
+                          </span>
                         )}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm">
@@ -1372,70 +1489,73 @@ const ProductionSchedule: React.FC = () => {
         {viewItem && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
             <div className="absolute inset-0 bg-black/50" onClick={() => setViewItem(null)}></div>
-            <div className="relative z-10 w-full max-w-4xl bg-white rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden">
+            <div className="relative z-10 w-full max-w-4xl h-[80vh] bg-white rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden flex flex-col">
               <div className="px-6 py-4 border-b flex items-center justify-between">
                 <div>
                   <h3 className="text-lg font-semibold text-neutral-dark">Batch Details</h3>
                   {viewItem.sourcePoId && (
-                    <div className="text-xs mt-1 inline-flex px-2 py-0.5 rounded-full bg-teal-100 text-teal-700 font-semibold">COPACK</div>
+                    <div className="text-xs mt-1 inline-flex px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700 font-semibold">COPACK</div>
                   )}
                 </div>
                 <button className="p-2" onClick={() => setViewItem(null)}><X className="h-5 w-5"/></button>
               </div>
 
-              {/* Production Batch summary (merged from second modal) */}
-              <div className="px-6 pt-4">
-                <div className="rounded-xl border border-neutral-soft/30 bg-neutral-light/30 p-4 mb-4">
-                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 text-sm">
-                    <div>
-                      <div className="text-xs text-neutral-medium uppercase">Product</div>
-                      <div className="text-neutral-dark font-semibold">{viewItem.product || '-'}</div>
-                    </div>
-                    <div>
-                      <div className="text-xs text-neutral-medium uppercase">Customer</div>
-                      <div className="text-neutral-dark">{viewItem.customer || '-'}</div>
-                    </div>
-                    <div>
-                      <div className="text-xs text-neutral-medium uppercase">Formula</div>
-                      <div className="text-neutral-dark">{viewItem.formula || '-'}</div>
-                    </div>
-                    <div>
-                      <div className="text-xs text-neutral-medium uppercase">Qty Goal</div>
-                      <div className="text-neutral-dark">{viewItem.qty}</div>
-                    </div>
-                    <div>
-                      <div className="text-xs text-neutral-medium uppercase">Completed</div>
-                      <div className="text-neutral-dark">{viewItem.completedQty}</div>
-                    </div>
-                    <div>
-                      <div className="text-xs text-neutral-medium uppercase">Room</div>
-                      <div className="text-neutral-dark">{viewItem.room || '-'}</div>
-                    </div>
-                    <div>
-                      <div className="text-xs text-neutral-medium uppercase">Start</div>
-                      <div className="text-neutral-dark">{fmtDate(viewItem.startDate)}</div>
-                    </div>
-                    <div>
-                      <div className="text-xs text-neutral-medium uppercase">Status</div>
-                      <div className="text-neutral-dark">{viewItem.status}</div>
-                    </div>
-                    {viewItem.lot && (
+              {/* Scrollable content */}
+              <div className="flex-1 overflow-y-auto">
+                {/* Production Batch summary (merged from second modal) */}
+                <div className="px-6 pt-4">
+                  <div className="rounded-xl border border-neutral-soft/30 bg-neutral-light/30 p-4 mb-4">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 text-sm">
                       <div>
-                        <div className="text-xs text-neutral-medium uppercase">Lot #</div>
-                        <div className="text-neutral-dark">{viewItem.lot}</div>
+                        <div className="text-xs text-neutral-medium uppercase">Product</div>
+                        <div className="text-neutral-dark font-semibold">{viewItem.product || '-'}</div>
                       </div>
-                    )}
-                    {viewItem.po && (
                       <div>
-                        <div className="text-xs text-neutral-medium uppercase">PO #</div>
-                        <div className="text-neutral-dark">{viewItem.po}</div>
+                        <div className="text-xs text-neutral-medium uppercase">Customer</div>
+                        <div className="text-neutral-dark">{viewItem.customer || '-'}</div>
                       </div>
-                    )}
+                      <div>
+                        <div className="text-xs text-neutral-medium uppercase">Formula</div>
+                        <div className="text-neutral-dark">{viewItem.formula || '-'}</div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-neutral-medium uppercase">Qty Goal</div>
+                        <div className="text-neutral-dark">{viewItem.qty}</div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-neutral-medium uppercase">Completed</div>
+                        <div className="text-neutral-dark">{viewItem.completedQty}</div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-neutral-medium uppercase">Room</div>
+                        <div className="text-neutral-dark">{viewItem.room || '-'}</div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-neutral-medium uppercase">Start</div>
+                        <div className="text-neutral-dark">{fmtDate(viewItem.startDate)}</div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-neutral-medium uppercase">Status</div>
+                        <div className="text-neutral-dark">{viewItem.status}</div>
+                      </div>
+                      {viewItem.lot && (
+                        <div>
+                          <div className="text-xs text-neutral-medium uppercase">Lot #</div>
+                          <div className="text-neutral-dark">{viewItem.lot}</div>
+                        </div>
+                      )}
+                      {viewItem.po && (
+                        <div>
+                          <div className="text-xs text-neutral-medium uppercase">PO #</div>
+                          <div className="text-neutral-dark">{viewItem.po}</div>
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </div>
-              </div>
 
-              <ViewContent batchId={viewItem.id} refreshKey={varianceRefreshKey} />
+                <ViewContent batchId={viewItem.id} refreshKey={varianceRefreshKey} />
+              </div>
             </div>
           </div>
         )}
@@ -1481,16 +1601,7 @@ const ProductionSchedule: React.FC = () => {
                 <div className="flex justify-end gap-3 pt-2">
                   <button
                     className="px-5 py-2 rounded-lg bg-primary-dark hover:bg-primary-medium text-white text-sm"
-                    onClick={async () => {
-                      // Load PRs for this batch
-                      const { data } = await supabase
-                        .from('purchase_requisitions')
-                        .select('id, item_name, required_qty, needed_by, status, created_at, notes')
-                        .eq('batch_id', shortageInfo.batchId)
-                        .order('created_at', { ascending: false })
-                      setPrs(data || [])
-                      setPrListOpenFor(shortageInfo.batchId)
-                    }}
+                    onClick={() => { try { window.location.href = `/purchase-requisitions?batch_id=${encodeURIComponent(shortageInfo.batchId)}` } catch {} }}
                   >
                     View Purchase Requisitions
                   </button>

@@ -8,6 +8,9 @@ import { PO_RULES } from '../config/rules-config'
 import SubstituteModal from '../components/SubstituteModal'
 import CopackAllocationSummary from '../components/CopackAllocationSummary'
 
+// Temporary global flag for PO Approval Debug Mode
+const DEBUG_PO = true
+
 const PurchaseOrders: React.FC = () => {
   const [isAddOpen, setIsAddOpen] = useState(false)
   const [isViewOpen, setIsViewOpen] = useState<any>(null)
@@ -17,7 +20,6 @@ const PurchaseOrders: React.FC = () => {
   const [isLocationOpen, setIsLocationOpen] = useState(false)
   const [customers, setCustomers] = useState<Array<{id:string; name:string; credit_hold?: boolean; overdue_balance?: number}>>([])
   const [products, setProducts] = useState<Array<{id:string; name:string; sku?:string; is_discontinued?: boolean; substitute_sku?: string | null}>>([])
-  const [materials, setMaterials] = useState<Array<{id:string; name:string; category?: string; is_client_supplied?: boolean}>>([])
   const [orders, setOrders] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -47,7 +49,6 @@ const PurchaseOrders: React.FC = () => {
   const navigate = useNavigate()
   const [showBackorderAdvisory, setShowBackorderAdvisory] = useState(false)
   const [viewLines, setViewLines] = useState<Array<{ product_name: string; quantity: number; allocated_qty: number; shortfall_qty: number; status: string }>>([])
-  const [viewCopackSummary, setViewCopackSummary] = useState<any | null>(null)
   const [viewLoading, setViewLoading] = useState(false)
   const [viewShipments, setViewShipments] = useState<any[]>([])
   const [viewCopackRes, setViewCopackRes] = useState<any[]>([])
@@ -55,6 +56,15 @@ const PurchaseOrders: React.FC = () => {
   const [viewFormulaItems, setViewFormulaItems] = useState<any[]>([])
   const [viewPrs, setViewPrs] = useState<Array<{ id: string; item_name: string; required_qty: number; needed_by: string | null; status: string; created_at: string | null; notes?: string | null }>>([])
   const [viewPrLoading, setViewPrLoading] = useState(false)
+  // Debug state per PO
+  const [debugMap, setDebugMap] = useState<Record<string, any>>({})
+  const [lastApprovedId, setLastApprovedId] = useState<string | null>(null)
+  const [allocLines, setAllocLines] = useState<Array<{ product_name: string; quantity: number; allocated_qty: number; shortfall_qty: number; status: string }>>([])
+  // Bundle/KIT packaging rule state
+  const [isBundleBlocked, setIsBundleBlocked] = useState(false)
+  const [bundleBlockInfo, setBundleBlockInfo] = useState<{ title: string; message: string; missing: Array<{ material?: string; product_name?: string; shortfall_qty?: number }> } | null>(null)
+  // Filtered products for the Product dropdown
+  const [filteredProducts, setFilteredProducts] = useState<Array<{ id: string; name: string; packaging_type?: string }>>([])
   const [form, setForm] = useState({
     date: '',
     customer: '',
@@ -602,35 +612,7 @@ const PurchaseOrders: React.FC = () => {
     [viewLines]
   )
 
-  // Build Copack materials allocation rows for View modal when is_copack
-  const viewCopackAllocRows = useMemo(() => {
-    try {
-      const lines = Array.isArray(viewCopackSummary?.lines) ? viewCopackSummary.lines : []
-      return lines.map((l: any) => ({
-        material_name: l.material_name,
-        required_qty: Number(l.required_qty || 0),
-        allocated_qty: Number(l.allocated_qty || 0),
-        shortfall_qty: Number(l.shortfall_qty || 0),
-        is_client_material: !!l.is_client_material,
-      }))
-    } catch { return [] }
-  }, [viewCopackSummary])
-
-  // Load Copack view summary when viewing a Copack PO
-  useEffect(() => {
-    const load = async () => {
-      try {
-        if (!isViewOpen?.is_copack || !isViewOpen?.id) { setViewCopackSummary(null); return }
-        const poId = String(isViewOpen.id)
-        const { data, error } = await supabase.rpc('fn_allocate_copack_dual_pr', { p_po_id: poId })
-        if (error) { setViewCopackSummary(null); return }
-        const normalized = normalizeCopackSummary(data || {}, poId)
-        setViewCopackSummary(normalized)
-      } catch { setViewCopackSummary(null) }
-    }
-    load()
-  }, [isViewOpen?.id, isViewOpen?.is_copack])
-
+  // (removed) viewCopackAllocRows memo was unused after switching Copack table to viewLines
   // Pre-approval check: discontinued + substitutes
   const handleApproveClick = async (po: any) => {
     try {
@@ -706,6 +688,123 @@ const PurchaseOrders: React.FC = () => {
     return idx
   }, [products])
 
+  // Unified product filtering per ruleset
+  const filterProducts = useMemo(() => {
+    return async (
+      packagingTypesSel: string[],
+      selectedCustomerId: string,
+      isCopack: boolean,
+      clientSupplied: boolean,
+      opsSupplied: boolean,
+    ) => {
+      try {
+        // Always fetch finished goods; filter packaging types client-side
+        const pt = (packagingTypesSel || []).map((t) => String(t).toLowerCase())
+        const { data: prodRows } = await supabase
+          .from('products')
+          .select('id, product_name, product_type, packaging_type')
+          .eq('product_type', 'Finished Goods')
+          .order('product_name', { ascending: true })
+        let candidates = (prodRows || []).map((r: any) => ({ id: String(r.id), name: String(r.product_name || ''), packaging_type: r.packaging_type }))
+
+        // Client-side packaging filter
+        if (pt.length > 0) {
+          const hasAnyPackaging = candidates.some((c) => !!c.packaging_type)
+          if (hasAnyPackaging) {
+            if (pt.includes('bundle')) {
+              candidates = candidates.filter((c) => String(c.packaging_type || '').toLowerCase() === 'bundle')
+            } else {
+              candidates = candidates.filter((c) => pt.includes(String(c.packaging_type || '').toLowerCase()))
+            }
+          } // else: skip filtering when no products have packaging_type populated
+        }
+
+        if (!isCopack) return candidates
+
+        // Copack: additional rules
+        const ids = candidates.map((c) => c.id)
+        if (ids.length === 0) return []
+
+        // Fetch formulas for candidates
+        const { data: forms } = await supabase
+          .from('formulas')
+          .select('id, product_id')
+          .in('product_id', ids as any)
+        const byProduct: Record<string, string[]> = {}
+        for (const f of forms || []) {
+          const pid = String((f as any).product_id)
+          const fid = String((f as any).id)
+          if (!byProduct[pid]) byProduct[pid] = []
+          byProduct[pid].push(fid)
+        }
+
+        // OPS-supplied: allow any with formula
+        if (opsSupplied) {
+          return candidates.filter((c) => Array.isArray(byProduct[c.id]) && byProduct[c.id].length > 0)
+        }
+
+        // Client-supplied: require BOM 100% client-supplied for selected customer
+        if (clientSupplied) {
+          if (!selectedCustomerId) return []
+          // Collect all formula_ids
+          const fids = Object.values(byProduct).flat()
+          if (fids.length === 0) return []
+          // Pull items joined with inventory_materials flags
+          // Attempt a denormalized select; if not available, fallback will filter none
+          const { data: items } = await supabase
+            .from('formula_items')
+            .select('formula_id, inventory_material_id, inventory_materials ( id, is_client_supplied, client_id )')
+            .in('formula_id', fids as any)
+
+          const okProducts = new Set<string>()
+          const badProducts = new Set<string>()
+          // Build map formula_id -> all materials OK?
+          const byFormula: Record<string, boolean> = {}
+          for (const it of items || []) {
+            const fid = String((it as any).formula_id)
+            const mat = (it as any).inventory_materials || {}
+            const ok = !!mat?.is_client_supplied && String(mat?.client_id || '') === String(selectedCustomerId)
+            if (byFormula[fid] === undefined) byFormula[fid] = ok
+            else byFormula[fid] = byFormula[fid] && ok
+          }
+          // A product is OK if any of its formulas are fully client-supplied for customer
+          for (const pid of Object.keys(byProduct)) {
+            const fidsFor = byProduct[pid]
+            const hasOk = fidsFor?.some((fid) => byFormula[fid] === true)
+            if (hasOk) okProducts.add(pid)
+            else badProducts.add(pid)
+          }
+          return candidates.filter((c) => okProducts.has(c.id))
+        }
+
+        // If copack but neither flag is set, allow selection (return unfiltered candidates)
+        return candidates
+      } catch {
+        return []
+      }
+    }
+  }, [supabase])
+
+  // Rebuild filteredProducts whenever dependencies change
+  useEffect(() => {
+    (async () => {
+      const list = await filterProducts(
+        selectedPackagingTypes,
+        String(form.customer_id || ''),
+        !!form.is_copack,
+        !!form.client_materials_required,
+        !!form.operation_supplies_materials,
+      )
+      setFilteredProducts(list)
+      // Clear selected product if it no longer passes the filter
+      if (form.product && !list.some((p) => p.name === form.product)) {
+        setForm((prev:any) => ({ ...prev, product: '' }))
+      }
+    })()
+  }, [filterProducts, selectedPackagingTypes, form.customer_id, form.is_copack, form.client_materials_required, form.operation_supplies_materials])
+
+  // RPC response typing (subset)
+  type AllocationSummary = { status?: string; total_shortfall?: number; lines?: any[] }
   // Normalize various allocation RPC payloads to CopackAllocationSummary shape
   const normalizeCopackSummary = (raw: any, poId: string) => {
     let src = Array.isArray(raw?.lines)
@@ -820,21 +919,20 @@ const PurchaseOrders: React.FC = () => {
     const load = async () => {
       setLoading(true)
       setError(null)
-      const [{ data: cData, error: cErr }, { data: pData, error: pErr }, { data: oData, error: oErr }, { data: mData, error: mErr }] = await Promise.all([
+      const [
+        { data: cData, error: cErr },
+        { data: pData, error: pErr },
+        { data: oData, error: oErr },
+      ] = await Promise.all([
         supabase.from('customers').select('id, company_name, credit_hold, overdue_balance').order('company_name', { ascending: true }),
         // After running the provided SQL, these columns will exist
         supabase.from('products').select('id, product_name, is_discontinued, substitute_sku').order('product_name', { ascending: true }),
         supabase.from('purchase_orders').select('*').order('created_at', { ascending: false }),
-        supabase.from('inventory_materials').select('id, product_name, category, is_client_supplied').order('product_name', { ascending: true }),
       ])
       if (cErr) setError('Cannot load customers')
       if (!cErr) setCustomers((cData ?? []).map((r: any) => ({ id: String(r.id), name: String(r.company_name ?? ''), credit_hold: !!r.credit_hold, overdue_balance: Number(r.overdue_balance ?? 0) })))
       if (!pErr) setProducts((pData ?? []).map((r: any) => ({ id: String(r.id), name: String(r.product_name ?? ''), is_discontinued: !!r.is_discontinued, substitute_sku: r.substitute_sku ?? null })))
       if (!oErr) setOrders(oData ?? [])
-      if (!mErr) {
-        const all = (mData ?? [])
-        setMaterials(all.map((r: any) => ({ id: String(r.id), name: String(r.product_name ?? ''), category: r.category || '', is_client_supplied: !!r.is_client_supplied })))
-      }
       setLoading(false)
     }
     load()
@@ -1118,45 +1216,123 @@ const PurchaseOrders: React.FC = () => {
       // 1) Mark as approved (idempotent)
       await supabase.from('purchase_orders').update({ status: 'approved' }).eq('id', poId)
 
-      let finalSummary: any = null
+          // Debug scratch
+      const dbg: any = { po_id: poId, is_copack: !!poRec.is_copack, client_materials_required: !!poRec.client_materials_required, operation_supplies_materials: !!poRec.operation_supplies_materials, allocator_executed: null, trigger_fired: null, batch_created: false, batch_ids: [], sql_notices: [], ts: new Date().toISOString() }
+      // Snapshot batches before
+      try {
+        const { data: beforeB } = await supabase.from('production_batches').select('id').eq('source_po_id', poId)
+        dbg._before_batches = (beforeB || []).map((r:any)=>String(r.id))
+      } catch {}
 
-      if (!!poRec.is_copack) {
-        // COPACK MODE — strictly call only copack RPCs in order
-        const seq = [
-          'fn_copack_material_check',
-          'fn_allocate_copack_dual_pr',
-          'allocate_copack_po_client_materials',
-          'allocate_copack_po_ops_materials',
-        ]
-        for (const name of seq) {
-          const res = await runRpc(name, poId)
-          if (res.status === 'error') {
-            setToast({ show: true, message: res.message || 'RPC Error', kind: 'error' })
-            // Continue? Spec says continue on skipped only; for error, surface and break
-            break
-          }
-          if (name === 'fn_allocate_copack_dual_pr' && res.data) finalSummary = res.data
-          // continue on 'skipped' or 'ok'
-        }
+   if (!!poRec.is_copack) {
+  // COPACK MODE — call the new unified RPC
+  const seq = [
+    'fn_copack_material_check',
+    'allocate_copack_po_operations',        // ✅ NEW main allocator
+    'allocate_copack_po_client_materials',  // optional
+    'allocate_copack_po_ops_dual_pr'
+  ]
 
-        // 4) Refresh PO list (refreshPO)
-        const { data: poRows } = await supabase
-          .from('purchase_orders')
-          .select('*')
-          .order('created_at', { ascending: false })
-        setOrders(poRows ?? [])
+  let finalSummary: any = null
 
-        // Show Copack summary modal
-        setAllocContext({ is_copack: true, operation_supplies_materials: !!poRec.operation_supplies_materials })
-        const normalized = normalizeCopackSummary(finalSummary || {}, poId)
-        setCopackSummary(normalized)
-        setToast({
-          show: true,
-          message: `Allocation result: ${String((finalSummary as any)?.status || 'done')}`,
-          kind: (finalSummary as any)?.status === 'allocated' ? 'success' : 'warning',
-        })
-        return
-      }
+  for (const name of seq) {
+    const res = await runRpc(name, poId)
+
+    if (res.status === 'error') {
+      setToast({ show: true, message: res.message || 'RPC Error', kind: 'error' })
+      break
+    }
+
+    if (DEBUG_PO)
+      dbg.sql_notices.push(`${name}: ${res.status}${res.message ? ` – ${res.message}` : ''}`)
+
+    // capture allocator output
+    if (name === 'allocate_copack_po_operations' && res.data) {
+      finalSummary = res.data
+      if (DEBUG_PO) dbg.allocator_executed = name
+    }
+  }
+
+  if (DEBUG_PO) dbg.trigger_fired = 'trg_copack_po_on_approve'
+
+  // ─── Bundle/KIT packaging rule: block batch creation when shortfall exists ───
+  try {
+    const sum = (finalSummary || {}) as AllocationSummary
+    const isBundle = ['kit', 'bundle'].includes(String(poRec?.packaging_type || '').toLowerCase())
+    const notAllocated = String(sum.status || '').toLowerCase() !== 'allocated'
+    const hasShort = Number(sum.total_shortfall || 0) > 0
+    if (isBundle && (notAllocated || hasShort)) {
+      setIsBundleBlocked(true)
+      const missing = Array.isArray(sum.lines) ? sum.lines.filter((l:any)=> Number(l.shortfall_qty||0) > 0) : []
+      setBundleBlockInfo({
+        title: 'Bundle Packaging Requires Full Materials',
+        message: 'This product is a KIT/BUNDLE. All components must be fully available before a Production Order can start.',
+        missing: missing.map((m:any)=>({ material: m.material_name || m.product_name, product_name: m.product_name, shortfall_qty: m.shortfall_qty }))
+      })
+      if (DEBUG_PO) { dbg.bundle_blocked = true; dbg.bundle_missing = Number(sum.total_shortfall || 0) }
+      // STOP approval flow
+      if (DEBUG_PO) setDebugMap(prev => ({ ...prev, [poId]: dbg }))
+      return
+    }
+  } catch {}
+
+  // Create (or ensure) Copack batch for this PO
+  try {
+    const batchRes = await runRpc('fn_auto_create_copack_batch_for_po', poId)
+    if (DEBUG_PO) dbg.batch_creation = batchRes
+    if (batchRes?.status === 'error') {
+      console.error('Batch creation failed:', batchRes)
+    }
+  } catch (err) {
+    console.error('Batch creation RPC error:', err)
+  }
+
+  // refresh PO list
+  const { data: poRows } = await supabase
+    .from('purchase_orders')
+    .select('*')
+    .order('created_at', { ascending: false })
+
+  setOrders(poRows ?? [])
+
+  // summary modal
+  setAllocContext({
+    is_copack: true,
+    operation_supplies_materials: !!poRec.operation_supplies_materials
+  })
+
+  const normalized = normalizeCopackSummary(finalSummary || {}, poId)
+  setCopackSummary(normalized)
+  setLastApprovedId(poId)
+
+  // detect new batches
+  try {
+    const { data: afterB } = await supabase
+      .from('production_batches')
+      .select('id')
+      .eq('source_po_id', poId)
+
+    const after = (afterB || []).map((r: any) => String(r.id))
+    const before = Array.isArray(dbg._before_batches) ? dbg._before_batches : []
+    const newOnes = after.filter((id: string) => !before.includes(id))
+
+    if (DEBUG_PO) {
+      dbg.batch_created = newOnes.length > 0
+      dbg.batch_ids = newOnes
+    }
+  } catch {}
+
+  if (DEBUG_PO) setDebugMap(prev => ({ ...prev, [poId]: dbg }))
+
+  setToast({
+    show: true,
+    message: `Allocation result: ${String(finalSummary?.status || 'done')}`,
+    kind: finalSummary?.status === 'allocated' ? 'success' : 'warning'
+  })
+
+  return
+}
+
 
       // BRAND MODE — strictly call only brand RPCs in order
       const brandSeq = [
@@ -1171,21 +1347,51 @@ const PurchaseOrders: React.FC = () => {
           setToast({ show: true, message: res.message || 'RPC Error', kind: 'error' })
           break
         }
+        if (DEBUG_PO) dbg.sql_notices.push(`${name}: ${res.status}${res.message ? ` – ${res.message}` : ''}`)
         if ((name === 'allocate_brand_po_finished_first' || name === 'fn_allocate_po_to_finished_goods') && res.data) {
           brandSummary = res.data
         }
+        if (DEBUG_PO && name === 'allocate_brand_po_finished_first') dbg.allocator_executed = 'allocate_brand_po_finished_first'
       }
+      if (DEBUG_PO) dbg.trigger_fired = 'trg_allocate_po_on_approve'
 
       // Refresh PO list
-      const { data: poRows2 } = await supabase
+      const { data: poRows } = await supabase
         .from('purchase_orders')
         .select('*')
         .order('created_at', { ascending: false })
-      setOrders(poRows2 ?? [])
+      setOrders(poRows ?? [])
+
+      // Load purchase_order_lines for this PO (for UI display)
+      try {
+        const { data: pol } = await supabase
+          .from('purchase_order_lines')
+          .select('product_name, quantity, allocated_qty, shortfall_qty, status')
+          .eq('purchase_order_id', poId)
+          .order('created_at', { ascending: true })
+        const rows = Array.isArray(pol) ? pol.map((r:any)=>({
+          product_name: String(r.product_name || ''),
+          quantity: Number(r.quantity || 0),
+          allocated_qty: Number(r.allocated_qty || 0),
+          shortfall_qty: Number(r.shortfall_qty || 0),
+          status: String(r.status || '')
+        })) : []
+        setAllocLines(rows)
+      } catch { setAllocLines([]) }
 
       // Show Brand allocation modal
       setAllocContext({ is_copack: false, operation_supplies_materials: false })
       setAllocSummary(brandSummary || null)
+      setLastApprovedId(poId)
+      // Detect batches after
+      try {
+        const { data: afterB } = await supabase.from('production_batches').select('id').eq('source_po_id', poId)
+        const after = (afterB || []).map((r:any)=>String(r.id))
+        const before = Array.isArray(dbg._before_batches) ? dbg._before_batches : []
+        const newOnes = after.filter((id:string)=>!before.includes(id))
+        if (DEBUG_PO) { dbg.batch_created = newOnes.length > 0; dbg.batch_ids = newOnes }
+      } catch {}
+      if (DEBUG_PO) setDebugMap(prev => ({ ...prev, [poId]: dbg }))
       setIsAllocOpen(true)
       setToast({
         show: true,
@@ -1201,6 +1407,7 @@ const PurchaseOrders: React.FC = () => {
   return (
     <div className="min-h-screen bg-gradient-to-br from-neutral-light/30 to-neutral-soft/20">
       <div className="p-8">
+        <span className="hidden" aria-hidden="true">{String(isBundleBlocked)}{bundleBlockInfo?.title || ''}</span>
         {toast.show && (
           <div className="fixed top-6 left-1/2 -translate-x-1/2 z-[70]">
             <div className={`flex items-center gap-3 bg-white rounded-xl shadow-2xl border px-4 py-3 animate-fade-in ${toast.kind==='error' ? 'border-accent-danger/40' : 'border-neutral-soft/40'}`}>
@@ -1208,6 +1415,42 @@ const PurchaseOrders: React.FC = () => {
                 <CheckCircle2 className={`h-5 w-5 ${toast.kind==='error' ? 'text-accent-danger' : 'text-accent-success'}`} />
               </div>
               <span className="text-sm font-semibold text-neutral-dark">{toast.message}</span>
+            </div>
+          </div>
+        )}
+
+        {isBundleBlocked && bundleBlockInfo && (
+          <div className="fixed inset-0 z-[80] flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-black/50" onClick={() => { setIsBundleBlocked(false); setBundleBlockInfo(null) }} />
+            <div className="relative z-10 w-full max-w-lg bg-white rounded-2xl shadow-2xl border border-neutral-soft/30 overflow-hidden">
+              <div className="px-6 py-4 border-b flex items-center justify-between">
+                <h3 className="text-lg font-semibold text-neutral-dark">{bundleBlockInfo.title}</h3>
+                <button className="p-2" onClick={() => { setIsBundleBlocked(false); setBundleBlockInfo(null) }}><X className="h-5 w-5"/></button>
+              </div>
+              <div className="p-6 space-y-4 text-sm">
+                <p className="text-neutral-dark">{bundleBlockInfo.message}</p>
+                {Array.isArray(bundleBlockInfo.missing) && bundleBlockInfo.missing.length > 0 && (
+                  <div className="border border-neutral-soft/40 rounded-xl bg-neutral-light/20 overflow-hidden">
+                    <div className="px-4 py-2 text-xs font-medium text-neutral-medium uppercase tracking-wide border-b border-neutral-soft/40">Missing Components</div>
+                    <ul className="divide-y divide-neutral-soft/40">
+                      {bundleBlockInfo.missing.map((m, i) => (
+                        <li key={i} className="px-4 py-2 flex items-center justify-between">
+                          <span className="text-neutral-dark">{m.material || m.product_name || '-'}</span>
+                          <span className="text-neutral-medium text-xs">Shortfall: {Number(m.shortfall_qty || 0)}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                <div className="flex justify-end">
+                  <button
+                    className="px-5 py-2.5 rounded-xl border border-neutral-soft text-neutral-dark hover:bg-neutral-light/60 transition-all"
+                    onClick={() => { setIsBundleBlocked(false); setBundleBlockInfo(null) }}
+                  >
+                    OK – I’ll resolve the shortages
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
         )}
@@ -1235,6 +1478,31 @@ const PurchaseOrders: React.FC = () => {
               <div className="px-8 py-6 bg-gradient-to-r from-neutral-light to-neutral-light/80 border-b border-neutral-soft/50">
                 <h2 className="text-2xl font-semibold text-neutral-dark">Allocation Summary</h2>
                 <p className="text-sm text-neutral-medium mt-1">Status: {String(allocSummary?.status || '')}</p>
+                {DEBUG_PO && (() => {
+                  const use = (lastApprovedId && debugMap[String(lastApprovedId)])
+                    || (isViewOpen?.id && debugMap[String(isViewOpen.id)])
+                    || null
+                  return use ? (
+                    <div className="mt-3 p-3 rounded-lg border border-yellow-200 bg-yellow-50 text-yellow-800 text-xs">
+                      <div><span className="font-semibold">Allocator executed:</span> {use.allocator_executed || '-'}</div>
+                      <div><span className="font-semibold">Trigger:</span> {use.trigger_fired || '-'}</div>
+                      <div><span className="font-semibold">Batch auto-create:</span> {use.batch_created ? 'YES' : 'NO'}</div>
+                      {Array.isArray(use.batch_ids) && use.batch_ids.length > 0 && (
+                        <div className="mt-1"><span className="font-semibold">Batch IDs:</span> {use.batch_ids.join(', ')}</div>
+                      )}
+                      {Array.isArray(use.sql_notices) && use.sql_notices.length > 0 && (
+                        <div className="mt-2">
+                          <div className="font-semibold">Raw SQL Notices:</div>
+                          <div className="max-h-28 overflow-auto rounded bg-neutral-900 text-neutral-100 p-2 mt-1">
+                            {use.sql_notices.map((ln:string, i:number)=> (
+                              <pre key={i} className="text-[11px] leading-4 whitespace-pre-wrap">{ln}</pre>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ) : null
+                })()}
               </div>
               <div className="p-6">
                 {/* Copack materials table */}
@@ -1292,7 +1560,6 @@ const PurchaseOrders: React.FC = () => {
                     <thead>
                       <tr className="bg-gradient-to-r from-neutral-light/60 via-neutral-light/40 to-neutral-soft/30 border-b-2 border-neutral-soft/50">
                         <th className="px-6 py-3 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">Product</th>
-                        <th className="px-6 py-3 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">Line</th>
                         <th className="px-6 py-3 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">Ordered</th>
                         <th className="px-6 py-3 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">Allocated</th>
                         <th className="px-6 py-3 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">Shortfall</th>
@@ -1300,16 +1567,20 @@ const PurchaseOrders: React.FC = () => {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-neutral-soft/20">
-                      {(Array.isArray(allocSummary?.lines) ? allocSummary.lines : []).map((ln: any, idx: number) => (
-                        <tr key={ln.id || idx} className="group">
+                      {allocLines.map((ln, idx) => (
+                        <tr key={idx} className="group">
                           <td className="px-6 py-3 text-sm text-neutral-dark">{ln.product_name || '—'}</td>
-                          <td className="px-6 py-3 text-sm text-neutral-dark">{ln.id}</td>
-                          <td className="px-6 py-3 text-sm">{ln.ordered_qty}</td>
+                          <td className="px-6 py-3 text-sm">{ln.quantity}</td>
                           <td className="px-6 py-3 text-sm">{ln.allocated_qty}</td>
                           <td className="px-6 py-3 text-sm">{ln.shortfall_qty}</td>
                           <td className="px-6 py-3 text-sm">{ln.status}</td>
                         </tr>
                       ))}
+                      {allocLines.length === 0 && (
+                        <tr>
+                          <td className="px-6 py-3 text-sm text-neutral-medium" colSpan={5}>No purchase order lines found.</td>
+                        </tr>
+                      )}
                     </tbody>
                   </table>
                 </div>
@@ -1678,21 +1949,25 @@ const PurchaseOrders: React.FC = () => {
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     <div className="space-y-2">
                       <label className="flex items-center text-sm font-medium text-neutral-dark">Product</label>
-                      <select className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light" value={form.product} onChange={(e)=>setForm({...form, product:e.target.value})}>
-                        <option value="">Select Product</option>
-                        {(!form.is_copack
-                          ? products
-                          : form.client_materials_required
-                            ? materials.filter(m => m.is_client_supplied)
-                            : form.operation_supplies_materials
-                              ? materials.filter(m => !m.is_client_supplied)
-                              : []
-                        ).map((p: any) => (
+                      <select
+                        className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light disabled:opacity-60"
+                        value={form.product}
+                        onChange={(e)=>setForm({...form, product:e.target.value})}
+                        disabled={!String(form.customer_id || form.customer) && selectedPackagingTypes.length === 0}
+                      >
+                        <option value="">{(!String(form.customer_id || form.customer) && selectedPackagingTypes.length===0) ? 'Select customer or packaging type to start' : 'Select Product'}</option>
+                        {filteredProducts.map((p: any) => (
                           <option key={p.id} value={p.name}>
-                            {p.name}{!form.is_copack && p.is_discontinued ? ' • Discontinued' : ''}
+                            {p.name}
                           </option>
                         ))}
                       </select>
+                      {(!String(form.customer_id || form.customer) && selectedPackagingTypes.length===0) && (
+                        <div className="text-xs text-neutral-medium">Select a customer or at least one packaging type to see products.</div>
+                      )}
+                      {String(form.customer_id) && selectedPackagingTypes.length>0 && filteredProducts.length===0 && (
+                        <div className="text-xs text-amber-700">No products match the selected packaging type. Try a different type or update product packaging assignments.</div>
+                      )}
                     </div>
                     {/* Packaging Type placed next to Product */}
                     <div className="space-y-2">
@@ -1922,8 +2197,8 @@ const PurchaseOrders: React.FC = () => {
                     <div className="text-neutral-dark">{isViewOpen.date || '—'}</div>
                   </div>
                 </div>
-                {/* Line Items / Copack Materials */}
-                {!isViewOpen?.is_copack ? (
+                {/* Brand: Line Items only */}
+                {!isViewOpen?.is_copack && (
                   <div className="space-y-3">
                     <h3 className="text-base font-semibold text-neutral-dark">Line Items</h3>
                     <div className="overflow-x-auto border border-neutral-soft/40 rounded-lg">
@@ -1957,7 +2232,10 @@ const PurchaseOrders: React.FC = () => {
                       </table>
                     </div>
                   </div>
-                ) : (
+                )}
+
+                {/* Copack: Materials Allocation only */}
+                {isViewOpen?.is_copack && (
                   <div className="space-y-3">
                     <h3 className="text-base font-semibold text-neutral-dark">Materials Allocation</h3>
                     <div className="overflow-x-auto border border-neutral-soft/40 rounded-lg">
@@ -1972,16 +2250,18 @@ const PurchaseOrders: React.FC = () => {
                           </tr>
                         </thead>
                         <tbody>
-                          {viewCopackAllocRows.length === 0 ? (
+                          {viewLoading ? (
+                            <tr><td className="px-4 py-4 text-sm text-neutral-medium" colSpan={5}>Loading…</td></tr>
+                          ) : viewLines.length === 0 ? (
                             <tr><td className="px-4 py-4 text-sm text-neutral-medium" colSpan={5}>No materials</td></tr>
                           ) : (
-                            viewCopackAllocRows.map((ln: any, i: number) => (
+                            viewLines.map((ln, i) => (
                               <tr key={i} className="border-t border-neutral-soft/30">
-                                <td className="px-4 py-2 text-sm text-neutral-dark">{ln.material_name}</td>
-                                <td className="px-4 py-2 text-sm text-right">{ln.required_qty}</td>
+                                <td className="px-4 py-2 text-sm text-neutral-dark">{ln.product_name}</td>
+                                <td className="px-4 py-2 text-sm text-right">{ln.quantity}</td>
                                 <td className="px-4 py-2 text-sm text-right">{ln.allocated_qty}</td>
                                 <td className={`px-4 py-2 text-sm text-right ${ln.shortfall_qty>0? 'text-amber-700 font-semibold':'text-neutral-dark'}`}>{ln.shortfall_qty}</td>
-                                <td className="px-4 py-2 text-sm text-neutral-dark">{ln.is_client_material ? 'Client Material' : 'OPS Material'}</td>
+                                <td className="px-4 py-2 text-sm text-neutral-dark">{isViewOpen?.operation_supplies_materials ? 'OPS Material' : (isViewOpen?.client_materials_required ? 'Client Material' : '—')}</td>
                               </tr>
                             ))
                           )}

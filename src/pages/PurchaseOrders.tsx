@@ -44,6 +44,7 @@ const PurchaseOrders: React.FC = () => {
   const [deleteTarget, setDeleteTarget] = useState<any | null>(null)
   const [deleting, setDeleting] = useState(false)
   const [showSubModal, setShowSubModal] = useState(false)
+  const [fefoWarning, setFefoWarning] = useState<any | null>(null)
   const [pendingApproveId, setPendingApproveId] = useState<string | null>(null)
   const [pendingLines, setPendingLines] = useState<Array<{ id?: string; product_name: string; quantity?: number }>>([])
   const [showNoFg, setShowNoFg] = useState(false)
@@ -1235,6 +1236,28 @@ const PurchaseOrders: React.FC = () => {
         if (DEBUG_PO) dbg.sql_notices.push(`${name}: ${res.status}${res.message ? ` – ${res.message}` : ''}`)
         if ((name === 'allocate_brand_po_finished_first' || name === 'fn_allocate_po_to_finished_goods') && res.data) {
           brandSummary = res.data
+          // FEFO block: only for BRAND POs (not Copack)
+          try {
+            const isBrand = !poRec.is_copack && String(poRec.po_type || 'brand').toLowerCase() === 'brand'
+            if (isBrand) {
+              const result: any = res.data
+              if (result?.fefo_block === true || String(result?.status || '').toLowerCase() === 'blocked_fefo') {
+                setFefoWarning({
+                  expired_lot: result.expired_lot || result.lot_number,
+                  exp_date: result.expiry_date,
+                  suggest_lot: result.suggested_lot,
+                  suggest_expiry: result.suggested_expiry,
+                })
+                // Open the allocation modal to surface the warning and stop approval flow
+                setAllocContext({ is_copack: false, operation_supplies_materials: false })
+                setAllocSummary(result)
+                setIsAllocOpen(true)
+                if (DEBUG_PO) { dbg.fefo_blocked = true }
+                if (DEBUG_PO) setDebugMap(prev => ({ ...prev, [poId]: dbg }))
+                return
+              }
+            }
+          } catch {}
         }
         if (DEBUG_PO && name === 'allocate_brand_po_finished_first') dbg.allocator_executed = 'allocate_brand_po_finished_first'
       }
@@ -1358,12 +1381,12 @@ const PurchaseOrders: React.FC = () => {
 
         {isAllocOpen && allocSummary && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-            <div className="absolute inset-0 bg-black/50" onClick={() => setIsAllocOpen(false)}></div>
+            <div className="absolute inset-0 bg-black/50" onClick={() => { setIsAllocOpen(false); setFefoWarning(null) }}></div>
             <div className="relative z-10 w-full max-w-2xl bg-white rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden">
               <div className="px-8 py-6 bg-gradient-to-r from-neutral-light to-neutral-light/80 border-b border-neutral-soft/50">
                 <h2 className="text-2xl font-semibold text-neutral-dark">Allocation Summary</h2>
                 <p className="text-sm text-neutral-medium mt-1">Status: {String(allocSummary?.status || '')}</p>
-                {DEBUG_PO && (() => {
+                {false && (() => {
                   const use = (lastApprovedId && debugMap[String(lastApprovedId)])
                     || (isViewOpen?.id && debugMap[String(isViewOpen.id)])
                     || null
@@ -1440,6 +1463,33 @@ const PurchaseOrders: React.FC = () => {
                     ))}
                   </div>
                 )}
+
+                {fefoWarning && (
+                  <div className="p-4 mb-3 rounded-lg border border-red-400 bg-red-50 text-red-700">
+                    <h3 className="font-bold text-red-800">FEFO Blocked — Expired Lot Detected</h3>
+
+                    <p className="mt-2 text-sm">
+                      Allocation cannot proceed because the selected Finished Goods lot 
+                      expires before the requested ship date.
+                    </p>
+
+                    <div className="mt-3 text-sm leading-6">
+                      <p><strong>Expired Lot:</strong> {fefoWarning.expired_lot}</p>
+                      <p><strong>Expiry Date:</strong> {fefoWarning.exp_date}</p>
+
+                      {fefoWarning.suggest_lot && (
+                        <>
+                          <p className="mt-3"><strong>Suggested FEFO Lot:</strong> {fefoWarning.suggest_lot}</p>
+                          <p><strong>Suggested Expiry:</strong> {fefoWarning.suggest_expiry}</p>
+                        </>
+                      )}
+                    </div>
+
+                    <p className="mt-4 text-xs italic">
+                      Please update Finished Goods inventory or assign a lot that is valid for the ship date.
+                    </p>
+                  </div>
+                )}
                 <div className="overflow-x-auto">
                   <table className="min-w-full">
                     <thead>
@@ -1470,7 +1520,7 @@ const PurchaseOrders: React.FC = () => {
                   </table>
                 </div>
                 <div className="mt-6 flex justify-end">
-                  <button className="px-5 py-2.5 rounded-xl border border-neutral-soft text-neutral-dark hover:bg-neutral-light/60 transition-all" onClick={() => { setIsAllocOpen(false); setAllocContext(null) }}>Close</button>
+                  <button className="px-5 py-2.5 rounded-xl border border-neutral-soft text-neutral-dark hover:bg-neutral-light/60 transition-all" onClick={() => { setIsAllocOpen(false); setAllocContext(null); setFefoWarning(null) }}>Close</button>
                 </div>
               </div>
             </div>
@@ -1660,9 +1710,10 @@ const PurchaseOrders: React.FC = () => {
                           <td className="px-8 py-6">
                             <div className="flex items-center justify-center space-x-2">
                               <button
-                                className="group/btn px-3 py-3 text-primary-medium hover:text-white hover:bg-primary-medium rounded-xl transition-all duration-300 hover:shadow-lg hover:scale-105 border border-primary-light/30 hover:border-primary-medium"
+                                className={`group/btn px-3 py-3 rounded-xl transition-all duration-300 border ${fefoWarning ? 'text-neutral-medium bg-neutral-light/40 cursor-not-allowed border-neutral-soft' : 'text-primary-medium hover:text-white hover:bg-primary-medium hover:shadow-lg hover:scale-105 border-primary-light/30 hover:border-primary-medium'}`}
                                 onClick={() => handleApproveClick(o)}
                                 title="Approve & Allocate"
+                                disabled={!!fefoWarning}
                               >
                                 Approve
                               </button>
@@ -1775,7 +1826,7 @@ const PurchaseOrders: React.FC = () => {
             <div className="relative z-10 w-full max-w-3xl h-[80vh] bg-white rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden flex flex-col">
               <div className="flex items-center justify-between px-8 py-6 bg-gradient-to-r from-neutral-light to-neutral-light/80 border-b border-neutral-soft/50">
                 <div>
-                  <h2 className="text-2xl font-semibold text-neutral-dark">{isEditOpen ? 'Update Purchase Order' : 'Add Purchase Order'}</h2>
+                  <h2 className="text-2xl font-semibold text-neutral-dark">{isEditOpen ? 'Update Purchase Order' : (form.is_copack ? 'Allocate Copack Materials (Raw + Packaging)' : 'Add Brand Purchase Order')}</h2>
                 </div>
                 <button onClick={() => { setIsAddOpen(false); setIsEditOpen(null); setSelectedPackagingTypes([]); setExtraLines([]); }} className="p-3 text-neutral-medium hover:text-neutral-dark hover:bg-white/60 rounded-xl transition-all duration-200 hover:shadow-sm">
                   <X className="h-6 w-6" />

@@ -2,6 +2,34 @@ import React, { useState, useEffect, useRef } from 'react'
 import { Plus, Search, Filter, Edit, Trash2, Eye, X, User, Package, Box, Scale, Calendar, FileText, Upload, CheckCircle2 } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 
+// Map filename extension to themed badge styles
+const getFileMeta = (name?: string) => {
+  const raw = String(name || '').toLowerCase()
+  const ext = raw.includes('.') ? raw.split('.').pop() || '' : ''
+  let cls = 'bg-neutral-100 text-neutral-700'
+  let label = (ext || 'file').toUpperCase()
+  if (ext === 'pdf') { cls = 'bg-red-100 text-red-700'; label = 'PDF' }
+  else if (ext === 'doc' || ext === 'docx') { cls = 'bg-blue-100 text-blue-700'; label = 'DOC' }
+  else if (ext === 'xls' || ext === 'xlsx' || ext === 'csv') { cls = 'bg-emerald-100 text-emerald-700'; label = 'XLS' }
+  else if (ext === 'ppt' || ext === 'pptx') { cls = 'bg-orange-100 text-orange-700'; label = 'PPT' }
+  else if (ext === 'txt' || ext === 'rtf') { cls = 'bg-neutral-100 text-neutral-700'; label = ext.toUpperCase() }
+  return { cls, label }
+}
+
+// Derive a clean filename for display from a stored URL/safe filename
+const prettyFileName = (src?: string) => {
+  if (!src) return ''
+  try {
+    const last = decodeURIComponent(new URL(src).pathname.split('/').pop() || '')
+    // remove leading timestamp or numeric prefix like 1699999999999- or 1699999_
+    return last.replace(/^\d{6,}[-_]/, '')
+  } catch {
+    // fallback: just strip numeric prefix if present in raw string
+    const base = String(src).split('/').pop() || String(src)
+    return base.replace(/^\d{6,}[-_]/, '')
+  }
+}
+
 interface Product {
   id: string
   product_name: string
@@ -13,6 +41,7 @@ interface Product {
   created_at: string | null
   product_image_url: string[]
   description: string
+  product_file_url?: string | null
 }
 
 // Supabase client is provided as a singleton from ../lib/supabase
@@ -36,6 +65,7 @@ const Products: React.FC = () => {
     shelf_life_days: number | string
     description: string
     product_image_url: string[]
+    product_file_url?: string | null
   } | null>(null)
   const [isEditUploading, setIsEditUploading] = useState(false)
   const [editUploadError, setEditUploadError] = useState<string | null>(null)
@@ -49,7 +79,7 @@ const Products: React.FC = () => {
     packagingType: '',
     uom: '',
     shelfLife: '',
-    description: '',
+    docFile: null as File | null,
     images: [] as File[],
   })
   type Customer = { id: string; name: string }
@@ -70,12 +100,17 @@ const Products: React.FC = () => {
   const [customersError, setCustomersError] = useState<string | null>(null)
   const [imagePreviews, setImagePreviews] = useState<string[]>([])
   const [toast, setToast] = useState<{ show: boolean; message: string }>({ show: false, message: '' })
+  const [docDragOver, setDocDragOver] = useState(false)
+  const [editDocDragOver, setEditDocDragOver] = useState(false)
 
   const customerRef = useRef<HTMLDivElement>(null)
   const productTypeRef = useRef<HTMLDivElement>(null)
   const packagingTypeRef = useRef<HTMLDivElement>(null)
   const uomRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const docFileInputRef = useRef<HTMLInputElement>(null)
+  const editDocFileInputRef = useRef<HTMLInputElement>(null)
+  const [editDocFile, setEditDocFile] = useState<File | null>(null)
 
   // Close dropdowns when clicking outside
   useEffect(() => {
@@ -158,7 +193,7 @@ const Products: React.FC = () => {
       if (!supabase) return
       const { data, error } = await supabase
         .from('products')
-        .select('id, product_name, product_type, packaging_type, customer_name, unit_of_measure, shelf_life_days, created_at, product_image_url, description')
+        .select('id, product_name, product_type, packaging_type, customer_name, unit_of_measure, shelf_life_days, created_at, product_image_url, product_file_url')
 
       if (error) {
         console.error('Failed to fetch products', error)
@@ -175,7 +210,7 @@ const Products: React.FC = () => {
         shelf_life_days?: number | null
         created_at?: string | null
         product_image_url?: string | string[] | null
-        description?: string | null
+        product_file_url?: string | null
       }>
 
       // Client-side sort to avoid backend order-related errors
@@ -209,7 +244,8 @@ const Products: React.FC = () => {
           shelf_life_days: Number(r.shelf_life_days ?? 0),
           created_at: r.created_at ?? null,
           product_image_url: urls,
-          description: String(r.description ?? ''),
+          description: '',
+          product_file_url: r.product_file_url || null,
         }
       })
       setProducts(mapped)
@@ -402,6 +438,7 @@ const Products: React.FC = () => {
 
                       // Upload images to Supabase Storage and collect public URLs
                       let imageUrls: string[] = []
+                      let docUrl: string | null = null
                       if (supabase && productForm.images?.length) {
                         const bucket = 'ERP_storage'
                         const folder = `products/${id}`
@@ -434,6 +471,27 @@ const Products: React.FC = () => {
                         }
                       }
 
+                      // Upload product document (optional)
+                      if (supabase && productForm.docFile) {
+                        const bucket = 'ERP_storage'
+                        const safeName = `${Date.now()}-${productForm.docFile.name}`.replace(/[^a-zA-Z0-9._-]/g, '-')
+                        const path = `product_docs/${id}/${safeName}`
+                        const { error: upErr } = await supabase.storage.from(bucket).upload(path, productForm.docFile, {
+                          upsert: true,
+                          contentType: productForm.docFile.type || 'application/octet-stream',
+                        })
+                        if (upErr) {
+                          console.error('Doc upload error:', upErr.message)
+                        } else {
+                          const { data: pub } = supabase.storage.from(bucket).getPublicUrl(path)
+                          docUrl = pub?.publicUrl || null
+                          if (!docUrl) {
+                            const { data: signed } = await supabase.storage.from(bucket).createSignedUrl(path, 60 * 60 * 24 * 365)
+                            docUrl = signed?.signedUrl || null
+                          }
+                        }
+                      }
+
                     const payload = {
                       id,
                       name: productForm.name,
@@ -443,7 +501,7 @@ const Products: React.FC = () => {
                       packagingType: productForm.packagingType,
                       uom: productForm.uom,
                       shelfLife: productForm.shelfLife,
-                      description: productForm.description,
+                      productFileUrl: docUrl,
                       images: imageUrls,
                       createdAt: new Date().toISOString(),
                     }
@@ -464,7 +522,7 @@ const Products: React.FC = () => {
                         packaging_type: productForm.packagingType || null,
                         unit_of_measure: productForm.uom || null,
                         shelf_life_days: Number(productForm.shelfLife) || 0,
-                        description: productForm.description || null,
+                        product_file_url: docUrl,
                         product_image_url: imageUrls,
                       })
                     } catch (dbErr) {
@@ -483,7 +541,7 @@ const Products: React.FC = () => {
                         shelf_life_days: Number(productForm.shelfLife) || 0,
                         created_at: new Date().toISOString(),
                         product_image_url: imageUrls,
-                        description: productForm.description || '',
+                        description: '',
                       },
                       ...prev,
                     ])
@@ -695,18 +753,61 @@ const Products: React.FC = () => {
                 </div>
               </div>
 
-              {/* Row 4: Description (full width) */}
+              {/* Row 4: Product File (full width) */}
               <div className="space-y-2">
                 <label className="flex items-center text-sm font-medium text-neutral-dark">
                   <FileText className="h-4 w-4 mr-2 text-primary-medium" />
-                  Description
+                  Product File
                 </label>
-                <textarea
-                  placeholder="Product description..."
-                  className="w-full min-h-[80px] px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all duration-200 bg-white text-neutral-dark placeholder-neutral-medium resize-none hover:border-neutral-medium"
-                  value={productForm.description}
-                  onChange={(e) => setProductForm({ ...productForm, description: e.target.value })}
+                <input
+                  ref={docFileInputRef}
+                  type="file"
+                  accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.rtf"
+                  className="hidden"
+                  onChange={(e) => setProductForm({ ...productForm, docFile: (e.target.files && e.target.files[0]) || null })}
                 />
+                <div
+                  className={`relative border-2 border-dashed rounded-xl p-6 transition-all duration-300 cursor-pointer ${docDragOver ? 'border-primary-light bg-primary-light/10' : 'border-neutral-soft bg-gradient-to-br from-neutral-light/40 to-neutral-light/20 hover:from-primary-light/10 hover:to-primary-medium/5'}`}
+                  onDragOver={(e) => { e.preventDefault(); setDocDragOver(true) }}
+                  onDragLeave={() => setDocDragOver(false)}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    setDocDragOver(false)
+                    const f = e.dataTransfer.files && e.dataTransfer.files[0]
+                    if (f) setProductForm({ ...productForm, docFile: f })
+                  }}
+                  onClick={() => docFileInputRef.current?.click()}
+                >
+                  <div className="flex items-center justify-between mb-2">
+                    <p className="text-sm text-neutral-medium">PDF, DOCX, XLSX, PPTX, TXT</p>
+                    <button
+                      type="button"
+                      className="px-4 py-2 rounded-lg bg-primary-dark hover:bg-primary-medium text-white text-sm font-medium shadow-sm"
+                    >
+                      Browse File
+                    </button>
+                  </div>
+                  {productForm.docFile ? (
+                    <div className="flex items-center justify-between bg-white border border-neutral-soft rounded-lg px-4 py-3">
+                      <span className="text-sm text-neutral-dark truncate">{productForm.docFile.name}</span>
+                      <button
+                        type="button"
+                        className="ml-3 px-2 py-1 text-xs rounded-md bg-white/90 hover:bg-white border border-neutral-soft shadow-sm"
+                        onClick={(e) => { e.stopPropagation(); setProductForm({ ...productForm, docFile: null }) }}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="text-center py-6">
+                      <div className="mx-auto w-12 h-12 bg-primary-light/20 rounded-full flex items-center justify-center mb-3">
+                        <Upload className="h-6 w-6 text-primary-medium" />
+                      </div>
+                      <p className="text-sm text-neutral-dark font-semibold mb-1">Drag & drop file here, or click to upload</p>
+                      <p className="text-xs text-neutral-medium">Max size depends on storage policy</p>
+                    </div>
+                  )}
+                </div>
               </div>
 
               <div className="space-y-3">
@@ -1052,6 +1153,7 @@ const Products: React.FC = () => {
                                 shelf_life_days: product.shelf_life_days,
                                 description: product.description,
                                 product_image_url: product.product_image_url || [],
+                                product_file_url: product.product_file_url || null,
                               })
                               setIsEditOpen(true)
                             }}
@@ -1250,7 +1352,30 @@ const Products: React.FC = () => {
                       shelf_life_days: 0,
                       description: '',
                       product_image_url: [],
+                      product_file_url: null,
                     }
+                    // If a replacement doc was selected, upload and get URL
+                    let newDocUrl: string | null = null
+                    try {
+                      if (editDocFile) {
+                        const bucket = 'ERP_storage'
+                        const safeName = `${Date.now()}-${editDocFile.name}`.replace(/[^a-zA-Z0-9._-]/g, '-')
+                        const path = `product_docs/${ef.id}/${safeName}`
+                        const { error: upErr } = await supabase.storage.from(bucket).upload(path, editDocFile, {
+                          upsert: true,
+                          contentType: editDocFile.type || 'application/octet-stream',
+                        })
+                        if (!upErr) {
+                          const { data: pub } = supabase.storage.from(bucket).getPublicUrl(path)
+                          newDocUrl = pub?.publicUrl || null
+                          if (!newDocUrl) {
+                            const { data: signed } = await supabase.storage.from(bucket).createSignedUrl(path, 60 * 60 * 24 * 365)
+                            newDocUrl = signed?.signedUrl || null
+                          }
+                        }
+                      }
+                    } catch {}
+
                     const update = {
                       product_name: ef.product_name,
                       customer_name: ef.customer_name,
@@ -1258,8 +1383,8 @@ const Products: React.FC = () => {
                       packaging_type: ef.packaging_type,
                       unit_of_measure: ef.unit_of_measure,
                       shelf_life_days: Number(ef.shelf_life_days) || 0,
-                      description: ef.description,
                       product_image_url: ef.product_image_url,
+                      product_file_url: (newDocUrl !== null ? newDocUrl : ef.product_file_url ?? null),
                     }
                     const { error } = await supabase.from('products').update(update).eq('id', ef.id)
                     if (!error) {
@@ -1276,7 +1401,6 @@ const Products: React.FC = () => {
                         packagingType: ef.packaging_type,
                         uom: ef.unit_of_measure,
                         shelfLife: String(ef.shelf_life_days ?? ''),
-                        description: ef.description,
                         images: ef.product_image_url ?? [],
                         createdAt: existing?.created_at ?? new Date().toISOString(),
                       }
@@ -1383,13 +1507,76 @@ const Products: React.FC = () => {
                   <div className="space-y-2">
                     <label className="flex items-center text-sm font-medium text-neutral-dark">
                       <FileText className="h-4 w-4 mr-2 text-primary-medium" />
-                      Description
+                      Product File
                     </label>
-                    <textarea
-                      className="w-full min-h-[80px] px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light bg-white text-neutral-dark placeholder-neutral-medium resize-none"
-                      value={editForm?.description ?? ''}
-                      onChange={(e) => setEditForm((prev) => ({ ...(prev ?? { id: '', product_name: '', customer_name: '', product_type: '', packaging_type: '', unit_of_measure: '', shelf_life_days: 0, description: '', product_image_url: [] }), description: e.target.value }))}
+                    <input
+                      ref={editDocFileInputRef}
+                      type="file"
+                      accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.rtf"
+                      className="hidden"
+                      onChange={(e) => setEditDocFile((e.target.files && e.target.files[0]) || null)}
                     />
+                    <div
+                      className={`relative border-2 border-dashed rounded-xl p-4 transition-all duration-300 cursor-pointer ${editDocDragOver ? 'border-primary-light bg-primary-light/10' : 'border-neutral-soft bg-gradient-to-br from-neutral-light/40 to-neutral-light/20 hover:from-primary-light/10 hover:to-primary-medium/5'}`}
+                      onDragOver={(e) => { e.preventDefault(); setEditDocDragOver(true) }}
+                      onDragLeave={() => setEditDocDragOver(false)}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        setEditDocDragOver(false)
+                        const f = e.dataTransfer.files && e.dataTransfer.files[0]
+                        if (f) setEditDocFile(f)
+                      }}
+                      onClick={() => editDocFileInputRef.current?.click()}
+                    >
+                      <div className="flex items-center justify-between mb-2">
+                        <p className="text-sm text-neutral-medium">PDF, DOCX, XLSX, PPTX, TXT</p>
+                        <button type="button" className="px-4 py-2 rounded-lg bg-primary-dark hover:bg-primary-medium text-white text-sm font-medium shadow-sm">Browse File</button>
+                      </div>
+                      {(editDocFile || editForm?.product_file_url) ? (
+                        <div className="flex items-center justify-between bg-white border border-neutral-soft rounded-lg px-4 py-3">
+                          <div className="flex items-center gap-3 min-w-0">
+                            {(() => {
+                              const fname = editDocFile ? editDocFile.name : (editForm?.product_file_url ? prettyFileName(editForm.product_file_url) : '')
+                              const meta = getFileMeta(fname)
+                              return (
+                                <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-semibold ${meta.cls}`}>{meta.label}</span>
+                              )
+                            })()}
+                            <span className="text-sm text-neutral-dark truncate">
+                              {editDocFile ? editDocFile.name : (editForm?.product_file_url ? prettyFileName(editForm.product_file_url) : '')}
+                            </span>
+                            {(!editDocFile && editForm?.product_file_url) && (
+                              <a
+                                href={editForm.product_file_url}
+                                target="_blank"
+                                rel="noreferrer noopener"
+                                className="text-xs text-primary-medium underline truncate"
+                                onClick={(e) => e.stopPropagation()}
+                                onMouseDown={(e) => e.stopPropagation()}
+                              >
+                                View
+                              </a>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2">
+                            {editForm?.product_file_url && !editDocFile && (
+                              <button type="button" className="px-2 py-1 text-xs rounded-md bg-white/90 hover:bg-white border border-neutral-soft shadow-sm" onClick={(e) => { e.stopPropagation(); setEditForm((prev) => (prev ? { ...prev, product_file_url: null } : prev)) }}>Clear</button>
+                            )}
+                            {editDocFile && (
+                              <button type="button" className="px-2 py-1 text-xs rounded-md bg-white/90 hover:bg-white border border-neutral-soft shadow-sm" onClick={(e) => { e.stopPropagation(); setEditDocFile(null) }}>Remove</button>
+                            )}
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="text-center py-4">
+                          <div className="mx-auto w-10 h-10 bg-primary-light/20 rounded-full flex items-center justify-center mb-2">
+                            <Upload className="h-5 w-5 text-primary-medium" />
+                          </div>
+                          <p className="text-sm text-neutral-dark font-semibold">Drag & drop file here, or click to upload</p>
+                          <p className="text-xs text-neutral-medium">Max size depends on storage policy</p>
+                        </div>
+                      )}
+                    </div>
                   </div>
 
                   <div className="space-y-3">

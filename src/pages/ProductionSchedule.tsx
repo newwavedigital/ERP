@@ -1301,14 +1301,21 @@ const ProductionSchedule: React.FC = () => {
                       <td className="px-6 py-4 whitespace-nowrap">
                         <div className="text-sm font-medium text-neutral-dark">
                           {row.product}
-                          {row.sourcePoId && (
-                            <span className="ml-2 inline-flex px-2 py-0.5 rounded-full text-[10px] font-semibold bg-indigo-100 text-indigo-700 align-middle">COPACK</span>
-                          )}
                           {row.sourcePoId && poSourceMap[String(row.sourcePoId)] && (
                             <span
-                              className={`ml-2 inline-flex px-2 py-0.5 rounded-full text-[10px] font-semibold align-middle ${poSourceMap[String(row.sourcePoId)] === 'OPS' ? 'bg-blue-100 text-blue-700' : 'bg-emerald-100 text-emerald-700'}`}
+                              className="ml-2 inline-flex px-2 py-0.5 rounded-full text-[10px] font-semibold bg-indigo-100 text-indigo-700 align-middle"
                             >
-                              {poSourceMap[String(row.sourcePoId)] === 'OPS' ? 'OPERATION' : 'CLIENT'}
+                              COPACK
+                            </span>
+                          )}
+                          {row.sourcePoId && poSourceMap[String(row.sourcePoId)] === 'OPS' && (
+                            <span className="ml-2 inline-flex px-2 py-0.5 rounded-full text-[10px] font-semibold bg-blue-100 text-blue-700 align-middle">
+                              OPERATION
+                            </span>
+                          )}
+                          {row.sourcePoId && poSourceMap[String(row.sourcePoId)] === 'CLIENT' && (
+                            <span className="ml-2 inline-flex px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-100 text-emerald-700 align-middle">
+                              CLIENT
                             </span>
                           )}
                         </div>

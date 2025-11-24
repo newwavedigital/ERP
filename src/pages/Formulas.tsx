@@ -20,7 +20,9 @@ const emptyIngredient: Ingredient = {
   percentage: "",
 };
 
-const Formulas: React.FC = () => {
+interface FormulasProps { openSignal?: number; embedded?: boolean }
+
+const Formulas: React.FC<FormulasProps> = ({ openSignal, embedded = false }) => {
   const [isAddOpen, setIsAddOpen] = useState(false);
 
   const [products, setProducts] = useState<Product[]>([]);
@@ -74,6 +76,13 @@ const Formulas: React.FC = () => {
     load();
   }, []);
 
+  // Allow parent header button to open modal
+  useEffect(() => {
+    if (typeof openSignal === 'number' && openSignal > 0) {
+      setIsAddOpen(true);
+    }
+  }, [openSignal]);
+
   /* ✅ 2. LOAD FORMULAS FOR DISPLAY */
   const loadFormulas = async () => {
     const { data, error } = await supabase
@@ -83,8 +92,8 @@ const Formulas: React.FC = () => {
         formula_name,
         version,
         created_at,
-        products ( product_name ),
-        customers ( company_name )
+        products:formulas_product_id_fkey ( product_name ),
+        customers:formulas_customer_id_fkey ( company_name )
       `)
       .order("created_at", { ascending: false });
 
@@ -180,27 +189,29 @@ const Formulas: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen bg-neutral-light/20">
-      <div className="p-8">
-        {/* HEADER */}
-        <div className="flex items-start justify-between">
-          <div>
-            <h1 className="text-2xl font-bold text-neutral-dark">
-              Formula Manager
-            </h1>
-            <p className="text-neutral-medium">
-              Manage product recipes and bills of materials
-            </p>
-          </div>
+    <div className={embedded ? "" : "min-h-screen bg-neutral-light/20"}>
+      <div className={embedded ? "" : "p-8"}>
+        {/* HEADER (hidden when embedded) */}
+        {!embedded && (
+          <div className="flex items-start justify-between">
+            <div>
+              <h1 className="text-2xl font-bold text-neutral-dark">
+                Formula Manager
+              </h1>
+              <p className="text-neutral-medium">
+                Manage product recipes and bills of materials
+              </p>
+            </div>
 
-          <button
-            onClick={() => setIsAddOpen(true)}
-            className="px-6 py-3 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold shadow-md hover:shadow-lg flex items-center"
-          >
-            <Plus className="h-5 w-5 mr-2" />
-            Add Formula
-          </button>
-        </div>
+            <button
+              onClick={() => setIsAddOpen(true)}
+              className="px-6 py-3 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold shadow-md hover:shadow-lg flex items-center"
+            >
+              <Plus className="h-5 w-5 mr-2" />
+              Add Formula
+            </button>
+          </div>
+        )}
 
         {/* ✅ DISPLAY FORMULA LIST IF AVAILABLE */}
         {formulasList.length > 0 ? (

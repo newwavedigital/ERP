@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react'
-import { Plus, Search, Filter, Edit, Trash2, Eye, X, User, Package, Box, Scale, Calendar, FileText, Upload, CheckCircle2 } from 'lucide-react'
+import { Plus, Search, Filter, Edit, Trash2, Eye, X, User, Package, Box, Scale, Calendar, FileText, Upload, CheckCircle2, FlaskConical, List, Grid3X3 } from 'lucide-react'
 import { supabase } from '../lib/supabase'
+import Formulas from './Formulas'
 
 // Map filename extension to themed badge styles
 const getFileMeta = (name?: string) => {
@@ -42,6 +43,12 @@ interface Product {
   product_image_url: string[]
   description: string
   product_file_url?: string | null
+  product_file_urls?: string[]
+  formula_id?: string | null
+  formula_name?: string | null
+  cost?: number | null
+  case_dimension?: string | null
+  case_qty?: number | null
 }
 
 // Supabase client is provided as a singleton from ../lib/supabase
@@ -52,6 +59,8 @@ const Products: React.FC = () => {
   const [imageModalOpen, setImageModalOpen] = useState(false)
   const [imageModalUrls, setImageModalUrls] = useState<string[]>([])
   const [imageModalDescription, setImageModalDescription] = useState<string>('')
+  const [imageModalFiles, setImageModalFiles] = useState<string[]>([])
+  const [docsLayout, setDocsLayout] = useState<'list' | 'grid'>('list')
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null)
   const [isEditOpen, setIsEditOpen] = useState(false)
   const [editForm, setEditForm] = useState<{
@@ -66,7 +75,14 @@ const Products: React.FC = () => {
     description: string
     product_image_url: string[]
     product_file_url?: string | null
+    product_file_urls?: string[]
+    formula_id?: string | null
+    formula_name?: string | null
+    cost?: number | string
+    case_dimension?: string | null
+    case_qty?: number | string | null
   } | null>(null)
+
   const [isEditUploading, setIsEditUploading] = useState(false)
   const [editUploadError, setEditUploadError] = useState<string | null>(null)
   const [isAddOpen, setIsAddOpen] = useState<boolean>(false)
@@ -79,7 +95,10 @@ const Products: React.FC = () => {
     packagingType: '',
     uom: '',
     shelfLife: '',
-    docFile: null as File | null,
+    cost: '',
+    caseDimension: '',
+    caseQty: '',
+    docFiles: [] as File[],
     images: [] as File[],
   })
   type Customer = { id: string; name: string }
@@ -102,6 +121,8 @@ const Products: React.FC = () => {
   const [toast, setToast] = useState<{ show: boolean; message: string }>({ show: false, message: '' })
   const [docDragOver, setDocDragOver] = useState(false)
   const [editDocDragOver, setEditDocDragOver] = useState(false)
+  const [activeTab, setActiveTab] = useState<'products' | 'formulas'>('products')
+  const [formulaOpenSignal, setFormulaOpenSignal] = useState(0)
 
   const customerRef = useRef<HTMLDivElement>(null)
   const productTypeRef = useRef<HTMLDivElement>(null)
@@ -110,7 +131,19 @@ const Products: React.FC = () => {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const docFileInputRef = useRef<HTMLInputElement>(null)
   const editDocFileInputRef = useRef<HTMLInputElement>(null)
-  const [editDocFile, setEditDocFile] = useState<File | null>(null)
+  const [editDocFiles, setEditDocFiles] = useState<File[]>([])
+
+  // Formulas dropdown state
+  type FormulaItem = { id: string; formula_name: string; product_name?: string; customer_name?: string }
+  const [formulas, setFormulas] = useState<FormulaItem[]>([])
+  const [formulasLoading, setFormulasLoading] = useState(false)
+  const [isFormulaOpen, setIsFormulaOpen] = useState(false)
+  const formulaRef = useRef<HTMLDivElement>(null)
+  const [selectedFormula, setSelectedFormula] = useState<FormulaItem | null>(null)
+  // For Edit modal
+  const [isEditFormulaOpen, setIsEditFormulaOpen] = useState(false)
+  const editFormulaRef = useRef<HTMLDivElement>(null)
+  const [editSelectedFormula, setEditSelectedFormula] = useState<FormulaItem | null>(null)
 
   // Close dropdowns when clicking outside
   useEffect(() => {
@@ -127,6 +160,12 @@ const Products: React.FC = () => {
       }
       if (uomRef.current && !uomRef.current.contains(event.target as Node)) {
         setIsUomOpen(false)
+      }
+      if (formulaRef.current && !formulaRef.current.contains(event.target as Node)) {
+        setIsFormulaOpen(false)
+      }
+      if (editFormulaRef.current && !editFormulaRef.current.contains(event.target as Node)) {
+        setIsEditFormulaOpen(false)
       }
     }
 
@@ -159,6 +198,42 @@ const Products: React.FC = () => {
       document.body.style.overflow = prevOverflow
     }
   }, [isAddOpen, imageModalOpen, lightboxUrl, isEditOpen, editForm])
+
+  // Load formulas when Add or Edit modal opens
+  useEffect(() => {
+    const loadFormulas = async () => {
+      try {
+        setFormulasLoading(true)
+        const { data, error } = await supabase
+          .from('formulas')
+          .select('id, formula_name, products:formulas_product_id_fkey ( product_name ), customers:formulas_customer_id_fkey ( company_name )')
+          .order('created_at', { ascending: false })
+        if (!error) {
+          const items: FormulaItem[] = (data ?? []).map((f: any) => ({
+            id: String(f.id),
+            formula_name: String(f.formula_name ?? ''),
+            product_name: String(f.products?.product_name ?? ''),
+            customer_name: String(f.customers?.company_name ?? ''),
+          }))
+          setFormulas(items)
+        }
+      } finally {
+        setFormulasLoading(false)
+      }
+    }
+    if (isAddOpen || isEditOpen) loadFormulas()
+  }, [isAddOpen, isEditOpen])
+
+  // When opening Edit modal, preselect formula from editForm if present
+  useEffect(() => {
+    if (isEditOpen && editForm) {
+      if (editForm.formula_id) {
+        setEditSelectedFormula({ id: editForm.formula_id, formula_name: editForm.formula_name || '' } as any)
+      } else {
+        setEditSelectedFormula(null)
+      }
+    }
+  }, [isEditOpen, editForm?.formula_id, editForm?.formula_name])
 
   const hiddenEditFileInputRef = useRef<HTMLInputElement | null>(null)
   const handleTriggerEditUpload = () => {
@@ -193,7 +268,7 @@ const Products: React.FC = () => {
       if (!supabase) return
       const { data, error } = await supabase
         .from('products')
-        .select('id, product_name, product_type, packaging_type, customer_name, unit_of_measure, shelf_life_days, created_at, product_image_url, product_file_url')
+        .select('id, product_name, product_type, packaging_type, customer_name, unit_of_measure, shelf_life_days, created_at, product_image_url, product_file_url, formula_id, formula_name, cost, case_dimension, case_qty')
 
       if (error) {
         console.error('Failed to fetch products', error)
@@ -211,6 +286,11 @@ const Products: React.FC = () => {
         created_at?: string | null
         product_image_url?: string | string[] | null
         product_file_url?: string | null
+        formula_id?: string | null
+        formula_name?: string | null
+        cost?: number | null
+        case_dimension?: string | null
+        case_qty?: number | null
       }>
 
       // Client-side sort to avoid backend order-related errors
@@ -234,6 +314,21 @@ const Products: React.FC = () => {
           }
         }
 
+        // Parse product_file_url which may contain a JSON array string
+        let docUrls: string[] = []
+        if (r.product_file_url) {
+          try {
+            const parsed = JSON.parse(r.product_file_url)
+            if (Array.isArray(parsed)) docUrls = parsed.filter(Boolean)
+            else if (typeof parsed === 'string') docUrls = [parsed]
+          } catch {
+            // Fallback: accept comma-separated string
+            if (typeof r.product_file_url === 'string') {
+              docUrls = r.product_file_url.split(',').map((s) => s.trim()).filter(Boolean)
+            }
+          }
+        }
+
         return {
           id: String(r.id),
           product_name: String(r.product_name ?? ''),
@@ -246,6 +341,12 @@ const Products: React.FC = () => {
           product_image_url: urls,
           description: '',
           product_file_url: r.product_file_url || null,
+          product_file_urls: docUrls,
+          formula_id: r.formula_id ?? null,
+          formula_name: r.formula_name ?? null,
+          cost: (typeof r.cost === 'number' ? r.cost : (r.cost ? Number(r.cost) : null)),
+          case_dimension: (r.case_dimension ?? null) as any,
+          case_qty: (typeof r.case_qty === 'number' ? r.case_qty : (r.case_qty ? Number(r.case_qty) : null)),
         }
       })
       setProducts(mapped)
@@ -352,22 +453,70 @@ const Products: React.FC = () => {
   return (
     <div className="min-h-screen bg-gradient-to-br from-neutral-light/30 to-neutral-soft/20">
       <div className="p-8">
-        {/* Enhanced Header */}
+        {/* Header (changes with tab) */}
         <div className="bg-white rounded-2xl shadow-md border border-neutral-soft/20 p-8 mb-8">
           <div className="flex justify-between items-center">
             <div>
-              <h1 className="text-3xl font-bold text-neutral-dark mb-2">Products</h1>
-              <p className="text-neutral-medium text-lg">Manage your product catalog with ease</p>
+              <h1 className="text-3xl font-bold text-neutral-dark mb-2">{activeTab === 'products' ? 'Products' : 'Formula Manager'}</h1>
+              <p className="text-neutral-medium text-lg">{activeTab === 'products' ? 'Manage your product catalog with ease' : 'Manage product recipes and bills of materials'}</p>
             </div>
-            <button 
-              onClick={() => setIsAddOpen(true)} 
-              className="px-8 py-4 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold transition-all duration-300 shadow-lg hover:shadow-xl transform hover:-translate-y-0.5 flex items-center"
+            {activeTab === 'products' ? (
+              <button 
+                onClick={() => setIsAddOpen(true)} 
+                className="px-8 py-4 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold transition-all duration-300 shadow-lg hover:shadow-xl transform hover:-translate-y-0.5 flex items-center"
+              >
+                <Plus className="h-5 w-5 mr-3" />
+                Add Product
+              </button>
+            ) : (
+              <button 
+                onClick={() => setFormulaOpenSignal((s) => s + 1)} 
+                className="px-8 py-4 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold transition-all duration-300 shadow-lg hover:shadow-xl transform hover:-translate-y-0.5 flex items-center"
+              >
+                <Plus className="h-5 w-5 mr-3" />
+                Add Formula
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Tabs */}
+        <div className="mb-6">
+          <div role="tablist" aria-label="Products navigation" className="relative inline-flex items-center rounded-2xl bg-white shadow border border-neutral-soft/30 p-1">
+            {/* sliding highlight */}
+            <span
+              aria-hidden
+              className={`absolute top-1 bottom-1 w-1/2 rounded-xl bg-gradient-to-r from-primary-light/20 to-primary-medium/10 shadow-sm transition-all duration-300 ease-out ${activeTab==='products' ? 'left-1' : 'left-1/2'}`}
+            />
+            <button
+              role="tab"
+              aria-selected={activeTab==='products'}
+              type="button"
+              onClick={() => setActiveTab('products')}
+              className={`relative z-10 px-5 py-2 text-sm font-semibold rounded-xl flex items-center gap-2 transition-colors ${activeTab==='products' ? 'text-primary-dark' : 'text-neutral-medium hover:text-neutral-dark'}`}
             >
-              <Plus className="h-5 w-5 mr-3" />
-              Add Product
+              <Package className="h-4 w-4" />
+              Products
+            </button>
+            <button
+              role="tab"
+              aria-selected={activeTab==='formulas'}
+              type="button"
+              onClick={() => setActiveTab('formulas')}
+              className={`relative z-10 px-5 py-2 text-sm font-semibold rounded-xl flex items-center gap-2 transition-colors ${activeTab==='formulas' ? 'text-primary-dark' : 'text-neutral-medium hover:text-neutral-dark'}`}
+            >
+              <FlaskConical className="h-4 w-4" />
+              Formulas
             </button>
           </div>
         </div>
+
+        {activeTab === 'formulas' ? (
+          <div>
+            <Formulas embedded openSignal={formulaOpenSignal} />
+          </div>
+        ) : (
+          <>
 
         {/* Success Toast */}
         {toast.show && (
@@ -385,7 +534,7 @@ const Products: React.FC = () => {
         <div className="bg-white rounded-2xl shadow-md border border-neutral-soft/20 p-8 mb-8">
           <div className="flex flex-col lg:flex-row gap-6">
             <div className="flex-1">
-              <label className="flex items-center text-sm font-semibold text-neutral-dark mb-3">
+              <label className="flex items-center text-sm font-semibold text-neutral-dark">
                 Search Products
               </label>
               <div className="relative">
@@ -393,14 +542,14 @@ const Products: React.FC = () => {
                 <input
                   type="text"
                   placeholder="Search by product name"
-                  className="w-full pl-12 pr-4 py-4 border border-neutral-soft rounded-xl focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all duration-200 bg-white text-neutral-dark placeholder-neutral-medium shadow-sm hover:shadow-md hover:border-neutral-medium"
+                  className="w-full pl-12 pr-4 py-4 border border-neutral-soft rounded-xl focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all duration-200 bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium shadow-sm hover:shadow-md"
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
                 />
               </div>
             </div>
             <div className="lg:w-64">
-              <label className="flex items-center text-sm font-semibold text-neutral-dark mb-3">
+              <label className="flex items-center text-sm font-semibold text-neutral-dark">
                 <Filter className="h-5 w-5 mr-3 text-primary-medium" />
                 Filter & Sort
               </label>
@@ -438,13 +587,13 @@ const Products: React.FC = () => {
 
                       // Upload images to Supabase Storage and collect public URLs
                       let imageUrls: string[] = []
-                      let docUrl: string | null = null
+                      let docUrls: string[] = []
                       if (supabase && productForm.images?.length) {
                         const bucket = 'ERP_storage'
                         const folder = `products/${id}`
                         const uploads = await Promise.all(
                           productForm.images.map(async (file) => {
-                            const safeName = `${Date.now()}-${file.name}`.replace(/[^a-zA-Z0-9._-]/g, '-').slice(-180)
+                            const safeName = `${Date.now()}-${file.name}`.replace(/[^a-zA-Z0-9._-]/g, '_')
                             const filePath = `${folder}/${safeName}`
                             const { error: uploadError } = await supabase.storage.from(bucket).upload(filePath, file, {
                               upsert: true,
@@ -471,25 +620,32 @@ const Products: React.FC = () => {
                         }
                       }
 
-                      // Upload product document (optional)
-                      if (supabase && productForm.docFile) {
+                      // Upload product documents (optional)
+                      if (supabase && productForm.docFiles.length) {
                         const bucket = 'ERP_storage'
-                        const safeName = `${Date.now()}-${productForm.docFile.name}`.replace(/[^a-zA-Z0-9._-]/g, '-')
-                        const path = `product_docs/${id}/${safeName}`
-                        const { error: upErr } = await supabase.storage.from(bucket).upload(path, productForm.docFile, {
-                          upsert: true,
-                          contentType: productForm.docFile.type || 'application/octet-stream',
-                        })
-                        if (upErr) {
-                          console.error('Doc upload error:', upErr.message)
-                        } else {
-                          const { data: pub } = supabase.storage.from(bucket).getPublicUrl(path)
-                          docUrl = pub?.publicUrl || null
-                          if (!docUrl) {
-                            const { data: signed } = await supabase.storage.from(bucket).createSignedUrl(path, 60 * 60 * 24 * 365)
-                            docUrl = signed?.signedUrl || null
-                          }
-                        }
+                        const folder = `product_docs/${id}`
+                        const uploads = await Promise.all(
+                          productForm.docFiles.map(async (file) => {
+                            const safeName = `${Date.now()}-${file.name}`.replace(/[^a-zA-Z0-9._-]/g, '-')
+                            const path = `${folder}/${safeName}`
+                            const { error: upErr } = await supabase.storage.from(bucket).upload(path, file, {
+                              upsert: true,
+                              contentType: file.type || 'application/octet-stream',
+                            })
+                            if (upErr) {
+                              console.error('Doc upload error:', upErr.message)
+                            } else {
+                              const { data: pub } = supabase.storage.from(bucket).getPublicUrl(path)
+                              let url = pub?.publicUrl || null
+                              if (!url) {
+                                const { data: signed } = await supabase.storage.from(bucket).createSignedUrl(path, 60 * 60 * 24 * 365)
+                                url = signed?.signedUrl || null
+                              }
+                              return url || null
+                            }
+                          })
+                        )
+                        docUrls = uploads.filter((u): u is string => !!u)
                       }
 
                     const payload = {
@@ -501,7 +657,13 @@ const Products: React.FC = () => {
                       packagingType: productForm.packagingType,
                       uom: productForm.uom,
                       shelfLife: productForm.shelfLife,
-                      productFileUrl: docUrl,
+                      formulaId: selectedFormula?.id || null,
+                      formulaName: selectedFormula?.formula_name || null,
+                      cost: productForm.cost ? Number(productForm.cost) : null,
+                      caseDimension: productForm.caseDimension || '',
+                      caseQty: productForm.caseQty ? Number(productForm.caseQty) : null,
+                      productFileUrl: docUrls.length ? docUrls[0] : null,
+                      productFileUrls: docUrls,
                       images: imageUrls,
                       createdAt: new Date().toISOString(),
                     }
@@ -522,7 +684,13 @@ const Products: React.FC = () => {
                         packaging_type: productForm.packagingType || null,
                         unit_of_measure: productForm.uom || null,
                         shelf_life_days: Number(productForm.shelfLife) || 0,
-                        product_file_url: docUrl,
+                        formula_id: selectedFormula?.id || null,
+                        formula_name: selectedFormula?.formula_name || null,
+                        cost: productForm.cost ? Number(productForm.cost) : null,
+                        case_dimension: productForm.caseDimension || null,
+                        case_qty: productForm.caseQty ? Number(productForm.caseQty) : null,
+                        // Store all document URLs JSON-stringified into text column
+                        product_file_url: docUrls.length ? JSON.stringify(docUrls) : null,
                         product_image_url: imageUrls,
                       })
                     } catch (dbErr) {
@@ -542,6 +710,12 @@ const Products: React.FC = () => {
                         created_at: new Date().toISOString(),
                         product_image_url: imageUrls,
                         description: '',
+                        product_file_urls: docUrls,
+                        formula_id: selectedFormula?.id || null,
+                        formula_name: selectedFormula?.formula_name || null,
+                        cost: productForm.cost ? Number(productForm.cost) : null,
+                        case_dimension: productForm.caseDimension || null,
+                        case_qty: productForm.caseQty ? Number(productForm.caseQty) : null,
                       },
                       ...prev,
                     ])
@@ -612,6 +786,48 @@ const Products: React.FC = () => {
                       </div>
                     )}
                   </div>
+                </div>
+              </div>
+
+              {/* Row 2c: Cost (Optional) */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div className="space-y-2">
+                  <label className="flex items-center text-sm font-medium text-neutral-dark">
+                    Cost
+                  </label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    placeholder="e.g., 100.00"
+                    className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all duration-200 bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium"
+                    value={productForm.cost}
+                    onChange={(e) => setProductForm({ ...productForm, cost: e.target.value })}
+                  />
+                </div>
+              </div>
+
+              {/* Row 2d: Case Details */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div className="space-y-2">
+                  <label className="flex items-center text-sm font-medium text-neutral-dark">Case Dimension</label>
+                  <input
+                    type="text"
+                    placeholder="e.g., 40 x 30 x 25 cm"
+                    className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all duration-200 bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium"
+                    value={productForm.caseDimension}
+                    onChange={(e) => setProductForm({ ...productForm, caseDimension: e.target.value })}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="flex items-center text-sm font-medium text-neutral-dark">Case Qty</label>
+                  <input
+                    type="number"
+                    step="1"
+                    placeholder="e.g., 12"
+                    className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all duration-200 bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium"
+                    value={productForm.caseQty}
+                    onChange={(e) => setProductForm({ ...productForm, caseQty: e.target.value })}
+                  />
                 </div>
               </div>
 
@@ -703,6 +919,44 @@ const Products: React.FC = () => {
                 </div>
               </div>
 
+              {/* Row 2b: Formula (optional) */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div className="space-y-2 relative" ref={formulaRef}>
+                  <label className="flex items-center text-sm font-medium text-neutral-dark">
+                    <FlaskConical className="h-4 w-4 mr-2 text-primary-medium" />
+                    Formula (Optional)
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => { if (!formulasLoading) setIsFormulaOpen((v)=>!v) }}
+                    className="w-full flex items-center justify-between px-4 py-3 border border-neutral-soft rounded-lg text-left bg-white transition-all hover:border-neutral-medium focus:ring-2 focus:ring-primary-light focus:border-primary-light"
+                  >
+                    <span className={selectedFormula ? 'text-neutral-dark' : 'text-neutral-medium'}>
+                      {selectedFormula ? `${selectedFormula.formula_name}` : (formulasLoading ? 'Loading formulas...' : 'Select Formula')}
+                    </span>
+                    <span className="ml-2 text-neutral-medium">▼</span>
+                  </button>
+                  {isFormulaOpen && (
+                    <div className="absolute z-[100] mt-2 w-full bg-white border border-neutral-soft rounded-xl shadow-xl max-h-56 overflow-auto">
+                      <div className="px-3 py-2 text-xs text-neutral-medium">Select Formula</div>
+                      {formulas.map((f) => (
+                        <button
+                          key={f.id}
+                          type="button"
+                          className={`block w-full text-left px-4 py-2 hover:bg-neutral-light ${selectedFormula?.id===f.id ? 'bg-neutral-light' : ''}`}
+                          onClick={() => { setSelectedFormula(f); setIsFormulaOpen(false) }}
+                        >
+                          <div className="text-sm text-neutral-dark font-medium">{f.formula_name}</div>
+                        </button>
+                      ))}
+                      {(!formulasLoading && formulas.length === 0) && (
+                        <div className="px-4 py-3 text-sm text-neutral-medium">No formulas found</div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+
               {/* Row 3: Unit of Measure and Shelf Life */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div className="space-y-2">
@@ -763,9 +1017,17 @@ const Products: React.FC = () => {
                   ref={docFileInputRef}
                   type="file"
                   accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.rtf"
+                  multiple
                   className="hidden"
-                  onChange={(e) => setProductForm({ ...productForm, docFile: (e.target.files && e.target.files[0]) || null })}
+                  onChange={(e) => {
+                    const files = Array.from(e.target.files || [])
+                    if (files.length) {
+                      setProductForm({ ...productForm, docFiles: [...productForm.docFiles, ...files] })
+                      e.currentTarget.value = ''
+                    }
+                  }}
                 />
+
                 <div
                   className={`relative border-2 border-dashed rounded-xl p-6 transition-all duration-300 cursor-pointer ${docDragOver ? 'border-primary-light bg-primary-light/10' : 'border-neutral-soft bg-gradient-to-br from-neutral-light/40 to-neutral-light/20 hover:from-primary-light/10 hover:to-primary-medium/5'}`}
                   onDragOver={(e) => { e.preventDefault(); setDocDragOver(true) }}
@@ -773,9 +1035,10 @@ const Products: React.FC = () => {
                   onDrop={(e) => {
                     e.preventDefault();
                     setDocDragOver(false)
-                    const f = e.dataTransfer.files && e.dataTransfer.files[0]
-                    if (f) setProductForm({ ...productForm, docFile: f })
+                    const files = Array.from(e.dataTransfer.files || [])
+                    if (files.length) setProductForm({ ...productForm, docFiles: [...productForm.docFiles, ...files] })
                   }}
+
                   onClick={() => docFileInputRef.current?.click()}
                 >
                   <div className="flex items-center justify-between mb-2">
@@ -787,19 +1050,52 @@ const Products: React.FC = () => {
                       Browse File
                     </button>
                   </div>
-                  {productForm.docFile ? (
-                    <div className="flex items-center justify-between bg-white border border-neutral-soft rounded-lg px-4 py-3">
-                      <span className="text-sm text-neutral-dark truncate">{productForm.docFile.name}</span>
-                      <button
-                        type="button"
-                        className="ml-3 px-2 py-1 text-xs rounded-md bg-white/90 hover:bg-white border border-neutral-soft shadow-sm"
-                        onClick={(e) => { e.stopPropagation(); setProductForm({ ...productForm, docFile: null }) }}
-                      >
-                        Remove
-                      </button>
+                  {productForm.docFiles.length > 0 ? (
+                    <div className="space-y-2">
+                      {productForm.docFiles.map((f, idx) => (
+                        <div key={idx} className="flex items-center justify-between bg-white border border-neutral-soft rounded-lg px-4 py-3">
+                          <span className="text-sm text-neutral-dark truncate">{f.name}</span>
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              className="px-2 py-1 text-xs rounded-md bg-white/90 hover:bg-white border border-neutral-soft shadow-sm"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                try {
+                                  const name = (f?.name || '').toLowerCase()
+                                  const ext = name.split('.').pop() || ''
+                                  const previewable = ['pdf','png','jpg','jpeg']
+                                  if (previewable.includes(ext)) {
+                                    const url = URL.createObjectURL(f)
+                                    window.open(url, '_blank')
+                                    setTimeout(() => URL.revokeObjectURL(url), 5000)
+                                  } else {
+                                    alert('Preview is available for PDF or image files before saving. Save first to preview Office documents.')
+                                  }
+                                } catch {}
+                              }}
+                            >
+                              View
+                            </button>
+                            <button
+                              type="button"
+                              className="px-2 py-1 text-xs rounded-md bg-white/90 hover:bg-white border border-neutral-soft shadow-sm"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                const copy = [...productForm.docFiles]
+                                copy.splice(idx, 1)
+                                setProductForm({ ...productForm, docFiles: copy })
+                              }}
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        </div>
+                      ))}
                     </div>
                   ) : (
                     <div className="text-center py-6">
+
                       <div className="mx-auto w-12 h-12 bg-primary-light/20 rounded-full flex items-center justify-center mb-3">
                         <Upload className="h-6 w-6 text-primary-medium" />
                       </div>
@@ -1130,7 +1426,7 @@ const Products: React.FC = () => {
                       </td>
                       <td className="px-8 py-8">
                         <div className="flex items-center justify-center space-x-2">
-                          <button type="button" onClick={() => { setImageModalDescription(product.description || ''); setImageModalUrls(product.product_image_url || []); setImageModalOpen(true); }} className="group/btn p-3 text-primary-medium hover:text-white hover:bg-primary-medium rounded-xl transition-all duration-300 hover:shadow-lg hover:scale-105 border border-primary-light/30 hover:border-primary-medium">
+                          <button type="button" onClick={() => { setImageModalDescription(product.description || ''); setImageModalUrls(product.product_image_url || []); setImageModalFiles((product.product_file_urls && product.product_file_urls.length ? product.product_file_urls : (product.product_file_url ? [product.product_file_url] : []))); setImageModalOpen(true); }} className="group/btn p-3 text-primary-medium hover:text-white hover:bg-primary-medium rounded-xl transition-all duration-300 hover:shadow-lg hover:scale-105 border border-primary-light/30 hover:border-primary-medium">
                             <Eye className="h-5 w-5" />
                           </button>
                           <button
@@ -1154,7 +1450,14 @@ const Products: React.FC = () => {
                                 description: product.description,
                                 product_image_url: product.product_image_url || [],
                                 product_file_url: product.product_file_url || null,
+                                product_file_urls: product.product_file_urls || [],
+                                formula_id: product.formula_id || null,
+                                formula_name: product.formula_name || null,
+                                cost: typeof product.cost === 'number' ? product.cost : (product.cost ? Number(product.cost) : ''),
+                                case_dimension: product.case_dimension ?? '',
+                                case_qty: typeof product.case_qty === 'number' ? product.case_qty : (product.case_qty ? Number(product.case_qty) : ''),
                               })
+                              setEditSelectedFormula(product.formula_id ? { id: product.formula_id, formula_name: product.formula_name || '' } as any : null)
                               setIsEditOpen(true)
                             }}
                             className="group/btn p-3 text-neutral-medium hover:text-white hover:bg-neutral-medium rounded-xl transition-all duration-300 hover:shadow-lg hover:scale-105 border border-neutral-soft hover:border-neutral-medium cursor-pointer"
@@ -1182,25 +1485,37 @@ const Products: React.FC = () => {
         )}
         {/* Enhanced Image Preview Modal */}
         {imageModalOpen && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
             <div className="absolute inset-0 bg-black/70" onClick={() => setImageModalOpen(false)}></div>
             <div className="relative z-10 w-full max-w-6xl max-h-[90vh] bg-white rounded-3xl shadow-2xl border border-neutral-soft/30 overflow-hidden flex flex-col">
-              {/* Enhanced Header */}
-              <div className="flex items-center justify-between px-8 py-6 bg-gradient-to-r from-primary-dark/5 via-primary-medium/5 to-primary-light/5 border-b border-neutral-soft/40">
-                <div className="flex items-center space-x-3">
-                  <div className="w-10 h-10 bg-gradient-to-br from-primary-light/20 to-primary-medium/20 rounded-xl flex items-center justify-center">
-                    <Package className="h-5 w-5 text-primary-dark" />
-                  </div>
-                  <div>
-                    <h3 className="text-xl font-bold text-neutral-dark">Product Gallery</h3>
-                    <p className="text-sm text-neutral-medium">{imageModalUrls.length} image{imageModalUrls.length !== 1 ? 's' : ''} available</p>
-                  </div>
-                </div>
-                <button onClick={() => setImageModalOpen(false)} className="p-3 text-neutral-medium hover:text-white hover:bg-accent-danger rounded-xl transition-all duration-300 hover:shadow-lg hover:scale-105">
-                  <X className="h-5 w-5" />
-                </button>
-              </div>
-              
+          {/* ERP Premium Title Header */}
+          <div className="relative flex items-center justify-between px-10 py-7 
+              bg-gradient-to-r from-neutral-50 via-primary-light/20 to-primary-light/10
+              backdrop-blur-md border-b border-neutral-200 shadow-[0_1px_3px_rgba(0,0,0,0.06)]
+              rounded-t-2xl">
+
+            {/* Left Section */}
+            <div className="flex flex-col">
+              <h2 className="text-2xl font-semibold text-neutral-800 tracking-tight leading-tight">
+                Product Collection
+              </h2>
+
+              <p className="text-sm text-neutral-500 leading-snug mt-1">
+                Images • Documents • File Attachments
+              </p>
+            </div>
+
+            {/* Close Button */}
+            <button
+              onClick={() => setImageModalOpen(false)}
+              className="p-2.5 rounded-xl hover:bg-neutral-200/70 text-neutral-500 
+                hover:text-neutral-900 transition-all duration-300 shadow-sm
+                hover:shadow-md hover:scale-105 active:scale-95"
+            >
+              <X className="h-5 w-5" />
+            </button>
+          </div>
+           
               {/* Modal Body */}
               <div className="flex-1 overflow-auto">
                 <div className="p-8">
@@ -1218,10 +1533,151 @@ const Products: React.FC = () => {
                       </div>
                     </div>
                   )}
-                  
+
+                  {/* Product Documents */}
+                  {imageModalFiles.length > 0 && (
+                    <div className="mb-8 bg-white rounded-3xl border border-neutral-200/80 shadow-[0_4px_20px_rgba(0,0,0,0.08)] overflow-hidden">
+                      {/* Header Section */}
+                      <div className="relative bg-gradient-to-r from-slate-50 via-neutral-50 to-slate-50/80 border-b border-neutral-200/60 px-6 py-5">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center space-x-4">
+                            <div className="w-10 h-10 bg-gradient-to-br from-primary-500/10 to-primary-600/20 rounded-2xl flex items-center justify-center">
+                              <FileText className="w-5 h-5 text-primary-600" />
+                            </div>
+                            <div>
+                              <h3 className="text-base font-semibold text-slate-900 tracking-tight">Product Documents</h3>
+                              <p className="text-sm text-slate-500 mt-0.5">{imageModalFiles.length} file{imageModalFiles.length !== 1 ? 's' : ''} attached</p>
+                            </div>
+                          </div>
+                          
+                          {/* View Toggle */}
+                          <div className="inline-flex items-center bg-white rounded-2xl p-1.5 border border-neutral-200 shadow-sm">
+                            <button 
+                              type="button" 
+                              onClick={() => setDocsLayout('list')} 
+                              className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium rounded-xl transition-all duration-200 min-w-[80px] justify-center ${
+                                docsLayout === 'list' 
+                                  ? 'bg-blue-500 text-white shadow-lg border-2 border-blue-600' 
+                                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50 border-2 border-transparent'
+                              }`}
+                              title="List View"
+                            >
+                              <List className="w-4 h-4 flex-shrink-0" />
+                              <span className="whitespace-nowrap font-semibold">List</span>
+                            </button>
+                            <button 
+                              type="button" 
+                              onClick={() => setDocsLayout('grid')} 
+                              className={`ml-1 flex items-center gap-2 px-4 py-2.5 text-sm font-medium rounded-xl transition-all duration-200 min-w-[80px] justify-center ${
+                                docsLayout === 'grid' 
+                                  ? 'bg-blue-500 text-white shadow-lg border-2 border-blue-600' 
+                                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50 border-2 border-transparent'
+                              }`}
+                              title="Grid View"
+                            >
+                              <Grid3X3 className="w-4 h-4 flex-shrink-0" />
+                              <span className="whitespace-nowrap font-semibold">Grid</span>
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Content Section */}
+                      <div className="p-6">
+                        {docsLayout === 'list' ? (
+                          <div className="space-y-3">
+                            {imageModalFiles.map((url, idx) => (
+                              <div key={idx} className="group relative bg-slate-50/50 hover:bg-white border border-slate-200/60 hover:border-primary-200 rounded-2xl p-4 transition-all duration-200 hover:shadow-lg hover:shadow-slate-200/50">
+                                <div className="flex items-center justify-between">
+                                  <div className="flex items-center space-x-4 min-w-0 flex-1">
+                                    {(() => { 
+                                      const meta = getFileMeta(prettyFileName(url)); 
+                                      return (
+                                        <div className={`inline-flex items-center justify-center w-10 h-10 rounded-xl text-xs font-bold ${meta.cls.replace('bg-', 'bg-').replace('text-', 'text-')} border border-current/20`}>
+                                          {meta.label}
+                                        </div>
+                                      )
+                                    })()}
+                                    <div className="min-w-0 flex-1">
+                                      <button
+                                        type="button"
+                                        className="block text-left w-full"
+                                        onClick={() => {
+                                          const lower = url.toLowerCase()
+                                          if (lower.endsWith('.pdf') || lower.endsWith('.png') || lower.endsWith('.jpg') || lower.endsWith('.jpeg')) {
+                                            window.open(url, '_blank')
+                                          } else {
+                                            const viewer = `https://docs.google.com/gview?embedded=1&url=${encodeURIComponent(url)}`
+                                            window.open(viewer, '_blank')
+                                          }
+                                        }}
+                                      >
+                                        <h4 className="text-sm font-semibold text-slate-900 group-hover:text-primary-600 truncate transition-colors">
+                                          {prettyFileName(url)}
+                                        </h4>
+                                        <p className="text-xs text-slate-500 mt-1">Click to open in new tab</p>
+                                      </button>
+                                    </div>
+                                  </div>
+                                  <div className="opacity-0 group-hover:opacity-100 transition-opacity duration-200">
+                                    <div className="w-8 h-8 bg-primary-50 rounded-xl flex items-center justify-center">
+                                      <svg className="w-4 h-4 text-primary-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                                      </svg>
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
+                            {imageModalFiles.map((url, idx) => (
+                              <button
+                                key={idx}
+                                type="button"
+                                className="group relative bg-slate-50/50 hover:bg-white border border-slate-200/60 hover:border-primary-200 rounded-3xl p-6 transition-all duration-200 hover:shadow-xl hover:shadow-slate-200/50 hover:-translate-y-1"
+                                onClick={() => {
+                                  const lower = url.toLowerCase()
+                                  if (lower.endsWith('.pdf') || lower.endsWith('.png') || lower.endsWith('.jpg') || lower.endsWith('.jpeg')) {
+                                    window.open(url, '_blank')
+                                  } else {
+                                    const viewer = `https://docs.google.com/gview?embedded=1&url=${encodeURIComponent(url)}`
+                                    window.open(viewer, '_blank')
+                                  }
+                                }}
+                              >
+                                <div className="flex flex-col items-center text-center">
+                                  {(() => {
+                                    const fname = prettyFileName(url).toLowerCase()
+                                    const ext = fname.includes('.') ? (fname.split('.').pop() || '') : ''
+                                    let color = 'text-slate-600'; let bg = 'bg-slate-100'
+                                    if (ext === 'pdf') { color = 'text-red-600'; bg = 'bg-red-50' }
+                                    else if (ext === 'doc' || ext === 'docx') { color = 'text-blue-600'; bg = 'bg-blue-50' }
+                                    else if (ext === 'xls' || ext === 'xlsx' || ext === 'csv') { color = 'text-emerald-600'; bg = 'bg-emerald-50' }
+                                    else if (ext === 'ppt' || ext === 'pptx') { color = 'text-orange-600'; bg = 'bg-orange-50' }
+                                    return (
+                                      <div className={`w-16 h-16 ${bg} rounded-2xl border border-current/10 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform duration-200`}>
+                                        <FileText className={`w-8 h-8 ${color}`} />
+                                      </div>
+                                    )
+                                  })()}
+                                  <h4 className="text-sm font-semibold text-slate-900 group-hover:text-primary-600 transition-colors line-clamp-2" title={prettyFileName(url)}>
+                                    {prettyFileName(url)}
+                                  </h4>
+                                </div>
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
                   {/* Enhanced Image Grid */}
                   {imageModalUrls.length === 0 ? (
                     <div className="text-center py-16">
+// ... (rest of the code remains the same)
                       <div className="w-20 h-20 bg-neutral-light/60 rounded-full flex items-center justify-center mx-auto mb-4">
                         <Package className="h-10 w-10 text-neutral-medium" />
                       </div>
@@ -1355,28 +1811,35 @@ const Products: React.FC = () => {
                       product_file_url: null,
                     }
                     // If a replacement doc was selected, upload and get URL
-                    let newDocUrl: string | null = null
+                    let uploadedDocUrls: string[] = []
                     try {
-                      if (editDocFile) {
+                      if (editDocFiles && editDocFiles.length) {
                         const bucket = 'ERP_storage'
-                        const safeName = `${Date.now()}-${editDocFile.name}`.replace(/[^a-zA-Z0-9._-]/g, '-')
-                        const path = `product_docs/${ef.id}/${safeName}`
-                        const { error: upErr } = await supabase.storage.from(bucket).upload(path, editDocFile, {
-                          upsert: true,
-                          contentType: editDocFile.type || 'application/octet-stream',
-                        })
-                        if (!upErr) {
-                          const { data: pub } = supabase.storage.from(bucket).getPublicUrl(path)
-                          newDocUrl = pub?.publicUrl || null
-                          if (!newDocUrl) {
-                            const { data: signed } = await supabase.storage.from(bucket).createSignedUrl(path, 60 * 60 * 24 * 365)
-                            newDocUrl = signed?.signedUrl || null
-                          }
-                        }
+                        const uploads = await Promise.all(
+                          editDocFiles.map(async (file) => {
+                            const safeName = `${Date.now()}-${file.name}`.replace(/[^a-zA-Z0-9._-]/g, '-')
+                            const path = `product_docs/${ef.id}/${safeName}`
+                            const { error: upErr } = await supabase.storage.from(bucket).upload(path, file, {
+                              upsert: true,
+                              contentType: file.type || 'application/octet-stream',
+                            })
+                            if (!upErr) {
+                              const { data: pub } = supabase.storage.from(bucket).getPublicUrl(path)
+                              let url = pub?.publicUrl || ''
+                              if (!url) {
+                                const { data: signed } = await supabase.storage.from(bucket).createSignedUrl(path, 60 * 60 * 24 * 365)
+                                url = signed?.signedUrl || ''
+                              }
+                              return url || null
+                            }
+                            return null
+                          })
+                        )
+                        uploadedDocUrls = uploads.filter((u): u is string => !!u)
                       }
                     } catch {}
 
-                    const update = {
+                    const update: any = {
                       product_name: ef.product_name,
                       customer_name: ef.customer_name,
                       product_type: ef.product_type,
@@ -1384,7 +1847,19 @@ const Products: React.FC = () => {
                       unit_of_measure: ef.unit_of_measure,
                       shelf_life_days: Number(ef.shelf_life_days) || 0,
                       product_image_url: ef.product_image_url,
-                      product_file_url: (newDocUrl !== null ? newDocUrl : ef.product_file_url ?? null),
+                      product_file_url: (() => {
+                        const base = Array.isArray(ef.product_file_urls) ? ef.product_file_urls : []
+                        const next = [...base, ...uploadedDocUrls]
+                        return next.length ? JSON.stringify(next) : null
+                      })(),
+                    }
+
+                    update.cost = (ef.cost === '' || ef.cost === null || typeof ef.cost === 'undefined') ? null : Number(ef.cost as any)
+                    update.case_dimension = (ef.case_dimension ?? null)
+                    update.case_qty = (ef.case_qty === '' || ef.case_qty === null || typeof ef.case_qty === 'undefined') ? null : Number(ef.case_qty as any)
+                    if (editSelectedFormula) {
+                      update.formula_id = editSelectedFormula.id
+                      update.formula_name = editSelectedFormula.formula_name || null
                     }
                     const { error } = await supabase.from('products').update(update).eq('id', ef.id)
                     if (!error) {
@@ -1392,6 +1867,10 @@ const Products: React.FC = () => {
                       const resolvedCustomerId = (ef.customerId && ef.customerId.length > 0)
                         ? ef.customerId
                         : (customers?.find((c) => c.name === ef.customer_name)?.id || '')
+                      const mergedDocUrls = (() => {
+                        const base = Array.isArray(ef.product_file_urls) ? ef.product_file_urls : []
+                        return [...base, ...uploadedDocUrls]
+                      })()
                       const updated = {
                         id: ef.id,
                         name: ef.product_name,
@@ -1401,10 +1880,16 @@ const Products: React.FC = () => {
                         packagingType: ef.packaging_type,
                         uom: ef.unit_of_measure,
                         shelfLife: String(ef.shelf_life_days ?? ''),
+                        cost: (ef.cost === '' || ef.cost === null || typeof ef.cost === 'undefined') ? null : Number(ef.cost as any),
+                        caseDimension: ef.case_dimension ?? '',
+                        caseQty: (ef.case_qty === '' || ef.case_qty === null || typeof ef.case_qty === 'undefined') ? null : Number(ef.case_qty as any),
                         images: ef.product_image_url ?? [],
                         createdAt: existing?.created_at ?? new Date().toISOString(),
+                        productFileUrls: mergedDocUrls,
+                        productFileUrl: mergedDocUrls.length ? mergedDocUrls[0] : null,
                       }
-                      setProducts((prev) => prev.map((p) => (p.id === ef.id ? { ...p, ...update } : p)))
+                      setProducts((prev) => prev.map((p) => (p.id === ef.id ? { ...p, ...update, product_file_urls: mergedDocUrls } : p)))
+
                       try {
                         await fetch('https://primary-production-6722.up.railway.app/webhook/products', {
                           method: 'POST',
@@ -1414,6 +1899,7 @@ const Products: React.FC = () => {
                       } catch (werr) {
                         console.error('Webhook failed', werr)
                       }
+                      setEditDocFiles([])
                       setIsEditOpen(false)
                       setToast({ show: true, message: 'Product updated successfully' })
                     } else {
@@ -1477,6 +1963,84 @@ const Products: React.FC = () => {
                     </div>
                   </div>
 
+                  {/* Edit Row: Formula (optional) */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div className="space-y-2 relative" ref={editFormulaRef}>
+                      <label className="flex items-center text-sm font-medium text-neutral-dark">
+                        <FlaskConical className="h-4 w-4 mr-2 text-primary-medium" />
+                        Formula (Optional)
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => { if (!formulasLoading) setIsEditFormulaOpen((v)=>!v) }}
+                        className="w-full flex items-center justify-between px-4 py-3 border border-neutral-soft rounded-lg text-left bg-white transition-all hover:border-neutral-medium focus:ring-2 focus:ring-primary-light focus:border-primary-light"
+                      >
+                        <span className={editSelectedFormula ? 'text-neutral-dark' : 'text-neutral-medium'}>
+                          {editSelectedFormula ? `${editSelectedFormula.formula_name}` : (formulasLoading ? 'Loading formulas...' : 'Select Formula')}
+                        </span>
+                        <span className="ml-2 text-neutral-medium">▼</span>
+                      </button>
+                      {isEditFormulaOpen && (
+                        <div className="absolute z-[100] mt-2 w-full bg-white border border-neutral-soft rounded-xl shadow-xl max-h-56 overflow-auto">
+                          <div className="px-3 py-2 text-xs text-neutral-medium">Select Formula</div>
+                          {formulas.map((f) => (
+                            <button
+                              key={f.id}
+                              type="button"
+                              className={`block w-full text-left px-4 py-2 hover:bg-neutral-light ${editSelectedFormula?.id===f.id ? 'bg-neutral-light' : ''}`}
+                              onClick={() => { setEditSelectedFormula(f); setIsEditFormulaOpen(false) }}
+                            >
+                              <div className="text-sm text-neutral-dark font-medium">{f.formula_name}</div>
+                            </button>
+                          ))}
+                          {(!formulasLoading && formulas.length === 0) && (
+                            <div className="px-4 py-3 text-sm text-neutral-medium">No formulas found</div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Edit Row: Cost (Optional) */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div className="space-y-2">
+                      <label className="flex items-center text-sm font-medium text-neutral-dark">Cost</label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        placeholder="e.g., 100.00"
+                        className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light bg-white text-neutral-dark"
+                        value={typeof editForm?.cost === 'number' ? String(editForm?.cost ?? '') : (editForm?.cost ?? '')}
+                        onChange={(e) => setEditForm((prev) => ({ ...(prev ?? { id: '', product_name: '', customer_name: '', product_type: '', packaging_type: '', unit_of_measure: '', shelf_life_days: 0, description: '', product_image_url: [] }), cost: e.target.value }))}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Edit Row: Case Details */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div className="space-y-2">
+                      <label className="flex items-center text-sm font-medium text-neutral-dark">Case Dimension</label>
+                      <input
+                        type="text"
+                        placeholder="e.g., 40 x 30 x 25 cm"
+                        className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light bg-white text-neutral-dark"
+                        value={editForm?.case_dimension ?? ''}
+                        onChange={(e) => setEditForm((prev) => ({ ...(prev ?? { id: '', product_name: '', customer_name: '', product_type: '', packaging_type: '', unit_of_measure: '', shelf_life_days: 0, description: '', product_image_url: [] }), case_dimension: e.target.value }))}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="flex items-center text-sm font-medium text-neutral-dark">Case Qty</label>
+                      <input
+                        type="number"
+                        step="1"
+                        placeholder="e.g., 12"
+                        className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light bg-white text-neutral-dark"
+                        value={typeof editForm?.case_qty === 'number' ? String(editForm?.case_qty ?? '') : (editForm?.case_qty ?? '')}
+                        onChange={(e) => setEditForm((prev) => ({ ...(prev ?? { id: '', product_name: '', customer_name: '', product_type: '', packaging_type: '', unit_of_measure: '', shelf_life_days: 0, description: '', product_image_url: [] }), case_qty: e.target.value }))}
+                      />
+                    </div>
+                  </div>
+
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     <div className="space-y-2">
                       <label className="flex items-center text-sm font-medium text-neutral-dark">
@@ -1513,9 +2077,15 @@ const Products: React.FC = () => {
                       ref={editDocFileInputRef}
                       type="file"
                       accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.rtf"
+                      multiple
                       className="hidden"
-                      onChange={(e) => setEditDocFile((e.target.files && e.target.files[0]) || null)}
+                      onChange={(e) => {
+                        const files = Array.from(e.target.files || [])
+                        if (files.length) setEditDocFiles((prev) => [...prev, ...files])
+                        if (editDocFileInputRef.current) editDocFileInputRef.current.value = ''
+                      }}
                     />
+
                     <div
                       className={`relative border-2 border-dashed rounded-xl p-4 transition-all duration-300 cursor-pointer ${editDocDragOver ? 'border-primary-light bg-primary-light/10' : 'border-neutral-soft bg-gradient-to-br from-neutral-light/40 to-neutral-light/20 hover:from-primary-light/10 hover:to-primary-medium/5'}`}
                       onDragOver={(e) => { e.preventDefault(); setEditDocDragOver(true) }}
@@ -1523,8 +2093,8 @@ const Products: React.FC = () => {
                       onDrop={(e) => {
                         e.preventDefault();
                         setEditDocDragOver(false)
-                        const f = e.dataTransfer.files && e.dataTransfer.files[0]
-                        if (f) setEditDocFile(f)
+                        const files = Array.from(e.dataTransfer.files || [])
+                        if (files.length) setEditDocFiles((prev) => [...prev, ...files])
                       }}
                       onClick={() => editDocFileInputRef.current?.click()}
                     >
@@ -1532,42 +2102,41 @@ const Products: React.FC = () => {
                         <p className="text-sm text-neutral-medium">PDF, DOCX, XLSX, PPTX, TXT</p>
                         <button type="button" className="px-4 py-2 rounded-lg bg-primary-dark hover:bg-primary-medium text-white text-sm font-medium shadow-sm">Browse File</button>
                       </div>
-                      {(editDocFile || editForm?.product_file_url) ? (
-                        <div className="flex items-center justify-between bg-white border border-neutral-soft rounded-lg px-4 py-3">
-                          <div className="flex items-center gap-3 min-w-0">
-                            {(() => {
-                              const fname = editDocFile ? editDocFile.name : (editForm?.product_file_url ? prettyFileName(editForm.product_file_url) : '')
-                              const meta = getFileMeta(fname)
-                              return (
-                                <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-semibold ${meta.cls}`}>{meta.label}</span>
-                              )
-                            })()}
-                            <span className="text-sm text-neutral-dark truncate">
-                              {editDocFile ? editDocFile.name : (editForm?.product_file_url ? prettyFileName(editForm.product_file_url) : '')}
-                            </span>
-                            {(!editDocFile && editForm?.product_file_url) && (
-                              <a
-                                href={editForm.product_file_url}
-                                target="_blank"
-                                rel="noreferrer noopener"
-                                className="text-xs text-primary-medium underline truncate"
-                                onClick={(e) => e.stopPropagation()}
-                                onMouseDown={(e) => e.stopPropagation()}
-                              >
-                                View
-                              </a>
-                            )}
-                          </div>
-                          <div className="flex items-center gap-2">
-                            {editForm?.product_file_url && !editDocFile && (
-                              <button type="button" className="px-2 py-1 text-xs rounded-md bg-white/90 hover:bg-white border border-neutral-soft shadow-sm" onClick={(e) => { e.stopPropagation(); setEditForm((prev) => (prev ? { ...prev, product_file_url: null } : prev)) }}>Clear</button>
-                            )}
-                            {editDocFile && (
-                              <button type="button" className="px-2 py-1 text-xs rounded-md bg-white/90 hover:bg-white border border-neutral-soft shadow-sm" onClick={(e) => { e.stopPropagation(); setEditDocFile(null) }}>Remove</button>
-                            )}
-                          </div>
+                      {(editForm?.product_file_urls && editForm.product_file_urls.length > 0) && (
+                        <div className="space-y-2 mb-3">
+                          {editForm.product_file_urls.map((url, idx) => (
+                            <div key={`exist-${idx}`} className="flex items-center justify-between bg-white border border-neutral-soft rounded-lg px-4 py-3">
+                              <div className="flex items-center gap-3 min-w-0">
+                                {(() => { const meta = getFileMeta(prettyFileName(url)); return (<span className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-semibold ${meta.cls}`}>{meta.label}</span>) })()}
+                                <span className="text-sm text-neutral-dark truncate">{prettyFileName(url)}</span>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <button type="button" className="px-2 py-1 text-xs rounded-md bg-white/90 hover:bg-white border border-neutral-soft shadow-sm" onClick={(e) => { e.stopPropagation(); const lower = url.toLowerCase(); if (lower.endsWith('.pdf') || lower.endsWith('.png') || lower.endsWith('.jpg') || lower.endsWith('.jpeg')) { window.open(url, '_blank') } else { const viewer = `https://docs.google.com/gview?embedded=1&url=${encodeURIComponent(url)}`; window.open(viewer, '_blank') } }}>View</button>
+                                <button type="button" className="px-2 py-1 text-xs rounded-md bg-white/90 hover:bg-white border border-neutral-soft shadow-sm" onClick={async (e) => { e.stopPropagation(); const prodId = editForm?.id; try { const next = (editForm?.product_file_urls || []).filter((_, i) => i !== idx); setEditForm((prev) => prev ? { ...prev, product_file_urls: next } : prev); if (prodId) { await supabase.from('products').update({ product_file_url: next.length ? JSON.stringify(next) : null }).eq('id', prodId) } try { const marker = '/storage/v1/object/public/ERP_storage/'; const at = url.indexOf(marker); if (at >= 0) { const key = url.substring(at + marker.length); if (key) await supabase.storage.from('ERP_storage').remove([key]) } } catch {} } catch {} }}>Delete</button>
+                              </div>
+                            </div>
+                          ))}
                         </div>
-                      ) : (
+                      )}
+
+                      {(editDocFiles.length > 0) && (
+                        <div className="space-y-2 mb-3">
+                          {editDocFiles.map((f, idx) => (
+                            <div key={`new-${idx}`} className="flex items-center justify-between bg-white border border-neutral-soft rounded-lg px-4 py-3">
+                              <div className="flex items-center gap-3 min-w-0">
+                                {(() => { const meta = getFileMeta(f.name); return (<span className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-semibold ${meta.cls}`}>{meta.label}</span>) })()}
+                                <span className="text-sm text-neutral-dark truncate">{f.name}</span>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <button type="button" className="px-2 py-1 text-xs rounded-md bg-white/90 hover:bg-white border border-neutral-soft shadow-sm" onClick={(e) => { e.stopPropagation(); try { const name = (f?.name || '').toLowerCase(); const ext = name.split('.').pop() || ''; const previewable = ['pdf','png','jpg','jpeg']; if (previewable.includes(ext)) { const url = URL.createObjectURL(f); window.open(url, '_blank'); setTimeout(() => URL.revokeObjectURL(url), 5000) } else { alert('Preview is available after saving for this file type.') } } catch {} }}>View</button>
+                                <button type="button" className="px-2 py-1 text-xs rounded-md bg-white/90 hover:bg-white border border-neutral-soft shadow-sm" onClick={(e) => { e.stopPropagation(); setEditDocFiles((prev) => prev.filter((_, i) => i !== idx)) }}>Delete</button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {((!editForm?.product_file_urls || editForm.product_file_urls.length === 0) && editDocFiles.length === 0) && (
                         <div className="text-center py-4">
                           <div className="mx-auto w-10 h-10 bg-primary-light/20 rounded-full flex items-center justify-center mb-2">
                             <Upload className="h-5 w-5 text-primary-medium" />
@@ -1623,10 +2192,11 @@ const Products: React.FC = () => {
             </div>
           </div>
         )}
+          </>
+        )}
       </div>
     </div>
   )
 }
 
 export default Products
-

@@ -1,6 +1,34 @@
 import React, { useState, useEffect, useRef } from 'react'
-import { Plus, Package, Box, Factory, LineChart, Inbox, Landmark, X, Tag, User, Scale, DollarSign, ClipboardList, Eye, Edit, Trash2, CheckCircle2, Clock } from 'lucide-react'
+import { Plus, Package, Box, Factory, LineChart, Inbox, Landmark, X, Tag, User, Scale, DollarSign, ClipboardList, Eye, Edit, Trash2, CheckCircle2, Clock, Upload, List, Grid3X3, FileText } from 'lucide-react'
 import { supabase } from '../lib/supabase'
+
+// Map filename extension to themed badge styles
+const getFileMeta = (name?: string) => {
+  const raw = String(name || '').toLowerCase()
+  const ext = raw.includes('.') ? raw.split('.').pop() || '' : ''
+  let cls = 'bg-neutral-100 text-neutral-700'
+  let label = (ext || 'file').toUpperCase()
+  if (ext === 'pdf') { cls = 'bg-red-100 text-red-700'; label = 'PDF' }
+  else if (ext === 'doc' || ext === 'docx') { cls = 'bg-blue-100 text-blue-700'; label = 'DOC' }
+  else if (ext === 'xls' || ext === 'xlsx' || ext === 'csv') { cls = 'bg-emerald-100 text-emerald-700'; label = 'XLS' }
+  else if (ext === 'ppt' || ext === 'pptx') { cls = 'bg-orange-100 text-orange-700'; label = 'PPT' }
+  else if (ext === 'txt' || ext === 'rtf') { cls = 'bg-neutral-100 text-neutral-700'; label = ext.toUpperCase() }
+  return { cls, label }
+}
+
+// Derive a clean filename for display from a stored URL/safe filename
+const prettyFileName = (src?: string) => {
+  if (!src) return ''
+  try {
+    const last = decodeURIComponent(new URL(src).pathname.split('/').pop() || '')
+    // remove leading timestamp or numeric prefix like 1699999999999- or 1699999_
+    return last.replace(/^\d{6,}[-_]/, '')
+  } catch {
+    // fallback: just strip numeric prefix if present in raw string
+    const base = String(src).split('/').pop() || String(src)
+    return base.replace(/^\d{6,}[-_]/, '')
+  }
+}
 
 interface Supplier {
   id: string
@@ -18,6 +46,7 @@ interface RawMaterial {
   cost_per_unit?: string | null
   total_available?: string | null
   created_at?: string | null
+  material_file_urls?: string[]
 }
 
 const Inventory: React.FC = () => {
@@ -44,6 +73,7 @@ const Inventory: React.FC = () => {
     unit_weight: '',
     cost_per_unit: '',
     total_available: '',
+    material_file_urls: [] as string[],
   })
   const [isDeleteOpen, setIsDeleteOpen] = useState<boolean>(false)
   const [deleteTarget, setDeleteTarget] = useState<RawMaterial | null>(null)
@@ -75,7 +105,12 @@ const Inventory: React.FC = () => {
     unitWeight: '',
     costPerUnit: '',
     totalAvailable: '',
+    docFiles: [] as File[],
   })
+  const [editDocFiles, setEditDocFiles] = useState<File[]>([])
+  const [docsLayout, setDocsLayout] = useState<'list' | 'grid'>('list')
+  const [editDocDragOver, setEditDocDragOver] = useState(false)
+  const [addDocDragOver, setAddDocDragOver] = useState(false)
   const rawCategories = ['Ingredient', 'Packaging', 'Additive']
   const [suppliers, setSuppliers] = useState<Supplier[]>([])
   const [suppliersLoading, setSuppliersLoading] = useState<boolean>(true)
@@ -84,6 +119,8 @@ const Inventory: React.FC = () => {
   const categoryRef = useRef<HTMLDivElement>(null)
   const supplierRef = useRef<HTMLDivElement>(null)
   const uomRef = useRef<HTMLDivElement>(null)
+  const addDocInputRef = useRef<HTMLInputElement>(null)
+  const editDocInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -249,7 +286,7 @@ const Inventory: React.FC = () => {
             try {
               const { data, error } = await supabase
                 .from('inventory_materials')
-                .select('id, product_name, category, supplier_id, supplier_name, unit_of_measure, unit_weight, cost_per_unit, total_available, reserved_qty, created_at')
+                .select('id, product_name, category, supplier_id, supplier_name, unit_of_measure, unit_weight, cost_per_unit, total_available, reserved_qty, created_at, material_file_url')
                 .order('product_name', { ascending: true })
               if (!error) {
                 const rows = (data ?? []) as Array<any>
@@ -265,6 +302,7 @@ const Inventory: React.FC = () => {
                   total_available: r.total_available ?? null,
                   reserved_qty: r.reserved_qty ?? 0,
                   created_at: r.created_at ?? null,
+                  material_file_urls: (() => { try { const v = r.material_file_url; if (!v) return []; const arr = typeof v === 'string' ? JSON.parse(v) : v; return Array.isArray(arr) ? arr : [] } catch { return [] } })(),
                 }))
                 setMaterials(mapped as any)
               }
@@ -316,7 +354,7 @@ const Inventory: React.FC = () => {
           try {
             const { data, error } = await supabase
               .from('inventory_materials')
-              .select('id, product_name, category, supplier_id, supplier_name, unit_of_measure, unit_weight, cost_per_unit, total_available, reserved_qty, created_at')
+              .select('id, product_name, category, supplier_id, supplier_name, unit_of_measure, unit_weight, cost_per_unit, total_available, reserved_qty, created_at, material_file_url')
               .order('product_name', { ascending: true })
             if (!error) {
               const rows = (data ?? []) as Array<any>
@@ -332,6 +370,7 @@ const Inventory: React.FC = () => {
                 total_available: r.total_available ?? null,
                 reserved_qty: r.reserved_qty ?? 0,
                 created_at: r.created_at ?? null,
+                material_file_urls: (() => { try { const v = r.material_file_url; if (!v) return []; const arr = typeof v === 'string' ? JSON.parse(v) : v; return Array.isArray(arr) ? arr : [] } catch { return [] } })(),
               }))
               setMaterials(mapped as any)
             }
@@ -391,7 +430,7 @@ const Inventory: React.FC = () => {
       setMaterialsLoading(true)
       const { data, error } = await supabase
       .from('inventory_materials')
-      .select('id, product_name, category, supplier_id, supplier_name, unit_of_measure, unit_weight, cost_per_unit, total_available, reserved_qty, created_at')
+      .select('id, product_name, category, supplier_id, supplier_name, unit_of_measure, unit_weight, cost_per_unit, total_available, reserved_qty, created_at, material_file_url')
       .order('product_name', { ascending: true })
 
       if (error) {
@@ -412,6 +451,7 @@ const Inventory: React.FC = () => {
         total_available: r.total_available ?? null,
         reserved_qty: r.reserved_qty ?? 0,   // ✅ ADD THIS
         created_at: r.created_at ?? null,
+        material_file_urls: (() => { try { const v = r.material_file_url; if (!v) return []; const arr = typeof v === 'string' ? JSON.parse(v) : v; return Array.isArray(arr) ? arr : [] } catch { return [] } })(),
       }))
       setMaterials(mapped)
       setMaterialsLoading(false)
@@ -765,7 +805,8 @@ const Inventory: React.FC = () => {
                                   unit_weight: m.unit_weight || '',
                                   cost_per_unit: m.cost_per_unit || '',
                                   total_available: m.total_available || '',
-                                }); setIsEditOpen(true) }} className="p-2 text-neutral-medium hover:text-white hover:bg-neutral-medium rounded-lg border border-neutral-soft">
+                                  material_file_urls: (m as any).material_file_urls || [],
+                                }); setEditDocFiles([]); setIsEditOpen(true) }} className="p-2 text-neutral-medium hover:text-white hover:bg-neutral-medium rounded-lg border border-neutral-soft">
                                   <Edit className="h-4 w-4" />
                                 </button>
                                 <button type="button" onClick={() => { setDeleteTarget(m); setIsDeleteOpen(true) }} className="p-2 text-accent-danger hover:text-white hover:bg-accent-danger rounded-lg border border-accent-danger/30">
@@ -798,45 +839,234 @@ const Inventory: React.FC = () => {
         {/* View Material Modal */}
         {isViewOpen && viewData && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-            <div className="absolute inset-0 bg-black/50" onClick={() => setIsViewOpen(false)}></div>
-            <div className="relative z-10 w-full max-w-3xl bg-white rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden flex flex-col">
-              <div className="flex items-center justify-between px-8 py-6 bg-gradient-to-r from-neutral-light to-neutral-light/80 border-b border-neutral-soft/50">
-                <div>
-                  <h2 className="text-2xl font-semibold text-neutral-dark">View Material</h2>
-                  <p className="text-sm text-neutral-medium mt-1">Material information overview</p>
+            <div className="absolute inset-0 bg-black/70" onClick={() => setIsViewOpen(false)}></div>
+            <div className="relative z-10 w-full max-w-5xl max-h-[90vh] bg-white rounded-3xl shadow-2xl border border-neutral-soft/30 overflow-hidden flex flex-col">
+              {/* Enhanced Header */}
+              <div className="relative flex items-center justify-between px-10 py-7 
+                  bg-gradient-to-r from-neutral-50 via-primary-light/20 to-primary-light/10
+                  backdrop-blur-md border-b border-neutral-200 shadow-[0_1px_3px_rgba(0,0,0,0.06)]
+                  rounded-t-2xl">
+                
+                {/* Left Section */}
+                <div className="flex flex-col">
+                  <h2 className="text-2xl font-semibold text-neutral-800 tracking-tight leading-tight">
+                    {viewData.product_name}
+                  </h2>
+                  <p className="text-sm text-neutral-500 leading-snug mt-1">
+                    Material Details • Specifications • Documents
+                  </p>
                 </div>
-                <button onClick={() => setIsViewOpen(false)} className="p-3 text-neutral-medium hover:text-neutral-dark hover:bg-white/60 rounded-xl transition-all">✕</button>
+
+                {/* Close Button */}
+                <button
+                  onClick={() => setIsViewOpen(false)}
+                  className="p-2.5 rounded-xl hover:bg-neutral-200/70 text-neutral-500 
+                    hover:text-neutral-900 transition-all duration-300 shadow-sm
+                    hover:shadow-md hover:scale-105 active:scale-95"
+                >
+                  <X className="h-5 w-5" />
+                </button>
               </div>
-              <div className="p-8 space-y-4">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  <div>
-                    <div className="text-xs font-semibold text-neutral-medium uppercase tracking-wide">Product</div>
-                    <div className="text-neutral-dark font-semibold">{viewData.product_name}</div>
+
+              {/* Modal Body */}
+              <div className="flex-1 overflow-auto">
+                <div className="p-8">
+                  {/* Material Information Card */}
+                  <div className="mb-8 bg-white rounded-3xl border border-neutral-200/80 shadow-[0_4px_20px_rgba(0,0,0,0.08)] overflow-hidden">
+                    {/* Header Section */}
+                    <div className="relative bg-gradient-to-r from-slate-50 via-neutral-50 to-slate-50/80 border-b border-neutral-200/60 px-6 py-5">
+                      <div className="flex items-center space-x-4">
+                        <div className="w-10 h-10 bg-gradient-to-br from-primary-500/10 to-primary-600/20 rounded-2xl flex items-center justify-center">
+                          <Package className="w-5 h-5 text-primary-600" />
+                        </div>
+                        <div>
+                          <h3 className="text-base font-semibold text-slate-900 tracking-tight">Material Specifications</h3>
+                          <p className="text-sm text-slate-500 mt-0.5">Complete material information</p>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Content Section */}
+                    <div className="p-6">
+                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                        <div className="bg-gradient-to-br from-neutral-50 to-white p-4 rounded-2xl border border-neutral-200/60">
+                          <div className="text-xs font-semibold text-neutral-500 uppercase tracking-wider mb-2">Category</div>
+                          <div className="text-neutral-800 font-medium text-lg">{viewData.category || '—'}</div>
+                        </div>
+                        <div className="bg-gradient-to-br from-neutral-50 to-white p-4 rounded-2xl border border-neutral-200/60">
+                          <div className="text-xs font-semibold text-neutral-500 uppercase tracking-wider mb-2">Supplier</div>
+                          <div className="text-neutral-800 font-medium text-lg">{viewData.supplier_name || '—'}</div>
+                        </div>
+                        <div className="bg-gradient-to-br from-neutral-50 to-white p-4 rounded-2xl border border-neutral-200/60">
+                          <div className="text-xs font-semibold text-neutral-500 uppercase tracking-wider mb-2">Unit of Measure</div>
+                          <div className="text-neutral-800 font-medium text-lg">{viewData.unit_of_measure || '—'}</div>
+                        </div>
+                        <div className="bg-gradient-to-br from-neutral-50 to-white p-4 rounded-2xl border border-neutral-200/60">
+                          <div className="text-xs font-semibold text-neutral-500 uppercase tracking-wider mb-2">Unit Weight</div>
+                          <div className="text-neutral-800 font-medium text-lg">{viewData.unit_weight || '—'}</div>
+                        </div>
+                        <div className="bg-gradient-to-br from-neutral-50 to-white p-4 rounded-2xl border border-neutral-200/60">
+                          <div className="text-xs font-semibold text-neutral-500 uppercase tracking-wider mb-2">Cost per Unit</div>
+                          <div className="text-neutral-800 font-medium text-lg">{viewData.cost_per_unit ? `$${viewData.cost_per_unit}` : '—'}</div>
+                        </div>
+                        <div className="bg-gradient-to-br from-neutral-50 to-white p-4 rounded-2xl border border-neutral-200/60">
+                          <div className="text-xs font-semibold text-neutral-500 uppercase tracking-wider mb-2">Total Available</div>
+                          <div className="text-neutral-800 font-medium text-lg">{viewData.total_available || '—'}</div>
+                        </div>
+                      </div>
+                    </div>
                   </div>
-                  <div>
-                    <div className="text-xs font-semibold text-neutral-medium uppercase tracking-wide">Category</div>
-                    <div className="text-neutral-dark">{viewData.category || '—'}</div>
-                  </div>
-                  <div>
-                    <div className="text-xs font-semibold text-neutral-medium uppercase tracking-wide">Supplier</div>
-                    <div className="text-neutral-dark">{viewData.supplier_name || '—'}</div>
-                  </div>
-                  <div>
-                    <div className="text-xs font-semibold text-neutral-medium uppercase tracking-wide">UoM</div>
-                    <div className="text-neutral-dark">{viewData.unit_of_measure || '—'}</div>
-                  </div>
-                  <div>
-                    <div className="text-xs font-semibold text-neutral-medium uppercase tracking-wide">Unit Weight</div>
-                    <div className="text-neutral-dark">{viewData.unit_weight || '—'}</div>
-                  </div>
-                  <div>
-                    <div className="text-xs font-semibold text-neutral-medium uppercase tracking-wide">Cost/Unit</div>
-                    <div className="text-neutral-dark">{viewData.cost_per_unit || '—'}</div>
-                  </div>
-                  <div>
-                    <div className="text-xs font-semibold text-neutral-medium uppercase tracking-wide">Total Available</div>
-                    <div className="text-neutral-dark">{viewData.total_available || '—'}</div>
-                  </div>
+
+                  {/* Material Documents */}
+                  {Array.isArray(viewData.material_file_urls) && viewData.material_file_urls.length > 0 && (
+                    <div className="mb-8 bg-white rounded-3xl border border-neutral-200/80 shadow-[0_4px_20px_rgba(0,0,0,0.08)] overflow-hidden">
+                      {/* Header Section */}
+                      <div className="relative bg-gradient-to-r from-slate-50 via-neutral-50 to-slate-50/80 border-b border-neutral-200/60 px-6 py-5">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center space-x-4">
+                            <div className="w-10 h-10 bg-gradient-to-br from-primary-500/10 to-primary-600/20 rounded-2xl flex items-center justify-center">
+                              <FileText className="w-5 h-5 text-primary-600" />
+                            </div>
+                            <div>
+                              <h3 className="text-base font-semibold text-slate-900 tracking-tight">Material Documents</h3>
+                              <p className="text-sm text-slate-500 mt-0.5">{viewData.material_file_urls.length} file{viewData.material_file_urls.length !== 1 ? 's' : ''} attached</p>
+                            </div>
+                          </div>
+                          
+                          {/* View Toggle */}
+                          <div className="inline-flex items-center bg-white rounded-2xl p-1.5 border border-neutral-200 shadow-sm">
+                            <button 
+                              type="button" 
+                              onClick={() => setDocsLayout('list')} 
+                              className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium rounded-xl transition-all duration-200 min-w-[80px] justify-center ${
+                                docsLayout === 'list' 
+                                  ? 'bg-blue-500 text-white shadow-lg border-2 border-blue-600' 
+                                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50 border-2 border-transparent'
+                              }`}
+                              title="List View"
+                            >
+                              <List className="w-4 h-4 flex-shrink-0" />
+                              <span className="whitespace-nowrap font-semibold">List</span>
+                            </button>
+                            <button 
+                              type="button" 
+                              onClick={() => setDocsLayout('grid')} 
+                              className={`ml-1 flex items-center gap-2 px-4 py-2.5 text-sm font-medium rounded-xl transition-all duration-200 min-w-[80px] justify-center ${
+                                docsLayout === 'grid' 
+                                  ? 'bg-blue-500 text-white shadow-lg border-2 border-blue-600' 
+                                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50 border-2 border-transparent'
+                              }`}
+                              title="Grid View"
+                            >
+                              <Grid3X3 className="w-4 h-4 flex-shrink-0" />
+                              <span className="whitespace-nowrap font-semibold">Grid</span>
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Content Section */}
+                      <div className="p-6">
+                        {docsLayout === 'list' ? (
+                          <div className="space-y-3">
+                            {viewData.material_file_urls.map((url, idx) => (
+                              <div key={idx} className="group relative bg-slate-50/50 hover:bg-white border border-slate-200/60 hover:border-primary-200 rounded-2xl p-4 transition-all duration-200 hover:shadow-lg hover:shadow-slate-200/50">
+                                <div className="flex items-center justify-between">
+                                  <div className="flex items-center space-x-4 min-w-0 flex-1">
+                                    {(() => { 
+                                      const meta = getFileMeta(prettyFileName(url)); 
+                                      return (
+                                        <div className={`inline-flex items-center justify-center w-10 h-10 rounded-xl text-xs font-bold ${meta.cls.replace('bg-', 'bg-').replace('text-', 'text-')} border border-current/20`}>
+                                          {meta.label}
+                                        </div>
+                                      )
+                                    })()}
+                                    <div className="min-w-0 flex-1">
+                                      <button
+                                        type="button"
+                                        className="block text-left w-full"
+                                        onClick={() => {
+                                          const lower = url.toLowerCase()
+                                          if (lower.endsWith('.pdf') || lower.endsWith('.png') || lower.endsWith('.jpg') || lower.endsWith('.jpeg')) {
+                                            window.open(url, '_blank')
+                                          } else {
+                                            const viewer = `https://docs.google.com/gview?embedded=1&url=${encodeURIComponent(url)}`
+                                            window.open(viewer, '_blank')
+                                          }
+                                        }}
+                                      >
+                                        <h4 className="text-sm font-semibold text-slate-900 group-hover:text-primary-600 truncate transition-colors">
+                                          {prettyFileName(url)}
+                                        </h4>
+                                        <p className="text-xs text-slate-500 mt-1">Click to open in new tab</p>
+                                      </button>
+                                    </div>
+                                  </div>
+                                  <div className="opacity-0 group-hover:opacity-100 transition-opacity duration-200">
+                                    <div className="w-8 h-8 bg-primary-50 rounded-xl flex items-center justify-center">
+                                      <svg className="w-4 h-4 text-primary-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                                      </svg>
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
+                            {viewData.material_file_urls.map((url, idx) => (
+                              <button
+                                key={idx}
+                                type="button"
+                                className="group relative bg-slate-50/50 hover:bg-white border border-slate-200/60 hover:border-primary-200 rounded-3xl p-6 transition-all duration-200 hover:shadow-xl hover:shadow-slate-200/50 hover:-translate-y-1"
+                                onClick={() => {
+                                  const lower = url.toLowerCase()
+                                  if (lower.endsWith('.pdf') || lower.endsWith('.png') || lower.endsWith('.jpg') || lower.endsWith('.jpeg')) {
+                                    window.open(url, '_blank')
+                                  } else {
+                                    const viewer = `https://docs.google.com/gview?embedded=1&url=${encodeURIComponent(url)}`
+                                    window.open(viewer, '_blank')
+                                  }
+                                }}
+                              >
+                                <div className="flex flex-col items-center text-center">
+                                  {(() => {
+                                    const fname = prettyFileName(url).toLowerCase()
+                                    const ext = fname.includes('.') ? (fname.split('.').pop() || '') : ''
+                                    let color = 'text-slate-600'; let bg = 'bg-slate-100'
+                                    if (ext === 'pdf') { color = 'text-red-600'; bg = 'bg-red-50' }
+                                    else if (ext === 'doc' || ext === 'docx') { color = 'text-blue-600'; bg = 'bg-blue-50' }
+                                    else if (ext === 'xls' || ext === 'xlsx' || ext === 'csv') { color = 'text-emerald-600'; bg = 'bg-emerald-50' }
+                                    else if (ext === 'ppt' || ext === 'pptx') { color = 'text-orange-600'; bg = 'bg-orange-50' }
+                                    return (
+                                      <div className={`w-16 h-16 ${bg} rounded-2xl border border-current/10 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform duration-200`}>
+                                        <FileText className={`w-8 h-8 ${color}`} />
+                                      </div>
+                                    )
+                                  })()}
+                                  <h4 className="text-sm font-semibold text-slate-900 group-hover:text-primary-600 transition-colors line-clamp-2" title={prettyFileName(url)}>
+                                    {prettyFileName(url)}
+                                  </h4>
+                                </div>
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* No Documents Message */}
+                  {(!Array.isArray(viewData.material_file_urls) || viewData.material_file_urls.length === 0) && (
+                    <div className="text-center py-12">
+                      <div className="mx-auto w-16 h-16 bg-neutral-100 rounded-full flex items-center justify-center mb-4">
+                        <Upload className="h-8 w-8 text-neutral-400" />
+                      </div>
+                      <h3 className="text-lg font-medium text-neutral-900 mb-2">No Documents</h3>
+                      <p className="text-neutral-500">This material doesn't have any documents attached.</p>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
@@ -862,6 +1092,35 @@ const Inventory: React.FC = () => {
                     if (!editId || isUpdating) return
                     setIsUpdating(true)
                     try {
+                      // Upload any newly added documents and merge with existing
+                      let newDocUrls: string[] = []
+                      try {
+                        if (editDocFiles && editDocFiles.length) {
+                          const bucket = 'ERP_storage'
+                          const uploads = await Promise.all(
+                            editDocFiles.map(async (file) => {
+                              const safeName = `${Date.now()}-${file.name}`.replace(/[^a-zA-Z0-9._-]/g, '-')
+                              const path = `material_docs/${editId}/${safeName}`
+                              const { error: upErr } = await supabase.storage.from(bucket).upload(path, file, {
+                                upsert: true,
+                                contentType: file.type || 'application/octet-stream',
+                              })
+                              if (!upErr) {
+                                const { data: pub } = supabase.storage.from(bucket).getPublicUrl(path)
+                                let url = pub?.publicUrl || ''
+                                if (!url) {
+                                  const { data: signed } = await supabase.storage.from(bucket).createSignedUrl(path, 60 * 60 * 24 * 365)
+                                  url = signed?.signedUrl || ''
+                                }
+                                return url || null
+                              }
+                              return null
+                            })
+                          )
+                          newDocUrls = uploads.filter((u): u is string => !!u)
+                        }
+                      } catch {}
+
                       const payload: any = {
                         product_name: editForm.product_name || null,
                         category: editForm.category || null,
@@ -871,6 +1130,11 @@ const Inventory: React.FC = () => {
                         unit_weight: editForm.unit_weight || null,
                         cost_per_unit: editForm.cost_per_unit || null,
                         total_available: editForm.total_available || null,
+                        material_file_url: (() => {
+                          const base = Array.isArray(editForm.material_file_urls) ? editForm.material_file_urls : []
+                          const next = [...base, ...newDocUrls]
+                          return next.length ? JSON.stringify(next) : null
+                        })(),
                       }
                       const { error } = await supabase.from('inventory_materials').update(payload).eq('id', editId)
                       if (error) throw error
@@ -912,6 +1176,73 @@ const Inventory: React.FC = () => {
                     <div className="space-y-2">
                       <label className="flex items-center text-sm font-medium text-neutral-dark"><Inbox className="h-4 w-4 mr-2 text-primary-medium"/>Total Available</label>
                       <input type="text" className="w-full px-4 py-3 border border-neutral-soft rounded-lg" value={editForm.total_available} onChange={(e)=>setEditForm({ ...editForm, total_available: e.target.value })} />
+                    </div>
+                  </div>
+                  <div className="space-y-3">
+                    <label className="flex items-center text-sm font-medium text-neutral-dark">
+                      <Upload className="h-5 w-5 mr-3 text-primary-medium" />
+                      Documents
+                    </label>
+                    <div 
+                      className={`relative border-2 border-dashed rounded-xl p-4 transition-all duration-300 cursor-pointer ${editDocDragOver ? 'border-primary-light bg-primary-light/10' : 'border-neutral-soft bg-gradient-to-br from-neutral-light/20 to-white hover:from-primary-light/10 hover:to-primary-medium/5'}`}
+                      onDragOver={(e) => { e.preventDefault(); setEditDocDragOver(true) }}
+                      onDragLeave={() => setEditDocDragOver(false)}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        setEditDocDragOver(false)
+                        const files = Array.from(e.dataTransfer.files || [])
+                        if (files.length) setEditDocFiles((prev) => [...prev, ...files])
+                      }}
+                      onClick={() => editDocInputRef.current?.click()}
+                    >
+                      <div className="flex items-center justify-between mb-2">
+                        <p className="text-sm text-neutral-medium">PDF, DOCX, XLSX, PPTX, TXT</p>
+                        <button type="button" onClick={() => editDocInputRef.current?.click()} className="px-4 py-2 rounded-lg bg-primary-dark hover:bg-primary-medium text-white text-sm font-medium shadow-sm">Browse File</button>
+                      </div>
+                      {(editForm.material_file_urls && editForm.material_file_urls.length > 0) && (
+                        <div className="space-y-2 mb-3">
+                          {editForm.material_file_urls.map((url, idx) => (
+                            <div key={`exist-${idx}`} className="flex items-center justify-between bg-white border border-neutral-soft rounded-lg px-4 py-3">
+                              <div className="flex items-center gap-3 min-w-0">
+                                {(() => { const meta = getFileMeta(prettyFileName(url)); return (<span className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-semibold ${meta.cls}`}>{meta.label}</span>) })()}
+                                <span className="text-sm text-neutral-dark truncate">{prettyFileName(url)}</span>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <button type="button" className="px-2 py-1 text-xs rounded-md bg-white/90 hover:bg-white border border-neutral-soft shadow-sm" onClick={(e) => { e.stopPropagation(); const lower = url.toLowerCase(); if (lower.endsWith('.pdf') || lower.endsWith('.png') || lower.endsWith('.jpg') || lower.endsWith('.jpeg')) { window.open(url, '_blank') } else { const viewer = `https://docs.google.com/gview?embedded=1&url=${encodeURIComponent(url)}`; window.open(viewer, '_blank') } }}>View</button>
+                                <button type="button" className="px-2 py-1 text-xs rounded-md bg-white/90 hover:bg-white border border-neutral-soft shadow-sm" onClick={async (e) => { e.stopPropagation(); try { const next = editForm.material_file_urls.filter((_, i) => i !== idx); setEditForm((prev) => ({ ...prev, material_file_urls: next })); if (editId) { await supabase.from('inventory_materials').update({ material_file_url: next.length ? JSON.stringify(next) : null }).eq('id', editId) } try { const marker = '/storage/v1/object/public/ERP_storage/'; const at = url.indexOf(marker); if (at >= 0) { const key = url.substring(at + marker.length); if (key) await supabase.storage.from('ERP_storage').remove([key]) } } catch {} } catch {} }}>Delete</button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {(editDocFiles.length > 0) && (
+                        <div className="space-y-2 mb-3">
+                          {editDocFiles.map((f, idx) => (
+                            <div key={`new-${idx}`} className="flex items-center justify-between bg-white border border-neutral-soft rounded-lg px-4 py-3">
+                              <div className="flex items-center gap-3 min-w-0">
+                                {(() => { const meta = getFileMeta(f.name); return (<span className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-semibold ${meta.cls}`}>{meta.label}</span>) })()}
+                                <span className="text-sm text-neutral-dark truncate">{f.name}</span>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <button type="button" className="px-2 py-1 text-xs rounded-md bg-white/90 hover:bg-white border border-neutral-soft shadow-sm" onClick={(e) => { e.stopPropagation(); try { const name = (f?.name || '').toLowerCase(); const ext = name.split('.').pop() || ''; const previewable = ['pdf','png','jpg','jpeg']; if (previewable.includes(ext)) { const url = URL.createObjectURL(f); window.open(url, '_blank'); setTimeout(() => URL.revokeObjectURL(url), 5000) } else { alert('Preview is available after saving for this file type.') } } catch {} }}>View</button>
+                                <button type="button" className="px-2 py-1 text-xs rounded-md bg-white/90 hover:bg-white border border-neutral-soft shadow-sm" onClick={(e) => { e.stopPropagation(); setEditDocFiles((prev) => prev.filter((_, i) => i !== idx)) }}>Delete</button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {((!editForm.material_file_urls || editForm.material_file_urls.length === 0) && editDocFiles.length === 0) && (
+                        <div className="text-center py-4">
+                          <div className="mx-auto w-10 h-10 bg-primary-light/20 rounded-full flex items-center justify-center mb-2">
+                            <Upload className="h-5 w-5 text-primary-medium" />
+                          </div>
+                          <p className="text-sm text-neutral-dark font-semibold">Drag & drop file here, or click to upload</p>
+                          <p className="text-xs text-neutral-medium">Max size depends on storage policy</p>
+                        </div>
+                      )}
+                      <input ref={editDocInputRef} type="file" multiple onChange={(e)=> setEditDocFiles(Array.from(e.target.files || []))} accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,image/*" className="hidden" />
                     </div>
                   </div>
                   <div className="flex items-center justify-end gap-3 pt-2">
@@ -985,7 +1316,41 @@ const Inventory: React.FC = () => {
                     setIsSavingRaw(true)
                     try {
                       const category = (rawForm.newCategory || '').trim() || rawForm.category || null
+                      const id = (window.crypto && 'randomUUID' in window.crypto)
+                        ? (window.crypto as any).randomUUID()
+                        : `mat_${Date.now()}_${Math.random().toString(36).slice(2,8)}`
+
+                      // Upload selected documents first
+                      let docUrls: string[] = []
+                      if (supabase && rawForm.docFiles.length) {
+                        const bucket = 'ERP_storage'
+                        const folder = `material_docs/${id}`
+                        const uploads = await Promise.all(
+                          rawForm.docFiles.map(async (file) => {
+                            const safeName = `${Date.now()}-${file.name}`.replace(/[^a-zA-Z0-9._-]/g, '-')
+                            const path = `${folder}/${safeName}`
+                            const { error: upErr } = await supabase.storage.from(bucket).upload(path, file, {
+                              upsert: true,
+                              contentType: file.type || 'application/octet-stream',
+                            })
+                            if (upErr) {
+                              console.error('Doc upload error:', upErr.message)
+                              return null
+                            }
+                            const { data: pub } = supabase.storage.from(bucket).getPublicUrl(path)
+                            let url = pub?.publicUrl || null
+                            if (!url) {
+                              const { data: signed } = await supabase.storage.from(bucket).createSignedUrl(path, 60 * 60 * 24 * 365)
+                              url = signed?.signedUrl || null
+                            }
+                            return url || null
+                          })
+                        )
+                        docUrls = uploads.filter((u): u is string => !!u)
+                      }
+
                       const payload: any = {
+                        id,
                         product_name: rawForm.name || null,
                         category,
                         supplier_id: rawForm.supplierId || null,
@@ -994,11 +1359,12 @@ const Inventory: React.FC = () => {
                         unit_weight: rawForm.unitWeight ? String(rawForm.unitWeight) : null,
                         cost_per_unit: rawForm.costPerUnit ? String(rawForm.costPerUnit) : null,
                         total_available: rawForm.totalAvailable ? String(rawForm.totalAvailable) : null,
+                        material_file_url: docUrls.length ? JSON.stringify(docUrls) : null,
                       }
                       const { error } = await supabase.from('inventory_materials').insert(payload)
                       if (error) throw error
                       setIsAddRawOpen(false)
-                      setRawForm({ name: '', category: '', newCategory: '', supplier: '', supplierId: '', uom: 'Kilograms (kg)', unitWeight: '', costPerUnit: '', totalAvailable: '' })
+                      setRawForm({ name: '', category: '', newCategory: '', supplier: '', supplierId: '', uom: 'Kilograms (kg)', unitWeight: '', costPerUnit: '', totalAvailable: '', docFiles: [] })
                     } catch (err) {
                       console.error('Failed to insert inventory material', err)
                     } finally {
@@ -1133,6 +1499,49 @@ const Inventory: React.FC = () => {
                   <div className="space-y-2">
                     <label className="flex items-center text-sm font-medium text-neutral-dark"><ClipboardList className="h-4 w-4 mr-2 text-primary-medium"/>Total Available</label>
                     <input type="number" placeholder="Can be added later with the pencil icon" className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium" value={rawForm.totalAvailable} onChange={(e)=>setRawForm({...rawForm, totalAvailable:e.target.value})} />
+                  </div>
+
+                  <div className="space-y-3">
+                    <label className="flex items-center text-sm font-medium text-neutral-dark">
+                      <Upload className="h-4 w-4 mr-2 text-primary-medium"/>
+                      Upload Documents
+                    </label>
+                    <div 
+                      className={`relative border-2 border-dashed rounded-xl p-4 transition-all duration-300 cursor-pointer ${addDocDragOver ? 'border-primary-light bg-primary-light/10' : 'border-neutral-soft bg-gradient-to-br from-neutral-light/20 to-white hover:from-primary-light/10 hover:to-primary-medium/5'}`}
+                      onDragOver={(e) => { e.preventDefault(); setAddDocDragOver(true) }}
+                      onDragLeave={() => setAddDocDragOver(false)}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        setAddDocDragOver(false)
+                        const files = Array.from(e.dataTransfer.files || [])
+                        if (files.length) setRawForm((prev) => ({...prev, docFiles: [...prev.docFiles, ...files]}))
+                      }}
+                      onClick={() => addDocInputRef.current?.click()}
+                    >
+                      <div className="flex items-center justify-between mb-2">
+                        <p className="text-sm text-neutral-medium">PDF, DOCX, XLSX, PPTX, TXT, Images</p>
+                        <button type="button" onClick={() => addDocInputRef.current?.click()} className="px-4 py-2 rounded-lg bg-primary-dark hover:bg-primary-medium text-white text-sm font-medium shadow-sm">Browse File</button>
+                      </div>
+                      {rawForm.docFiles.length === 0 ? (
+                        <div onClick={() => addDocInputRef.current?.click()} className="text-center py-8 cursor-pointer">
+                          <div className="mx-auto w-10 h-10 bg-primary-light/20 rounded-full flex items-center justify-center mb-2">
+                            <Upload className="h-5 w-5 text-primary-medium" />
+                          </div>
+                          <p className="text-sm text-neutral-dark font-semibold">Drag & drop file here, or click to upload</p>
+                          <p className="text-xs text-neutral-medium">Max size depends on storage policy</p>
+                        </div>
+                      ) : (
+                        <div className="space-y-2">
+                          {rawForm.docFiles.map((f, i) => (
+                            <div key={`sel-${i}`} className="flex items-center justify-between bg-white border border-neutral-soft rounded-lg px-4 py-3">
+                              <span className="text-sm text-neutral-dark truncate mr-3">{f.name}</span>
+                              <button type="button" className="px-2 py-1 text-xs rounded-md border border-neutral-soft hover:bg-white" onClick={() => setRawForm((prev)=> ({...prev, docFiles: prev.docFiles.filter((_, idx)=> idx!==i)}))}>Remove</button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      <input ref={addDocInputRef} type="file" className="hidden" multiple accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,image/*" onChange={(e)=> setRawForm((prev)=> ({...prev, docFiles: Array.from(e.target.files || [])}))} />
+                    </div>
                   </div>
 
                   <div className="flex items-center justify-end gap-3 pt-2">

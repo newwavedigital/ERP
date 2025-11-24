@@ -75,6 +75,7 @@ const PurchaseOrders: React.FC = () => {
     ship_date: '',
     quantity: '',
     caseQty: '',
+    price: '',
     notes: '',
     invoice: '',
     paymentTerms: '',
@@ -854,6 +855,7 @@ const PurchaseOrders: React.FC = () => {
       ship_date: '',
       quantity: '',
       caseQty: '',
+      price: '',
       notes: '',
       invoice: '',
       paymentTerms: '',
@@ -934,6 +936,7 @@ const PurchaseOrders: React.FC = () => {
             product_name: form.product || null,
             requested_ship_date: draft.ship_date,
             quantity: form.quantity ? Number(form.quantity) : null,
+            price: form.price ? Number(form.price) : null,
             location: draft.location || null,
             status,
             is_rush,
@@ -959,6 +962,7 @@ const PurchaseOrders: React.FC = () => {
             product_name: form.product || null,
             requested_ship_date: draft.ship_date,
             quantity: form.quantity ? Number(form.quantity) : null,
+            price: form.price ? Number(form.price) : null,
             location: draft.location || null,
             status,
             is_rush,
@@ -1654,6 +1658,7 @@ const PurchaseOrders: React.FC = () => {
                       </div>
                     </th>
                     <th className="px-8 py-6 text-left text-sm font-bold text-neutral-dark uppercase tracking-wider">Qty</th>
+                    <th className="px-8 py-6 text-left text-sm font-bold text-neutral-dark uppercase tracking-wider">Price</th>
                     <th className="px-8 py-6 text-left text-sm font-bold text-neutral-dark uppercase tracking-wider">
                       <div className="flex items-center space-x-2">
                         <Calendar className="h-4 w-4 text-primary-medium" />
@@ -1700,6 +1705,7 @@ const PurchaseOrders: React.FC = () => {
                             </div>
                           </td>
                           <td className="px-8 py-6">{o.quantity}</td>
+                          <td className="px-8 py-6">{o.price ? `$${Number(o.price).toFixed(2)}` : '-'}</td>
                           <td className="px-8 py-6">{o.requested_ship_date || '-'}</td>
                           <td className="px-8 py-6">
                             <span className={`inline-flex items-center px-3 py-1.5 rounded-xl text-xs font-semibold border ${statusClass}`}>
@@ -1735,6 +1741,7 @@ const PurchaseOrders: React.FC = () => {
                                   ship_date: o.requested_ship_date || '',
                                   quantity: String(o.quantity),
                                   caseQty: o.case_qty ? String(o.case_qty) : '',
+                                  price: o.price ? String(o.price) : '',
                                   notes: o.notes || '',
                                   invoice: o.invoice || '',
                                   paymentTerms: o.payment_terms || '',
@@ -1968,6 +1975,28 @@ const PurchaseOrders: React.FC = () => {
                     </div>
                   </div>
 
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div className="space-y-2">
+                      <label className="flex items-center text-sm font-medium text-neutral-dark">
+                        Price per Unit
+                      </label>
+                      <input 
+                        type="number" 
+                        step="0.01" 
+                        placeholder="0.00" 
+                        className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light" 
+                        value={form.price} 
+                        onChange={(e)=>setForm({...form, price:e.target.value})} 
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="flex items-center text-sm font-medium text-neutral-dark">Total Amount</label>
+                      <div className="w-full px-4 py-3 border border-neutral-soft rounded-lg bg-neutral-light/30 text-neutral-medium">
+                        {form.quantity && form.price ? `$${(Number(form.quantity) * Number(form.price)).toFixed(2)}` : '$0.00'}
+                      </div>
+                    </div>
+                  </div>
+
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     <div className="space-y-2">
@@ -2073,9 +2102,23 @@ const PurchaseOrders: React.FC = () => {
                   </div>
                   <div className="space-y-1">
                     <label className="flex items-center text-xs font-semibold text-neutral-medium uppercase tracking-wide">
+                      Price per Unit
+                    </label>
+                    <div className="text-neutral-dark font-medium">{isViewOpen.price ? `$${Number(isViewOpen.price).toFixed(2)}` : '—'}</div>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="flex items-center text-xs font-semibold text-neutral-medium uppercase tracking-wide">
                       <Calendar className="h-4 w-4 mr-2 text-primary-medium" /> Ship Date
                     </label>
                     <div className="text-neutral-dark">{isViewOpen.requested_ship_date || '—'}</div>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="flex items-center text-xs font-semibold text-neutral-medium uppercase tracking-wide">
+                      Total Amount
+                    </label>
+                    <div className="text-neutral-dark font-semibold">
+                      {isViewOpen.quantity && isViewOpen.price ? `$${(Number(isViewOpen.quantity) * Number(isViewOpen.price)).toFixed(2)}` : '—'}
+                    </div>
                   </div>
                   <div className="space-y-1">
                     <label className="flex items-center text-xs font-semibold text-neutral-medium uppercase tracking-wide">

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react'
-import { Plus, Package, Box, Factory, LineChart, Inbox, Landmark, X, Tag, User, Scale, DollarSign, ClipboardList, Eye, Edit, Trash2, CheckCircle2, Clock, Upload, List, Grid3X3, FileText } from 'lucide-react'
+import { Plus, Package, Box, Factory, LineChart, Inbox, Landmark, X, Tag, User, Scale, DollarSign, ClipboardList, Eye, Edit, Trash2, CheckCircle2, Clock, Upload, List, Grid3X3, FileText, RefreshCw } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 
 // Map filename extension to themed badge styles
@@ -44,9 +44,14 @@ interface RawMaterial {
   unit_of_measure?: string | null
   unit_weight?: string | null
   cost_per_unit?: string | null
-  total_available?: string | null
+  total_available?: number | null
   created_at?: string | null
   material_file_urls?: string[]
+  reserved_qty?: number | null
+  reorder_point?: number | null
+  reorder_to_level?: number | null
+  moq?: number | null
+  eoq?: number | null
 }
 
 const Inventory: React.FC = () => {
@@ -73,6 +78,13 @@ const Inventory: React.FC = () => {
     unit_weight: '',
     cost_per_unit: '',
     total_available: '',
+    lot_number: '',
+    manufacture_date: '',
+    expiry_date: '',
+    reorder_point: '',
+    reorder_to_level: '',
+    moq: '',
+    eoq: '',
     material_file_urls: [] as string[],
   })
   const [isDeleteOpen, setIsDeleteOpen] = useState<boolean>(false)
@@ -95,6 +107,10 @@ const Inventory: React.FC = () => {
   const [historyLoading, setHistoryLoading] = useState<boolean>(false)
   const [historyError, setHistoryError] = useState<string | null>(null)
   const [selectedMaterial, setSelectedMaterial] = useState<string | null>(null)
+  const [openReplFor, setOpenReplFor] = useState<string | null>(null)
+  const [replModalFor, setReplModalFor] = useState<RawMaterial | null>(null)
+  const [replLoading, setReplLoading] = useState<boolean>(false)
+  const [replResult, setReplResult] = useState<any | null>(null)
   const [rawForm, setRawForm] = useState({
     name: '',
     category: '',
@@ -105,7 +121,14 @@ const Inventory: React.FC = () => {
     unitWeight: '',
     costPerUnit: '',
     totalAvailable: '',
-    docFiles: [] as File[],
+    lotNumber: '',
+    manufactureDate: '',
+    expiryDate: '',
+    reorderPoint: '',
+    reorderToLevel: '',
+    moq: '',
+    eoq: '',
+    docFiles: [] as File[]
   })
   const [editDocFiles, setEditDocFiles] = useState<File[]>([])
   const [docsLayout, setDocsLayout] = useState<'list' | 'grid'>('list')
@@ -392,6 +415,38 @@ const Inventory: React.FC = () => {
     }
   }, [toast.show])
 
+  // Replenishment: open modal and run RPC check for raw materials
+  const handleReplenishmentClick = async (material: RawMaterial) => {
+    if (!supabase) return
+    setReplModalFor(material)
+    setReplLoading(true)
+    setReplResult(null)
+    try {
+      const { data, error } = await supabase.rpc('fn_replenishment_check_raw', { p_material_id: material.id })
+      setReplLoading(false)
+      if (error) {
+        console.error('fn_replenishment_check_raw error', error)
+        setToast({ show: true, message: 'Replenishment check failed' })
+        return
+      }
+      setReplResult(data ?? null)
+      const status = (data && (data.status || '')) as string
+      if (status.toLowerCase() === 'created') {
+        setToast({ show: true, message: 'Purchase Requisition Created' })
+      } else if (status.toLowerCase() === 'skipped') {
+        setToast({ show: true, message: 'Stock level above reorder point' })
+      } else {
+        setToast({ show: true, message: 'Replenishment completed' })
+      }
+      // expand inline panel for context
+      setOpenReplFor(material.id)
+    } catch (err) {
+      console.error('fn_replenishment_check_raw exception', err)
+      setReplLoading(false)
+      setToast({ show: true, message: 'Replenishment check failed' })
+    }
+  }
+
   // Load suppliers from Supabase on mount (reference: Products.tsx customer select)
   useEffect(() => {
     const loadSuppliers = async () => {
@@ -430,7 +485,7 @@ const Inventory: React.FC = () => {
       setMaterialsLoading(true)
       const { data, error } = await supabase
       .from('inventory_materials')
-      .select('id, product_name, category, supplier_id, supplier_name, unit_of_measure, unit_weight, cost_per_unit, total_available, reserved_qty, created_at, material_file_url')
+      .select('id, product_name, category, supplier_id, supplier_name, unit_of_measure, unit_weight, cost_per_unit, total_available, reserved_qty, reorder_point, reorder_to_level, moq, eoq, created_at, material_file_url')
       .order('product_name', { ascending: true })
 
       if (error) {
@@ -448,8 +503,12 @@ const Inventory: React.FC = () => {
         unit_of_measure: r.unit_of_measure ?? null,
         unit_weight: r.unit_weight ?? null,
         cost_per_unit: r.cost_per_unit ?? null,
-        total_available: r.total_available ?? null,
-        reserved_qty: r.reserved_qty ?? 0,   // ✅ ADD THIS
+        total_available: Number(r.total_available ?? 0),
+        reserved_qty: Number(r.reserved_qty ?? 0),
+        reorder_point: Number(r.reorder_point ?? 0),
+        reorder_to_level: Number(r.reorder_to_level ?? 0),
+        moq: Number(r.moq ?? 0),
+        eoq: Number(r.eoq ?? 0),
         created_at: r.created_at ?? null,
         material_file_urls: (() => { try { const v = r.material_file_url; if (!v) return []; const arr = typeof v === 'string' ? JSON.parse(v) : v; return Array.isArray(arr) ? arr : [] } catch { return [] } })(),
       }))
@@ -531,6 +590,88 @@ const Inventory: React.FC = () => {
                 <LineChart className="h-4 w-4 text-primary-medium" /> {mainTab === 'packaging' ? 'Generate Monthly Forecast' : 'Generate Forecast'}
               </button>
             )}
+
+        {/* Replenishment Confirm Modal */}
+        {replModalFor && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-black/50" onClick={() => !replLoading && setReplModalFor(null)}></div>
+            <div className="relative z-10 w-full max-w-xl bg-white rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden">
+              <div className="px-6 py-4 bg-gradient-to-r from-neutral-light to-neutral-light/80 border-b border-neutral-soft/50 flex items-center justify-between">
+                <div className="text-lg font-semibold text-neutral-dark">Replenishment Recommendation</div>
+                <button className="p-2" onClick={() => !replLoading && setReplModalFor(null)}><X className="h-5 w-5"/></button>
+              </div>
+              <div className="p-6 space-y-4">
+                <div className="text-sm">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div className="flex items-center justify-between"><span className="text-neutral-medium">Material Name</span><span className="font-semibold text-neutral-dark">{replModalFor.product_name}</span></div>
+                    <div className="flex items-center justify-between"><span className="text-neutral-medium">Total Available</span><span className="font-semibold text-neutral-dark">{replModalFor.total_available ?? '0'}</span></div>
+                    <div className="flex items-center justify-between"><span className="text-neutral-medium">Reserved Qty</span><span className="font-semibold text-neutral-dark">{replModalFor.reserved_qty ?? 0}</span></div>
+                    <div className="flex items-center justify-between"><span className="text-neutral-medium">Net Available</span><span className="font-semibold text-neutral-dark">{Number(replModalFor.total_available || 0) - Number(replModalFor.reserved_qty || 0)}</span></div>
+                    <div className="flex items-center justify-between"><span className="text-neutral-medium">Reorder Point</span><span className="font-semibold text-neutral-dark">{replModalFor.reorder_point ?? '—'}</span></div>
+                    <div className="flex items-center justify-between"><span className="text-neutral-medium">Reorder To Level</span><span className="font-semibold text-neutral-dark">{replModalFor.reorder_to_level ?? '—'}</span></div>
+                    <div className="flex items-center justify-between"><span className="text-neutral-medium">MOQ</span><span className="font-semibold text-neutral-dark">{replModalFor.moq ?? '—'}</span></div>
+                    <div className="flex items-center justify-between"><span className="text-neutral-medium">EOQ</span><span className="font-semibold text-neutral-dark">{replModalFor.eoq ?? '—'}</span></div>
+                  </div>
+                </div>
+                <div className="text-sm bg-neutral-light/30 border border-neutral-soft rounded-xl p-3">
+                  {(() => {
+                    const net = Number(replModalFor.total_available || 0) - Number(replModalFor.reserved_qty || 0)
+                    const rto = Number(replModalFor.reorder_to_level || 0)
+                    const moq = Number(replModalFor.moq || 0)
+                    const eoq = Number(replModalFor.eoq || 0)
+                    const base = Math.max(moq, eoq, Math.max(0, rto - net))
+                    return (
+                      <>
+                        <div className="font-semibold text-neutral-dark">Suggested Qty: <span className="text-primary-medium">{base}</span></div>
+                        <div className="text-xs text-neutral-medium mt-1">Suggested Qty = max(MOQ, EOQ, ReorderToLevel − NetAvailable)</div>
+                      </>
+                    )
+                  })()}
+                </div>
+                {replResult && (
+                  <div className="text-xs text-neutral-medium border border-neutral-soft rounded-xl p-3">
+                    {replResult.suggested_qty !== undefined && (
+                      <div className="mb-1">RPC Suggested Qty: <span className="font-semibold text-neutral-dark">{replResult.suggested_qty}</span></div>
+                    )}
+                    {replResult.message && (
+                      <div className="text-[11px] leading-snug">{replResult.message}</div>
+                    )}
+                  </div>
+                )}
+              </div>
+              <div className="px-6 py-4 flex items-center justify-end gap-3 border-t border-neutral-soft/50">
+                <button className="px-4 py-2 rounded-lg border border-neutral-soft" onClick={() => !replLoading && setReplModalFor(null)}>Cancel</button>
+                <button
+                  className="px-5 py-2 rounded-lg bg-primary-dark hover:bg-primary-medium text-white text-sm disabled:opacity-60"
+                  disabled={replLoading}
+                  onClick={async () => {
+                    if (!replModalFor) return
+                    setReplLoading(true)
+                    try {
+                      const { data, error } = await supabase.rpc("fn_replenishment_check", { p_material_id: replModalFor.id })
+                      if (error) throw error
+                      const status = (data && (data.status || data.result || '')) as string
+                      if (status && status.toLowerCase().includes('created')) {
+                        setToast({ show: true, message: 'Purchase Requisition Created' })
+                      } else if (status && status.toLowerCase().includes('not') ) {
+                        setToast({ show: true, message: 'Stock level above reorder point' })
+                      } else {
+                        setToast({ show: true, message: 'Purchase Requisition processed' })
+                      }
+                    } catch (e) {
+                      setToast({ show: true, message: 'Failed to generate PR' })
+                    } finally {
+                      setReplLoading(false)
+                      setReplModalFor(null)
+                    }
+                  }}
+                >
+                  {replLoading ? 'Processing…' : 'Confirm'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Reservation History Modal */}
         {isHistoryOpen && (
@@ -769,8 +910,14 @@ const Inventory: React.FC = () => {
                       </thead>
                       <tbody className="divide-y divide-neutral-soft/20">
                         {materials.map((m) => (
-                          <tr key={m.id} className="hover:bg-neutral-light/20 transition">
-                            <td className="px-6 py-4 text-sm text-neutral-dark font-medium">{m.product_name}</td>
+                          <React.Fragment key={m.id}>
+                          <tr className="hover:bg-neutral-light/20 transition">
+                            <td className="px-6 py-4 text-sm text-neutral-dark font-medium">
+                              {m.product_name}
+                              {((Number(m.total_available ?? 0) - Number(m.reserved_qty ?? 0)) <= Number(m.reorder_point ?? 0)) && (
+                                <span className="ml-2 inline-flex items-center rounded-full bg-red-100 px-2 py-0.5 text-[11px] font-semibold text-red-700">Replenishment Required</span>
+                              )}
+                            </td>
                             <td className="px-6 py-4 text-sm text-neutral-dark">{m.category || '—'}</td>
                             <td className="px-6 py-4 text-sm text-neutral-dark">{m.supplier_name || '—'}</td>
                             <td className="px-6 py-4 text-sm text-neutral-dark">{m.unit_of_measure || '—'}</td>
@@ -804,10 +951,20 @@ const Inventory: React.FC = () => {
                                   unit_of_measure: m.unit_of_measure || '',
                                   unit_weight: m.unit_weight || '',
                                   cost_per_unit: m.cost_per_unit || '',
-                                  total_available: m.total_available || '',
+                                  total_available: `${m.total_available ?? ''}`,
+                                  lot_number: (m as any).lot_number || '',
+                                  manufacture_date: (m as any).manufacture_date || '',
+                                  expiry_date: (m as any).expiry_date || '',
+                                  reorder_point: String((m as any).reorder_point ?? ''),
+                                  reorder_to_level: String((m as any).reorder_to_level ?? ''),
+                                  moq: String((m as any).moq ?? ''),
+                                  eoq: String((m as any).eoq ?? ''),
                                   material_file_urls: (m as any).material_file_urls || [],
                                 }); setEditDocFiles([]); setIsEditOpen(true) }} className="p-2 text-neutral-medium hover:text-white hover:bg-neutral-medium rounded-lg border border-neutral-soft">
                                   <Edit className="h-4 w-4" />
+                                </button>
+                                <button type="button" onClick={() => handleReplenishmentClick(m)} className="px-3 py-1.5 text-xs inline-flex items-center gap-1 rounded-lg border border-primary-light text-primary-medium hover:bg-primary-light/20">
+                                  <ClipboardList className="h-4 w-4" /> Auto-Generate PR
                                 </button>
                                 <button type="button" onClick={() => { setDeleteTarget(m); setIsDeleteOpen(true) }} className="p-2 text-accent-danger hover:text-white hover:bg-accent-danger rounded-lg border border-accent-danger/30">
                                   <Trash2 className="h-4 w-4" />
@@ -815,6 +972,39 @@ const Inventory: React.FC = () => {
                               </div>
                             </td>
                           </tr>
+                          {openReplFor === m.id && (
+                            <tr>
+                              <td colSpan={10} className="px-6 py-5 bg-neutral-light/20">
+                                <div className="rounded-xl bg-white border border-neutral-soft/40 shadow-sm p-4">
+                                  <div className="flex items-center justify-between mb-3">
+                                    <div className="flex items-center gap-2 text-neutral-dark font-semibold">
+                                      <Package className="h-4 w-4 text-primary-medium" /> Replenishment Panel
+                                    </div>
+                                    {(() => { const net = Number(m.total_available || 0) - Number(m.reserved_qty || 0); const rp = Number(m.reorder_point || 0); return net <= rp ? (<span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-semibold bg-red-100 text-red-700">Replenishment Required</span>) : null })()}
+                                  </div>
+                                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    <div className="space-y-2 text-sm">
+                                      <div className="flex items-center justify-between"><span className="text-neutral-medium">Total Available</span><span className="font-semibold text-neutral-dark">{m.total_available ?? '0'}</span></div>
+                                      <div className="flex items-center justify-between"><span className="text-neutral-medium">Reserved Qty</span><span className="font-semibold text-neutral-dark">{m.reserved_qty ?? 0}</span></div>
+                                      <div className="flex items-center justify-between"><span className="text-neutral-medium">Net Available</span><span className="font-semibold text-neutral-dark">{Number(m.total_available || 0) - Number(m.reserved_qty || 0)}</span></div>
+                                      <div className="flex items-center justify-between"><span className="text-neutral-medium">Reorder Point</span><span className="font-semibold text-neutral-dark">{m.reorder_point ?? '—'}</span></div>
+                                    </div>
+                                    <div className="space-y-2 text-sm">
+                                      <div className="flex items-center justify-between"><span className="text-neutral-medium">Reorder To Level</span><span className="font-semibold text-neutral-dark">{m.reorder_to_level ?? '—'}</span></div>
+                                      <div className="flex items-center justify-between"><span className="text-neutral-medium">MOQ</span><span className="font-semibold text-neutral-dark">{m.moq ?? '—'}</span></div>
+                                      <div className="flex items-center justify-between"><span className="text-neutral-medium">EOQ</span><span className="font-semibold text-neutral-dark">{m.eoq ?? '—'}</span></div>
+                                    </div>
+                                  </div>
+                                  <div className="mt-4 flex items-center justify-end">
+                                    <button className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-primary-dark hover:bg-primary-medium text-white text-sm" onClick={() => handleReplenishmentClick(m)}>
+                                      <ClipboardList className="h-4 w-4" /> Auto-Generate PR
+                                    </button>
+                                  </div>
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                          </React.Fragment>
                         ))}
                       </tbody>
                     </table>
@@ -912,6 +1102,40 @@ const Inventory: React.FC = () => {
                         <div className="bg-gradient-to-br from-neutral-50 to-white p-4 rounded-2xl border border-neutral-200/60">
                           <div className="text-xs font-semibold text-neutral-500 uppercase tracking-wider mb-2">Total Available</div>
                           <div className="text-neutral-800 font-medium text-lg">{viewData.total_available || '—'}</div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Replenishment Settings */}
+                  <div className="mb-8 bg-white rounded-3xl border border-neutral-200/80 shadow-[0_4px_20px_rgba(0,0,0,0.08)] overflow-hidden">
+                    {/* Header Section */}
+                    <div className="relative bg-gradient-to-r from-slate-50 via-neutral-50 to-slate-50/80 border-b border-neutral-200/60 px-6 py-5">
+                      <div className="flex items-center space-x-4">
+                        <div className="w-10 h-10 bg-gradient-to-br from-primary-500/10 to-primary-600/20 rounded-2xl flex items-center justify-center">
+                          <RefreshCw className="w-5 h-5 text-primary-600" />
+                        </div>
+                        <div>
+                          <h3 className="text-base font-semibold text-slate-900 tracking-tight">Replenishment Settings</h3>
+                          <p className="text-sm text-slate-500 mt-0.5">Configure replenishment options</p>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Content Section */}
+                    <div className="p-6">
+                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                        <div className="bg-gradient-to-br from-neutral-50 to-white p-4 rounded-2xl border border-neutral-200/60">
+                          <div className="text-xs font-semibold text-neutral-500 uppercase tracking-wider mb-2">Reorder To Level</div>
+                          <div className="text-neutral-800 font-medium text-lg">{viewData.reorder_to_level || '—'}</div>
+                        </div>
+                        <div className="bg-gradient-to-br from-neutral-50 to-white p-4 rounded-2xl border border-neutral-200/60">
+                          <div className="text-xs font-semibold text-neutral-500 uppercase tracking-wider mb-2">MOQ</div>
+                          <div className="text-neutral-800 font-medium text-lg">{viewData.moq || '—'}</div>
+                        </div>
+                        <div className="bg-gradient-to-br from-neutral-50 to-white p-4 rounded-2xl border border-neutral-200/60">
+                          <div className="text-xs font-semibold text-neutral-500 uppercase tracking-wider mb-2">EOQ</div>
+                          <div className="text-neutral-800 font-medium text-lg">{viewData.eoq || '—'}</div>
                         </div>
                       </div>
                     </div>
@@ -1077,7 +1301,7 @@ const Inventory: React.FC = () => {
         {isEditOpen && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
             <div className="absolute inset-0 bg-black/50" onClick={() => !isUpdating && setIsEditOpen(false)}></div>
-            <div className="relative z-10 w-full max-w-4xl bg-white rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden flex flex-col">
+            <div className="relative z-10 w-full max-w-4xl max-h-[85vh] bg-white rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden flex flex-col">
               <div className="flex items-center justify-between px-8 py-6 bg-gradient-to-r from-neutral-light to-neutral-light/80 border-b border-neutral-soft/50">
                 <div>
                   <h2 className="text-2xl font-semibold text-neutral-dark">Edit Material</h2>
@@ -1130,6 +1354,13 @@ const Inventory: React.FC = () => {
                         unit_weight: editForm.unit_weight || null,
                         cost_per_unit: editForm.cost_per_unit || null,
                         total_available: editForm.total_available || null,
+                        lot_number: editForm.lot_number || null,
+                        manufacture_date: editForm.manufacture_date || null,
+                        expiry_date: editForm.expiry_date || null,
+                        reorder_point: editForm.reorder_point || null,
+                        reorder_to_level: editForm.reorder_to_level || null,
+                        moq: editForm.moq || null,
+                        eoq: editForm.eoq || null,
                         material_file_url: (() => {
                           const base = Array.isArray(editForm.material_file_urls) ? editForm.material_file_urls : []
                           const next = [...base, ...newDocUrls]
@@ -1176,6 +1407,61 @@ const Inventory: React.FC = () => {
                     <div className="space-y-2">
                       <label className="flex items-center text-sm font-medium text-neutral-dark"><Inbox className="h-4 w-4 mr-2 text-primary-medium"/>Total Available</label>
                       <input type="text" className="w-full px-4 py-3 border border-neutral-soft rounded-lg" value={editForm.total_available} onChange={(e)=>setEditForm({ ...editForm, total_available: e.target.value })} />
+                    </div>
+                  </div>
+                  {/* Lot Traceability (Edit) */}
+                  <div className="mt-2 border-t border-neutral-soft pt-6">
+                    <h3 className="text-lg font-semibold text-neutral-dark mb-4">Lot Traceability</h3>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium text-neutral-dark">Lot Number</label>
+                        <input
+                          type="text"
+                          className="w-full px-4 py-3 border border-neutral-soft rounded-lg"
+                          value={editForm.lot_number}
+                          onChange={(e)=>setEditForm({ ...editForm, lot_number: e.target.value })}
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium text-neutral-dark">Manufacture Date</label>
+                        <input
+                          type="date"
+                          className="w-full px-4 py-3 border border-neutral-soft rounded-lg"
+                          value={editForm.manufacture_date}
+                          onChange={(e)=>setEditForm({ ...editForm, manufacture_date: e.target.value })}
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium text-neutral-dark">Expiry Date</label>
+                        <input
+                          type="date"
+                          className="w-full px-4 py-3 border border-neutral-soft rounded-lg"
+                          value={editForm.expiry_date}
+                          onChange={(e)=>setEditForm({ ...editForm, expiry_date: e.target.value })}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                  {/* Replenishment Settings */}
+                  <div className="mt-2 border-t border-neutral-soft pt-6">
+                    <h3 className="text-lg font-semibold text-neutral-dark mb-4">Replenishment Settings</h3>
+                    <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium text-neutral-dark">Reorder Point</label>
+                        <input type="number" className="w-full px-4 py-3 border border-neutral-soft rounded-lg" value={editForm.reorder_point} onChange={(e)=>setEditForm({ ...editForm, reorder_point: e.target.value })} />
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium text-neutral-dark">Reorder To Level</label>
+                        <input type="number" className="w-full px-4 py-3 border border-neutral-soft rounded-lg" value={editForm.reorder_to_level} onChange={(e)=>setEditForm({ ...editForm, reorder_to_level: e.target.value })} />
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium text-neutral-dark">MOQ</label>
+                        <input type="number" className="w-full px-4 py-3 border border-neutral-soft rounded-lg" value={editForm.moq} onChange={(e)=>setEditForm({ ...editForm, moq: e.target.value })} />
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium text-neutral-dark">EOQ</label>
+                        <input type="number" className="w-full px-4 py-3 border border-neutral-soft rounded-lg" value={editForm.eoq} onChange={(e)=>setEditForm({ ...editForm, eoq: e.target.value })} />
+                      </div>
                     </div>
                   </div>
                   <div className="space-y-3">
@@ -1359,12 +1645,19 @@ const Inventory: React.FC = () => {
                         unit_weight: rawForm.unitWeight ? String(rawForm.unitWeight) : null,
                         cost_per_unit: rawForm.costPerUnit ? String(rawForm.costPerUnit) : null,
                         total_available: rawForm.totalAvailable ? String(rawForm.totalAvailable) : null,
+                        lot_number: rawForm.lotNumber || null,
+                        manufacture_date: rawForm.manufactureDate || null,
+                        expiry_date: rawForm.expiryDate || null,
+                        reorder_point: rawForm.reorderPoint || null,
+                        reorder_to_level: rawForm.reorderToLevel || null,
+                        moq: rawForm.moq || null,
+                        eoq: rawForm.eoq || null,
                         material_file_url: docUrls.length ? JSON.stringify(docUrls) : null,
                       }
                       const { error } = await supabase.from('inventory_materials').insert(payload)
                       if (error) throw error
                       setIsAddRawOpen(false)
-                      setRawForm({ name: '', category: '', newCategory: '', supplier: '', supplierId: '', uom: 'Kilograms (kg)', unitWeight: '', costPerUnit: '', totalAvailable: '', docFiles: [] })
+                      setRawForm({ name: '', category: '', newCategory: '', supplier: '', supplierId: '', uom: 'Kilograms (kg)', unitWeight: '', costPerUnit: '', totalAvailable: '', lotNumber: '', manufactureDate: '', expiryDate: '', reorderPoint: '', reorderToLevel: '', moq: '', eoq: '', docFiles: [] })
                     } catch (err) {
                       console.error('Failed to insert inventory material', err)
                     } finally {
@@ -1499,6 +1792,67 @@ const Inventory: React.FC = () => {
                   <div className="space-y-2">
                     <label className="flex items-center text-sm font-medium text-neutral-dark"><ClipboardList className="h-4 w-4 mr-2 text-primary-medium"/>Total Available</label>
                     <input type="number" placeholder="Can be added later with the pencil icon" className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium" value={rawForm.totalAvailable} onChange={(e)=>setRawForm({...rawForm, totalAvailable:e.target.value})} />
+                  </div>
+
+                  {/* Lot Traceability Section */}
+                  <div className="border-t border-neutral-soft pt-6">
+                    <h3 className="text-lg font-semibold text-neutral-dark mb-4 flex items-center">
+                      <FileText className="h-5 w-5 mr-2 text-primary-medium"/>
+                      Lot Traceability
+                    </h3>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                      <div className="space-y-2">
+                        <label className="flex items-center text-sm font-medium text-neutral-dark">Lot Number</label>
+                        <input 
+                          type="text" 
+                          placeholder="e.g., LOT-2024-001" 
+                          className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium" 
+                          value={rawForm.lotNumber} 
+                          onChange={(e)=>setRawForm({...rawForm, lotNumber:e.target.value})} 
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <label className="flex items-center text-sm font-medium text-neutral-dark">Manufacture Date</label>
+                        <input 
+                          type="date" 
+                          className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium" 
+                          value={rawForm.manufactureDate} 
+                          onChange={(e)=>setRawForm({...rawForm, manufactureDate:e.target.value})} 
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <label className="flex items-center text-sm font-medium text-neutral-dark">Expiry Date</label>
+                        <input 
+                          type="date" 
+                          className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium" 
+                          value={rawForm.expiryDate} 
+                          onChange={(e)=>setRawForm({...rawForm, expiryDate:e.target.value})} 
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Replenishment Settings (Add) */}
+                  <div className="border-t border-neutral-soft pt-6 mt-4">
+                    <h3 className="text-lg font-semibold text-neutral-dark mb-4">Replenishment Settings</h3>
+                    <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium text-neutral-dark">Reorder Point</label>
+                        <input type="number" className="w-full px-4 py-3 border border-neutral-soft rounded-lg" value={rawForm.reorderPoint} onChange={(e)=>setRawForm({...rawForm, reorderPoint:e.target.value})} />
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium text-neutral-dark">Reorder To Level</label>
+                        <input type="number" className="w-full px-4 py-3 border border-neutral-soft rounded-lg" value={rawForm.reorderToLevel} onChange={(e)=>setRawForm({...rawForm, reorderToLevel:e.target.value})} />
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium text-neutral-dark">MOQ</label>
+                        <input type="number" className="w-full px-4 py-3 border border-neutral-soft rounded-lg" value={rawForm.moq} onChange={(e)=>setRawForm({...rawForm, moq:e.target.value})} />
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium text-neutral-dark">EOQ</label>
+                        <input type="number" className="w-full px-4 py-3 border border-neutral-soft rounded-lg" value={rawForm.eoq} onChange={(e)=>setRawForm({...rawForm, eoq:e.target.value})} />
+                      </div>
+                    </div>
                   </div>
 
                   <div className="space-y-3">

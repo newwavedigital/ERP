@@ -2070,113 +2070,168 @@ const PurchaseOrders: React.FC = () => {
         )}
         {isViewOpen && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-            <div className="fixed inset-0 bg-black/30 backdrop-blur-sm flex items-center justify-center z-50" onClick={()=>setIsViewOpen(null)}>
-              <div className="w-[900px] bg-white rounded-2xl shadow-xl max-h-[90vh] flex flex-col" onClick={(e)=>e.stopPropagation()}>
-                <div className="px-8 py-6 bg-gradient-to-r from-neutral-light to-neutral-light/80 border-b border-neutral-soft/50">
-                  <div className="flex items-start justify-between">
-                    <div>
-                      <h2 className="text-2xl font-semibold text-neutral-dark">Purchase Order Details</h2>
-                      {/* PO number and advisory intentionally hidden per request */}
-                    </div>
-                  </div>
+            <div className="absolute inset-0 bg-black/70" onClick={() => setIsViewOpen(null)}></div>
+            <div className="relative z-10 w-full max-w-6xl max-h-[90vh] bg-white rounded-3xl shadow-2xl border border-neutral-soft/30 overflow-hidden flex flex-col">
+              {/* ERP Premium Title Header */}
+              <div className="relative flex items-center justify-between px-10 py-7 
+                  bg-gradient-to-r from-neutral-50 via-primary-light/20 to-primary-light/10
+                  backdrop-blur-md border-b border-neutral-200 shadow-[0_1px_3px_rgba(0,0,0,0.06)]
+                  rounded-t-2xl">
+
+                {/* Left Section */}
+                <div className="flex flex-col">
+                  <h2 className="text-2xl font-semibold text-neutral-800 tracking-tight leading-tight">
+                    Purchase Order Details
+                  </h2>
+
+                  <p className="text-sm text-neutral-500 leading-snug mt-1">
+                    Order Information • Line Items • Shipments • Materials
+                  </p>
                 </div>
-                <div className="p-8 space-y-6 flex-1 overflow-y-auto">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  <div className="space-y-1">
-                    <label className="flex items-center text-xs font-semibold text-neutral-medium uppercase tracking-wide">
-                      <User className="h-4 w-4 mr-2 text-primary-medium" /> Customer
-                    </label>
-                    <div className="text-neutral-dark font-semibold">{isViewOpen.customer_name || isViewOpen.customer_id || '—'}</div>
-                  </div>
-                  <div className="space-y-1">
-                    <label className="flex items-center text-xs font-semibold text-neutral-medium uppercase tracking-wide">
-                      <Package className="h-4 w-4 mr-2 text-primary-medium" /> Product
-                    </label>
-                    <div className="text-neutral-dark">{isViewOpen.product_name || isViewOpen.product_id || '—'}</div>
-                  </div>
-                  <div className="space-y-1">
-                    <label className="flex items-center text-xs font-semibold text-neutral-medium uppercase tracking-wide">
-                      <Package className="h-4 w-4 mr-2 text-primary-medium" /> Quantity
-                    </label>
-                    <div className="text-neutral-dark font-medium">{isViewOpen.quantity || '—'}</div>
-                  </div>
-                  <div className="space-y-1">
-                    <label className="flex items-center text-xs font-semibold text-neutral-medium uppercase tracking-wide">
-                      Price per Unit
-                    </label>
-                    <div className="text-neutral-dark font-medium">{isViewOpen.price ? `$${Number(isViewOpen.price).toFixed(2)}` : '—'}</div>
-                  </div>
-                  <div className="space-y-1">
-                    <label className="flex items-center text-xs font-semibold text-neutral-medium uppercase tracking-wide">
-                      <Calendar className="h-4 w-4 mr-2 text-primary-medium" /> Ship Date
-                    </label>
-                    <div className="text-neutral-dark">{isViewOpen.requested_ship_date || '—'}</div>
-                  </div>
-                  <div className="space-y-1">
-                    <label className="flex items-center text-xs font-semibold text-neutral-medium uppercase tracking-wide">
-                      Total Amount
-                    </label>
-                    <div className="text-neutral-dark font-semibold">
-                      {isViewOpen.quantity && isViewOpen.price ? `$${(Number(isViewOpen.quantity) * Number(isViewOpen.price)).toFixed(2)}` : '—'}
+
+                {/* Close Button */}
+                <button
+                  onClick={() => setIsViewOpen(null)}
+                  className="p-2.5 rounded-xl hover:bg-neutral-200/70 text-neutral-500 
+                    hover:text-neutral-900 transition-all duration-300 shadow-sm
+                    hover:shadow-md hover:scale-105 active:scale-95"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+              
+              {/* Modal Body */}
+              <div className="flex-1 overflow-auto">
+                <div className="p-8">
+                  {/* Enhanced Order Information Card */}
+                  <div className="mb-8 bg-white rounded-3xl border border-neutral-200/80 shadow-[0_4px_20px_rgba(0,0,0,0.08)] overflow-hidden">
+                    {/* Header Section */}
+                    <div className="relative bg-gradient-to-r from-slate-50 via-neutral-50 to-slate-50/80 border-b border-neutral-200/60 px-6 py-5">
+                      <div className="flex items-center space-x-4">
+                        <div className="w-10 h-10 bg-gradient-to-br from-primary-500/10 to-primary-600/20 rounded-2xl flex items-center justify-center">
+                          <FileText className="w-5 h-5 text-primary-600" />
+                        </div>
+                        <div>
+                          <h3 className="text-base font-semibold text-slate-900 tracking-tight">Order Information</h3>
+                          <p className="text-sm text-slate-500 mt-0.5">Purchase order details and status</p>
+                        </div>
+                      </div>
                     </div>
-                  </div>
-                  <div className="space-y-1">
-                    <label className="flex items-center text-xs font-semibold text-neutral-medium uppercase tracking-wide">
-                      <BadgeCheck className="h-4 w-4 mr-2 text-primary-medium" /> Status
-                    </label>
-                    <div>
-                      {(() => {
-                        const st = String(isViewOpen.status || '').toLowerCase()
-                        const statusClass = (st === 'on hold' || st === 'canceled')
-                          ? 'bg-accent-danger/10 text-accent-danger border-accent-danger/30'
-                          : (st === 'approved' || st === 'allocated')
-                            ? 'bg-accent-success/10 text-accent-success border-accent-success/30'
-                            : (st === 'backordered')
-                              ? 'bg-amber-50 text-amber-700 border-amber-200'
-                              : 'bg-neutral-light/40 text-neutral-dark border-neutral-soft/60'
-                        return (
-                          <div className="space-y-1">
-                            <span className={`inline-flex items-center px-3 py-1.5 rounded-xl text-xs font-semibold border ${statusClass}`}>
-                              {isViewOpen.status || '—'} {isViewOpen.is_copack && (<span className="ml-2 inline-flex px-2 py-0.5 rounded-full text-[10px] font-semibold bg-indigo-100 text-indigo-700">COPACK</span>)}
-                            </span>
-                            <div className="text-[11px] text-neutral-medium">{statusDescription(isViewOpen.status)}</div>
+
+                    {/* Content Section */}
+                    <div className="p-6">
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div className="space-y-1">
+                          <label className="flex items-center text-xs font-semibold text-neutral-medium uppercase tracking-wide">
+                            <User className="h-4 w-4 mr-2 text-primary-medium" /> Customer
+                          </label>
+                          <div className="text-neutral-dark font-semibold">{isViewOpen.customer_name || isViewOpen.customer_id || '—'}</div>
+                        </div>
+                        <div className="space-y-1">
+                          <label className="flex items-center text-xs font-semibold text-neutral-medium uppercase tracking-wide">
+                            <Package className="h-4 w-4 mr-2 text-primary-medium" /> Product
+                          </label>
+                          <div className="text-neutral-dark">{isViewOpen.product_name || isViewOpen.product_id || '—'}</div>
+                        </div>
+                        <div className="space-y-1">
+                          <label className="flex items-center text-xs font-semibold text-neutral-medium uppercase tracking-wide">
+                            <Package className="h-4 w-4 mr-2 text-primary-medium" /> Quantity
+                          </label>
+                          <div className="text-neutral-dark font-medium">{isViewOpen.quantity || '—'}</div>
+                        </div>
+                        <div className="space-y-1">
+                          <label className="flex items-center text-xs font-semibold text-neutral-medium uppercase tracking-wide">
+                            Price per Unit
+                          </label>
+                          <div className="text-neutral-dark font-medium">{isViewOpen.price ? `$${Number(isViewOpen.price).toFixed(2)}` : '—'}</div>
+                        </div>
+                        <div className="space-y-1">
+                          <label className="flex items-center text-xs font-semibold text-neutral-medium uppercase tracking-wide">
+                            <Calendar className="h-4 w-4 mr-2 text-primary-medium" /> Ship Date
+                          </label>
+                          <div className="text-neutral-dark">{isViewOpen.requested_ship_date || '—'}</div>
+                        </div>
+                        <div className="space-y-1">
+                          <label className="flex items-center text-xs font-semibold text-neutral-medium uppercase tracking-wide">
+                            Total Amount
+                          </label>
+                          <div className="text-neutral-dark font-semibold">
+                            {isViewOpen.quantity && isViewOpen.price ? `$${(Number(isViewOpen.quantity) * Number(isViewOpen.price)).toFixed(2)}` : '—'}
                           </div>
-                        )
-                      })()}
+                        </div>
+                        <div className="space-y-1">
+                          <label className="flex items-center text-xs font-semibold text-neutral-medium uppercase tracking-wide">
+                            <BadgeCheck className="h-4 w-4 mr-2 text-primary-medium" /> Status
+                          </label>
+                          <div>
+                            {(() => {
+                              const st = String(isViewOpen.status || '').toLowerCase()
+                              const statusClass = (st === 'on hold' || st === 'canceled')
+                                ? 'bg-accent-danger/10 text-accent-danger border-accent-danger/30'
+                                : (st === 'approved' || st === 'allocated')
+                                  ? 'bg-accent-success/10 text-accent-success border-accent-success/30'
+                                  : (st === 'backordered')
+                                    ? 'bg-amber-50 text-amber-700 border-amber-200'
+                                    : 'bg-neutral-light/40 text-neutral-dark border-neutral-soft/60'
+                              return (
+                                <div className="space-y-1">
+                                  <span className={`inline-flex items-center px-3 py-1.5 rounded-xl text-xs font-semibold border ${statusClass}`}>
+                                    {isViewOpen.status || '—'} {isViewOpen.is_copack && (<span className="ml-2 inline-flex px-2 py-0.5 rounded-full text-[10px] font-semibold bg-indigo-100 text-indigo-700">COPACK</span>)}
+                                  </span>
+                                  <div className="text-[11px] text-neutral-medium">{statusDescription(isViewOpen.status)}</div>
+                                </div>
+                              )
+                            })()}
+                          </div>
+                        </div>
+                        <div className="space-y-1">
+                          <label className="flex items-center text-xs font-semibold text-neutral-medium uppercase tracking-wide">
+                            <MapPin className="h-4 w-4 mr-2 text-primary-medium" /> Location
+                          </label>
+                          <div className="text-neutral-dark">{isViewOpen.location || '—'}</div>
+                        </div>
+                        <div className="space-y-1">
+                          <label className="flex items-center text-xs font-semibold text-neutral-medium uppercase tracking-wide">
+                            Rush Order
+                          </label>
+                          <div>
+                            <span className={`inline-flex items-center px-3 py-1.5 rounded-xl text-xs font-semibold border ${
+                              isViewOpen.is_rush 
+                                ? 'bg-orange-50 text-orange-600 border-orange-200' 
+                                : 'bg-neutral-light/40 text-neutral-dark border-neutral-soft/60'
+                            }`}>
+                              {isViewOpen.is_rush ? 'Yes' : 'No'}
+                            </span>
+                          </div>
+                        </div>
+                        <div className="space-y-1">
+                          <label className="flex items-center text-xs font-semibold text-neutral-medium uppercase tracking-wide">
+                            <Calendar className="h-4 w-4 mr-2 text-primary-medium" /> Order Date
+                          </label>
+                          <div className="text-neutral-dark">{isViewOpen.date || '—'}</div>
+                        </div>
+                      </div>
                     </div>
                   </div>
-                  <div className="space-y-1">
-                    <label className="flex items-center text-xs font-semibold text-neutral-medium uppercase tracking-wide">
-                      <MapPin className="h-4 w-4 mr-2 text-primary-medium" /> Location
-                    </label>
-                    <div className="text-neutral-dark">{isViewOpen.location || '—'}</div>
-                  </div>
-                  <div className="space-y-1">
-                    <label className="flex items-center text-xs font-semibold text-neutral-medium uppercase tracking-wide">
-                      Rush Order
-                    </label>
-                    <div>
-                      <span className={`inline-flex items-center px-3 py-1.5 rounded-xl text-xs font-semibold border ${
-                        isViewOpen.is_rush 
-                          ? 'bg-orange-50 text-orange-600 border-orange-200' 
-                          : 'bg-neutral-light/40 text-neutral-dark border-neutral-soft/60'
-                      }`}>
-                        {isViewOpen.is_rush ? 'Yes' : 'No'}
-                      </span>
-                    </div>
-                  </div>
-                  <div className="space-y-1">
-                    <label className="flex items-center text-xs font-semibold text-neutral-medium uppercase tracking-wide">
-                      <Calendar className="h-4 w-4 mr-2 text-primary-medium" /> Order Date
-                    </label>
-                    <div className="text-neutral-dark">{isViewOpen.date || '—'}</div>
-                  </div>
-                </div>
-                {/* Brand: Line Items only */}
-                {!isViewOpen?.is_copack && (
-                  <div className="space-y-3">
-                    <h3 className="text-base font-semibold text-neutral-dark">Line Items</h3>
-                    <div className="overflow-x-auto border border-neutral-soft/40 rounded-lg">
+
+                  {/* Enhanced Line Items Section */}
+                  {!isViewOpen?.is_copack && (
+                    <div className="mb-8 bg-white rounded-3xl border border-neutral-200/80 shadow-[0_4px_20px_rgba(0,0,0,0.08)] overflow-hidden">
+                      {/* Header Section */}
+                      <div className="relative bg-gradient-to-r from-slate-50 via-neutral-50 to-slate-50/80 border-b border-neutral-200/60 px-6 py-5">
+                        <div className="flex items-center space-x-4">
+                          <div className="w-10 h-10 bg-gradient-to-br from-primary-500/10 to-primary-600/20 rounded-2xl flex items-center justify-center">
+                            <Package className="w-5 h-5 text-primary-600" />
+                          </div>
+                          <div>
+                            <h3 className="text-base font-semibold text-slate-900 tracking-tight">Line Items</h3>
+                            <p className="text-sm text-slate-500 mt-0.5">Product quantities and allocation status</p>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Content Section */}
+                      <div className="overflow-x-auto">
                       <table className="min-w-full">
                         <thead>
                           <tr className="bg-neutral-light/40 border-b border-neutral-soft/50">
@@ -2205,11 +2260,11 @@ const PurchaseOrders: React.FC = () => {
                           )}
                         </tbody>
                       </table>
+                      </div>
                     </div>
-                  </div>
-                )}
+                  )}
 
-                {/* Copack: Materials Allocation only */}
+                  {/* Copack: Materials Allocation only */}
                 {isViewOpen?.is_copack && (
                   <div className="space-y-3">
                     <h3 className="text-base font-semibold text-neutral-dark">Materials Allocation</h3>
@@ -2357,11 +2412,11 @@ const PurchaseOrders: React.FC = () => {
                   </div>
                 )}
                 
-                <div className="flex justify-end">
-                  <button onClick={() => setIsViewOpen(null)} className="px-5 py-2.5 rounded-xl border border-neutral-soft text-neutral-dark hover:bg-neutral-light/60 transition-all">
-                    Close
-                  </button>
-                </div>
+                  <div className="flex justify-end">
+                    <button onClick={() => setIsViewOpen(null)} className="px-5 py-2.5 rounded-xl border border-neutral-soft text-neutral-dark hover:bg-neutral-light/60 transition-all">
+                      Close
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>

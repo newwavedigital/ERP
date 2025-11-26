@@ -1677,7 +1677,6 @@ const Products: React.FC = () => {
                   {/* Enhanced Image Grid */}
                   {imageModalUrls.length === 0 ? (
                     <div className="text-center py-16">
-// ... (rest of the code remains the same)
                       <div className="w-20 h-20 bg-neutral-light/60 rounded-full flex items-center justify-center mx-auto mb-4">
                         <Package className="h-10 w-10 text-neutral-medium" />
                       </div>

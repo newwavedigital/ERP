@@ -1,15 +1,25 @@
 // src/pages/ProductionSchedule.tsx
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from 'react-router-dom'
-import { Calendar, X, Plus, Eye, Pencil, Trash2, MoreVertical, AlertTriangle } from "lucide-react";
+import { Calendar, X, Plus, Eye, Pencil, Trash2, MoreVertical, AlertTriangle, FileText } from "lucide-react";
 import { supabase } from "../lib/supabase";
+import ProductionLines from "./ProductionLines";
 
 // ─────────────────────────────────────────────────────────────
 // Types
 // ─────────────────────────────────────────────────────────────
 type Customer = { id: string; company_name: string };
-type Product = { id: string; product_name: string; product_image_url?: string; unit_of_measure?: string };
+type Product = { id: string; product_name: string; product_image_url?: string; unit_of_measure?: string; allergen_profile?: string[] };
 type Formula = { id: string; formula_name: string; product_id: string | null };
+type ProductionLine = { id: string; line_name: string; allowed_allergens: string[] | null; sanitation_minutes?: number | null; needs_qa_signoff?: boolean | null };
+
+// QA Hold component type for modal display
+interface QAHoldComponent {
+  material_id: string;
+  material_name: string;
+  sku: string | null;
+  qa_hold_reason: string | null;
+}
 
 type BatchRow = {
   id: string;
@@ -100,6 +110,7 @@ const ProductionSchedule: React.FC = () => {
   const menuRef = useRef<HTMLButtonElement | null>(null);
   const menuPopupRef = useRef<HTMLDivElement | null>(null);
   const [formulas, setFormulas] = useState<Formula[]>([]);
+  const [productionLines, setProductionLines] = useState<ProductionLine[]>([]);
 
   // Batches table
   const [items, setItems] = useState<ScheduleItem[]>([]);
@@ -114,6 +125,10 @@ const ProductionSchedule: React.FC = () => {
     { key: "Dilly's Room", label: "Dilly's Room", color: "bg-amber-500" },
   ];
   const [activeTab, setActiveTab] = useState<string>("All");
+  const [activeSection, setActiveSection] = useState<'schedule' | 'lines'>('schedule');
+  // Signals to control embedded ProductionLines actions
+  const [linesRefreshSignal, setLinesRefreshSignal] = useState(0)
+  const [linesOpenCreateSignal, setLinesOpenCreateSignal] = useState(0)
 
   // Create form state
   const [scheduledDate, setScheduledDate] = useState<string>("");
@@ -171,6 +186,17 @@ const ProductionSchedule: React.FC = () => {
   const capaBadgeCount = useMemo(() => Object.keys(capaMap || {}).length, [capaMap])
   // Map: source_po_id -> 'CLIENT' | 'OPS' for copack batches
   const [poSourceMap, setPoSourceMap] = useState<Record<string, 'CLIENT' | 'OPS'>>({})
+  const [allergenConflictMap, setAllergenConflictMap] = useState<Record<string, boolean>>({})
+  const [sanitationDetailsMap, setSanitationDetailsMap] = useState<Record<string, { minutes?: number | null; start?: string | null; end?: string | null }>>({})
+  const [qaRequiredMap, setQaRequiredMap] = useState<Record<string, boolean>>({})
+  const [qaApprovedMap, setQaApprovedMap] = useState<Record<string, boolean>>({})
+  const [allergenModalBatchId, setAllergenModalBatchId] = useState<string | null>(null)
+
+  // QA Hold modal state
+  const [qaHoldModalBatch, setQaHoldModalBatch] = useState<ScheduleItem | null>(null)
+  const [qaHoldComponents, setQaHoldComponents] = useState<QAHoldComponent[]>([])
+  // QA Hold indicator per batch (client-side cache)
+  const [qaHoldMap, setQaHoldMap] = useState<Record<string, boolean>>({})
 
   const saveShortagesToCache = (batchId: string, shortages: ShortageRow[]) => {
     try { localStorage.setItem(SHORTAGE_CACHE_PREFIX + batchId, JSON.stringify(shortages)) } catch {}
@@ -201,21 +227,25 @@ const ProductionSchedule: React.FC = () => {
     () => new Map<string, Product>(products.map((p) => [String(p.id), p])),
     [products]
   );
+  const productByName = useMemo(() => new Map<string, Product>(products.map((p)=> [String(p.product_name || ''), p])), [products])
+  const productionLineByName = useMemo(() => new Map<string, ProductionLine>(productionLines.map(pl => [String(pl.line_name || ''), pl])), [productionLines])
 
   // ───────── Load lookups + batches
   const loadLookups = async () => {
-    const [{ data: c }, { data: p }, { data: f }] = await Promise.all([
+    const [{ data: c }, { data: p }, { data: f }, { data: pl }] = await Promise.all([
       supabase.from("customers").select("id, company_name").order("company_name"),
       supabase
         .from("products")
-        .select("id, product_name, product_image_url, unit_of_measure, product_type")
+        .select("id, product_name, product_image_url, unit_of_measure, product_type, allergen_profile")
         .eq('product_type', 'Finished Goods')
         .order("product_name", { ascending: true }),
       supabase.from("formulas").select("id, formula_name, product_id"),
+      supabase.from('production_lines').select('id, line_name, allowed_allergens, sanitation_minutes, needs_qa_signoff')
     ]);
     setCustomers(c || []);
     setProducts(p || []);
     setFormulas(f || []);
+    setProductionLines(pl || []);
   };
 
   // Helper: cast ID to number if numeric to satisfy RPC/query param types
@@ -358,10 +388,6 @@ const ProductionSchedule: React.FC = () => {
     return p?.product_name || "";
   }, [selectedProductId, productsMap]);
 
-  const formulasForProduct = useMemo(() => {
-    if (!selectedProductId) return formulas;
-    return formulas.filter((f) => String(f.product_id || "") === selectedProductId);
-  }, [selectedProductId, formulas]);
 
   const resetCreateForm = () => {
     setScheduledDate("");
@@ -604,10 +630,44 @@ const ProductionSchedule: React.FC = () => {
   // ───────── Row actions (RPC)
   const onStartBatch = async (id: string) => {
     try {
+      try {
+        const { data: gate, error: gateErr } = await supabase.rpc('fn_check_allergen_conflict', { p_batch_id: castBatchId(id) })
+        if (gateErr) {
+          pushToast({ type: 'error', message: `Allergen check failed: ${gateErr.message}` })
+          return
+        }
+        if (gate && typeof gate === 'object' && (gate as any).status === 'conflict') {
+          setAllergenConflictMap(prev => ({ ...prev, [id]: true }))
+          setSanitationDetailsMap(prev => ({ ...prev, [id]: { minutes: (gate as any).sanitation_minutes ?? null, start: null, end: null } }))
+          setQaRequiredMap(prev => ({ ...prev, [id]: !!(gate as any).qa_required }))
+          setAllergenModalBatchId(id)
+          return
+        }
+      } catch {}
+
+      // NEW: QA Hold check – block start if any component is on QA hold
+      try {
+        const { data: qaData, error: qaError } = await supabase.rpc('fn_check_qa_hold_for_batch', { p_batch_id: castBatchId(id) })
+        if (qaError) {
+          console.error('QA hold check failed', qaError)
+          pushToast({ type: 'error', message: 'Unable to verify QA Hold status. Please try again or contact QA.' })
+          return
+        }
+        if (qaData && typeof qaData === 'object' && (qaData as any).status === 'hold') {
+          setQaHoldComponents(((qaData as any).held_components ?? []) as QAHoldComponent[])
+          const batchRow = (items || []).find(r => String(r.id) === String(id)) || null
+          setQaHoldModalBatch(batchRow)
+          setQaHoldMap(prev => ({ ...prev, [String(id)]: true }))
+          return
+        }
+      } catch {}
       // 1) Fetch requirements first (RPC preferred, fallback to table)
       let reqRows: any[] = []
       try {
-        const { data: rpcReq, error: rpcErr } = await supabase.rpc('get_batch_requirements', { batch_id: castBatchId(id) } as any)
+      const { data: rpcReq, error: rpcErr } = await supabase.rpc(
+        'fn_requirements_for_batch',
+        { p_batch_id: castBatchId(id) }
+      )
         if (!rpcErr && Array.isArray(rpcReq)) reqRows = rpcReq as any[]
       } catch {}
       if (reqRows.length === 0) {
@@ -669,6 +729,10 @@ const ProductionSchedule: React.FC = () => {
       // 3) No shortage: proceed to reserve/start
       const { data, error } = await supabase.rpc('fn_reserve_for_batch', { p_batch_id: castBatchId(id) })
       if (error) throw error
+      
+      // Debug: Log the RPC response
+      console.log('fn_reserve_for_batch response:', data)
+      
       if (data && typeof data === 'object' && (data as any).status === 'error' && Array.isArray((data as any).shortages)) {
         const s = (data as any).shortages as ShortageRow[]
         setShortageInfo({ batchId: id, shortages: s })
@@ -680,11 +744,24 @@ const ProductionSchedule: React.FC = () => {
       }
       // Success path
       await loadBatches()
+      
+      // Record lot traceability after successful start
+      try {
+        await supabase.rpc('fn_record_lot_traceability', { p_batch_id: castBatchId(id) })
+      } catch (traceError) {
+        console.warn('Lot traceability recording failed:', traceError)
+        // Don't fail the start process if traceability fails
+      }
+      
       pushToast({ type: 'success', message: 'Batch started successfully' })
       // If batch can start, clear any cached shortage
       removeShortagesFromCache(id)
       setStartDisabled(prev => { const n = { ...prev }; delete n[id]; return n })
       setShortagesCache(prev => { const n = { ...prev }; delete n[id]; return n })
+      setAllergenConflictMap(prev => { const n = { ...prev }; delete n[id]; return n })
+      setSanitationDetailsMap(prev => { const n = { ...prev }; delete n[id]; return n })
+      setQaRequiredMap(prev => { const n = { ...prev }; delete n[id]; return n })
+      setQaHoldMap(prev => { const n = { ...prev }; delete n[String(id)]; return n })
     } catch (e: any) {
       console.warn('Start batch error:', e)
       pushToast({ type: 'error', message: `Failed to start batch: ${e?.message || e}` })
@@ -801,6 +878,15 @@ const ProductionSchedule: React.FC = () => {
           window.dispatchEvent(new CustomEvent('finishedGoods:refresh'))
         }
       } catch {}
+      
+      // Record lot traceability after successful completion
+      try {
+        await supabase.rpc('fn_record_lot_traceability', { p_batch_id: castBatchId(completeId) })
+      } catch (traceError) {
+        console.warn('Lot traceability recording failed:', traceError)
+        // Don't fail the completion process if traceability fails
+      }
+      
       setCompleteId(null)
       setCompleteQty('0')
       setCompletedQtyPreview(0)
@@ -824,6 +910,74 @@ const ProductionSchedule: React.FC = () => {
       console.warn(e)
       pushToast({ type: 'error', message: 'Failed to generate purchase orders' })
     }
+  }
+
+  // Traceability section component
+  const TraceabilitySection: React.FC<{ batchId: string }> = ({ batchId }) => {
+    const [traceabilityData, setTraceabilityData] = useState<Array<{
+      raw_material_name: string;
+      lot_in: string;
+      lot_out: string;
+    }>>([])
+    const [loading, setLoading] = useState(true)
+
+    useEffect(() => {
+      const loadTraceability = async () => {
+        try {
+          setLoading(true)
+          const { data, error } = await supabase
+            .from('lot_traceability')
+            .select('raw_material_name, lot_in, lot_out')
+            .eq('batch_id', batchId)
+          
+          if (error) throw error
+          setTraceabilityData(data || [])
+        } catch (error) {
+          console.warn('Failed to load traceability data:', error)
+          setTraceabilityData([])
+        } finally {
+          setLoading(false)
+        }
+      }
+
+      loadTraceability()
+    }, [batchId])
+
+    return (
+      <div className="mt-6 bg-neutral-light/40 p-5 rounded-xl">
+        <div className="text-lg font-semibold text-neutral-dark mb-4 flex items-center">
+          <FileText className="h-5 w-5 mr-2 text-primary-medium"/>
+          Traceability
+        </div>
+        
+        {loading ? (
+          <div className="text-neutral-medium text-sm">Loading traceability data...</div>
+        ) : traceabilityData.length === 0 ? (
+          <div className="text-neutral-medium text-sm">No traceability records found.</div>
+        ) : (
+          <div className="overflow-x-auto border border-neutral-soft/40 rounded-xl">
+            <table className="min-w-full text-sm">
+              <thead>
+                <tr className="bg-neutral-light/40">
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-neutral-medium uppercase">Raw Material</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-neutral-medium uppercase">Lot In</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-neutral-medium uppercase">Lot Out</th>
+                </tr>
+              </thead>
+              <tbody>
+                {traceabilityData.map((item, idx) => (
+                  <tr key={idx} className="border-t border-neutral-soft/30">
+                    <td className="px-4 py-3 text-neutral-dark">{item.raw_material_name}</td>
+                    <td className="px-4 py-3 text-neutral-dark">{item.lot_in || '-'}</td>
+                    <td className="px-4 py-3 text-neutral-dark">{item.lot_out || '-'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    )
   }
 
   // View content component
@@ -942,6 +1096,41 @@ const ProductionSchedule: React.FC = () => {
                     )
                   })
                 )}
+
+        {/* Allergen Conflict Modal */}
+        {allergenModalBatchId && (() => {
+          const row = (items || []).find(r => String(r.id) === String(allergenModalBatchId))
+          const product = row ? productByName.get(String(row.product || '')) : undefined
+          const line = row ? productionLineByName.get(String(row.room || '')) : undefined
+          const productAllergens = (product?.allergen_profile || []) as string[]
+          const lineAllowed = (line?.allowed_allergens || []) as string[]
+          const minutes = sanitationDetailsMap[allergenModalBatchId]?.minutes ?? null
+          const qaReq = qaRequiredMap[allergenModalBatchId]
+          return (
+            <AllergenConflictModal
+              isOpen={true}
+              onClose={() => setAllergenModalBatchId(null)}
+              productAllergens={productAllergens}
+              lineAllowedAllergens={lineAllowed}
+              sanitationMinutes={minutes}
+              qaRequired={qaReq}
+              onApprove={() => {
+                const id = String(allergenModalBatchId)
+                setQaApprovedMap(prev => ({ ...prev, [id]: true }))
+                setAllergenConflictMap(prev => ({ ...prev, [id]: false }))
+                setAllergenModalBatchId(null)
+              }}
+              onReschedule={async () => {
+                try {
+                  const id = String(allergenModalBatchId)
+                  const full = await fetchRowById(id)
+                  setEditItem(full)
+                } catch {}
+                setAllergenModalBatchId(null)
+              }}
+            />
+          )
+        })()}
               </tbody>
             </table>
           </div>
@@ -1087,6 +1276,9 @@ const ProductionSchedule: React.FC = () => {
           </div>
         )}
 
+        {/* TRACEABILITY SECTION */}
+        <TraceabilitySection batchId={batchId} />
+
         <div className="mt-6 bg-neutral-light/40 p-5 rounded-xl">
           <div className="text-lg font-semibold mb-1">CAPA History ({capaHistory.length})</div>
           {capaHistory.length > 0 && (
@@ -1137,6 +1329,75 @@ const ProductionSchedule: React.FC = () => {
   // ─────────────────────────────────────────────────────────────
   // Render
   // ─────────────────────────────────────────────────────────────
+  type AllergenModalProps = {
+    isOpen: boolean
+    onClose: () => void
+    productAllergens: string[]
+    lineAllowedAllergens: string[]
+    sanitationMinutes?: number | null
+    qaRequired?: boolean
+    onApprove: () => void
+    onReschedule: () => void
+  }
+  const AllergenConflictModal: React.FC<AllergenModalProps> = ({ isOpen, onClose, productAllergens, lineAllowedAllergens, sanitationMinutes, qaRequired, onApprove, onReschedule }) => {
+    if (!isOpen) return null
+    const mismatches = (productAllergens || []).filter(a => !(lineAllowedAllergens || []).includes(a))
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+        <div className="absolute inset-0 bg-black/50" onClick={onClose}></div>
+        <div className="relative z-10 w-full max-w-3xl bg-white rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden">
+          <div className="px-6 py-4 border-b flex items-center gap-3">
+            <div className="w-8 h-8 rounded-full bg-amber-100 text-amber-700 flex items-center justify-center">
+              <AlertTriangle className="w-5 h-5" />
+            </div>
+            <div>
+              <h3 className="text-lg font-semibold text-neutral-dark">Allergen Conflict Detected</h3>
+              <p className="text-sm text-neutral-medium">Product allergens are not fully allowed on this line. Review sanitation and QA requirements.</p>
+            </div>
+          </div>
+          <div className="p-6 space-y-5">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="rounded-xl border border-neutral-soft bg-neutral-light/40 p-4">
+                <div className="text-xs text-neutral-medium uppercase mb-2">Product Allergens</div>
+                <div className="flex flex-wrap gap-2">
+                  {(productAllergens || []).map((a, i) => (
+                    <span key={i} className={`px-2 py-1 rounded-full text-xs font-semibold ${mismatches.includes(a) ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>{a}</span>
+                  ))}
+                  {(!productAllergens || productAllergens.length === 0) && (
+                    <span className="text-sm text-neutral-medium">None</span>
+                  )}
+                </div>
+              </div>
+              <div className="rounded-xl border border-neutral-soft bg-neutral-light/40 p-4">
+                <div className="text-xs text-neutral-medium uppercase mb-2">Line Allowed Allergens</div>
+                <div className="flex flex-wrap gap-2">
+                  {(lineAllowedAllergens || []).map((a, i) => (
+                    <span key={i} className="px-2 py-1 rounded-full text-xs font-semibold bg-blue-100 text-blue-700">{a}</span>
+                  ))}
+                  {(!lineAllowedAllergens || lineAllowedAllergens.length === 0) && (
+                    <span className="text-sm text-neutral-medium">None specified</span>
+                  )}
+                </div>
+              </div>
+            </div>
+            <div className="rounded-xl border border-neutral-soft bg-neutral-light/30 p-4">
+              <div className="text-sm text-neutral-dark"><span className="font-semibold">Sanitation Window:</span> {sanitationMinutes != null ? `${sanitationMinutes} minutes` : 'N/A'}</div>
+              <div className="text-sm text-neutral-dark mt-1"><span className="font-semibold">QA Requirement:</span> {qaRequired ? 'QA sign-off required before start' : 'No QA sign-off required'}</div>
+            </div>
+            <div className="flex justify-end gap-3 pt-1">
+              <button className="px-5 py-2 rounded-lg bg-primary-dark hover:bg-primary-medium text-white text-sm" onClick={onApprove}>
+                Mark Sanitation + QA Complete
+              </button>
+              <button className="px-5 py-2 rounded-lg bg-amber-50 text-amber-700 hover:bg-amber-100 border border-amber-200 text-sm" onClick={onReschedule}>
+                Reschedule Batch
+              </button>
+              <button className="px-4 py-2 rounded-lg border text-sm" onClick={onClose}>Close</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    )
+  }
   return (
     <div className="min-h-screen bg-gradient-to-br from-neutral-light/30 to-neutral-soft/20">
       <div className="p-8">
@@ -1151,20 +1412,22 @@ const ProductionSchedule: React.FC = () => {
           <div className="flex items-center justify-between">
             <div>
               <h1 className="text-3xl font-bold text-neutral-dark mb-1">
-                Production Schedule
+                {activeSection === 'lines' ? 'Production' : 'Production Schedule'}
               </h1>
               <p className="text-neutral-medium text-lg">
-                Schedule production with material requirements
+                {activeSection === 'lines' ? 'Manage production lines and sanitation/QA' : 'Schedule production with material requirements'}
               </p>
             </div>
             <div className="flex items-center gap-3">
+              {activeSection === 'schedule' && (
               <button
                 onClick={loadBatches}
                 className="px-5 py-3 rounded-xl bg-neutral-light hover:bg-neutral-soft text-neutral-dark text-sm font-semibold transition-all shadow-sm hover:shadow-md"
               >
                 {loading ? "Loading…" : "Reload"}
               </button>
-              {highlightPoId && (
+              )}
+              {activeSection === 'schedule' && highlightPoId && (
                 <button
                   onClick={async()=>{
                     try{
@@ -1195,42 +1458,78 @@ const ProductionSchedule: React.FC = () => {
                   {creatingFromPo ? 'Creating…' : 'Auto-create from PO'}
                 </button>
               )}
-              <button
-                onClick={() => setOpen(true)}
-                className="px-6 py-3 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold transition-all shadow-lg hover:shadow-xl flex items-center"
-              >
-                <Plus className="h-5 w-5 mr-2" />
-                Schedule Production
-              </button>
+              {activeSection === 'schedule' && (
+                <button
+                  onClick={() => setOpen(true)}
+                  className="px-6 py-3 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold transition-all shadow-lg hover:shadow-xl flex items-center"
+                >
+                  <Plus className="h-5 w-5 mr-2" />
+                  Schedule Production
+                </button>
+              )}
+              {activeSection === 'lines' && (
+                <>
+                  <button
+                    onClick={() => setLinesRefreshSignal((s)=> s + 1)}
+                    className="px-5 py-3 rounded-xl bg-neutral-light hover:bg-neutral-soft text-neutral-dark text-sm font-semibold transition-all shadow-sm hover:shadow-md"
+                  >
+                    Reload
+                  </button>
+                  <button
+                    onClick={() => setLinesOpenCreateSignal((s)=> s + 1)}
+                    className="px-6 py-3 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold transition-all shadow-lg hover:shadow-xl flex items-center"
+                  >
+                    <Plus className="h-5 w-5 mr-2" />
+                    Add Line
+                  </button>
+                </>
+              )}
             </div>
           </div>
 
-          {/* Tabs */}
+          {/* Primary Tabs: Schedule | Lines */}
           <div className="mt-6">
-            <div className="flex items-center gap-6 text-sm font-medium text-neutral-dark">
-              {tabs.map((t) => (
-                <button
-                  key={t.key}
-                  onClick={() => setActiveTab(t.key)}
-                  className={`pb-2 border-b-2 transition-colors ${
-                    activeTab === t.key
-                      ? "border-primary-medium text-primary-medium"
-                      : "border-transparent text-neutral-medium hover:text-neutral-dark"
-                  }`}
-                >
-                  <span className="inline-flex items-center">
-                    {t.color && (
-                      <span className={`w-2 h-2 rounded-full mr-2 ${t.color}`}></span>
-                    )}
-                    {t.label}
-                  </span>
-                </button>
-              ))}
+            <div role="tablist" aria-label="Production navigation" className="relative inline-flex items-center rounded-2xl bg-white shadow border border-neutral-soft/30 p-1">
+              <span aria-hidden className={`absolute top-1 bottom-1 w-1/2 rounded-xl bg-gradient-to-r from-primary-light/20 to-primary-medium/10 shadow-sm transition-all duration-300 ease-out ${activeSection==='schedule' ? 'left-1' : 'left-1/2'}`} />
+              <button role="tab" aria-selected={activeSection==='schedule'} type="button" onClick={() => setActiveSection('schedule')} className={`relative z-10 px-5 py-2 text-sm font-semibold rounded-xl transition-colors ${activeSection==='schedule' ? 'text-primary-dark' : 'text-neutral-medium hover:text-neutral-dark'}`}>Schedule</button>
+              <button role="tab" aria-selected={activeSection==='lines'} type="button" onClick={() => setActiveSection('lines')} className={`relative z-10 px-5 py-2 text-sm font-semibold rounded-xl transition-colors ${activeSection==='lines' ? 'text-primary-dark' : 'text-neutral-medium hover:text-neutral-dark'}`}>Lines</button>
             </div>
-            <div className="mt-4 border-t border-neutral-soft"></div>
           </div>
+
+          {/* Room filter tabs (only on Schedule) */}
+          {activeSection === 'schedule' && (
+            <div className="mt-6">
+              <div className="flex items-center gap-6 text-sm font-medium text-neutral-dark">
+                {tabs.map((t) => (
+                  <button
+                    key={t.key}
+                    onClick={() => setActiveTab(t.key)}
+                    className={`pb-2 border-b-2 transition-colors ${
+                      activeTab === t.key
+                        ? "border-primary-medium text-primary-medium"
+                        : "border-transparent text-neutral-medium hover:text-neutral-dark"
+                    }`}
+                  >
+                    <span className="inline-flex items-center">
+                      {t.color && (
+                        <span className={`w-2 h-2 rounded-full mr-2 ${t.color}`}></span>
+                      )}
+                      {t.label}
+                    </span>
+                  </button>
+                ))}
+              </div>
+              <div className="mt-4 border-t border-neutral-soft"></div>
+            </div>
+          )}
         </div>
 
+        {activeSection === 'lines' ? (
+          <div className="mt-2">
+            <ProductionLines embedded refreshSignal={linesRefreshSignal} openCreateSignal={linesOpenCreateSignal} />
+          </div>
+        ) : (
+        <>
         {/* Empty */}
         {filtered.length === 0 && !loading && (
           <div className="text-center py-20">
@@ -1275,6 +1574,9 @@ const ProductionSchedule: React.FC = () => {
                     </th>
                     <th className="px-6 py-3 text-left text-xs font-semibold text-neutral-medium uppercase tracking-wider">
                       Completed
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-semibold text-neutral-medium uppercase tracking-wider">
+                      Lot Number
                     </th>
                     <th className="px-6 py-3 text-left text-xs font-semibold text-neutral-medium uppercase tracking-wider">
                       Start Date
@@ -1333,6 +1635,9 @@ const ProductionSchedule: React.FC = () => {
                         {row.completedQty}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-neutral-dark">
+                        {row.lot || '-'}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-neutral-dark">
                         {fmtDate(row.startDate)}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
@@ -1343,6 +1648,16 @@ const ProductionSchedule: React.FC = () => {
                         >
                           {row.status}
                         </span>
+                        {qaHoldMap[row.id] && (
+                          <span className="ml-2 inline-flex px-2 py-0.5 rounded-full text-[10px] font-semibold bg-rose-100 text-rose-700 align-middle">
+                            QA Hold
+                          </span>
+                        )}
+                        {allergenConflictMap[row.id] && (
+                          <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-100 text-amber-700 align-middle shadow-sm">
+                            Allergen Conflict
+                          </span>
+                        )}
                         {capaMap[row.id] && (
                           <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-red-100 text-red-700 align-middle shadow-sm">
                             CAPA
@@ -1356,7 +1671,8 @@ const ProductionSchedule: React.FC = () => {
                           <div className="flex flex-row gap-1">
                             <button
                               className="px-2.5 py-1 rounded-md bg-blue-50 text-blue-700 hover:bg-blue-100 text-[11px]"
-                              disabled={!!(startDisabled[row.id] || shortagesCache[row.id] || prExistsMap[row.id])}
+                              disabled={!!(startDisabled[row.id] || shortagesCache[row.id] || prExistsMap[row.id] || allergenConflictMap[row.id] || (qaRequiredMap[row.id] && !qaApprovedMap[row.id]))}
+                              title={(qaRequiredMap[row.id] && !qaApprovedMap[row.id]) ? 'QA approval required before starting.' : (allergenConflictMap[row.id] ? 'Allergen conflict must be resolved.' : undefined)}
                               onClick={(e) => { e.stopPropagation(); onStartBatch(row.id); }}
                             >
                               Start
@@ -1440,6 +1756,8 @@ const ProductionSchedule: React.FC = () => {
               </table>
             </div>
           </div>
+        )}
+        </>
         )}
 
         {/* Fixed positioned dropdown menu */}
@@ -1608,7 +1926,7 @@ const ProductionSchedule: React.FC = () => {
                 <div className="flex justify-end gap-3 pt-2">
                   <button
                     className="px-5 py-2 rounded-lg bg-primary-dark hover:bg-primary-medium text-white text-sm"
-                    onClick={() => { try { window.location.href = `/purchase-requisitions?batch_id=${encodeURIComponent(shortageInfo.batchId)}` } catch {} }}
+                    onClick={() => { try { window.location.href = `/purchase-orders?batch_id=${encodeURIComponent(shortageInfo.batchId)}` } catch {} }}
                   >
                     View Purchase Requisitions
                   </button>
@@ -1716,9 +2034,16 @@ const ProductionSchedule: React.FC = () => {
                         onClick={() => setIsProductOpen(v => !v)}
                         className="w-full flex items-center justify-between px-4 py-3 border border-neutral-soft rounded-xl text-left bg-white hover:border-neutral-medium focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all shadow-sm"
                       >
-                        <span className={selectedProduct?.product_name ? 'text-neutral-dark' : 'text-neutral-medium'}>
-                          {selectedProduct?.product_name || 'Select Product'}
-                        </span>
+                        <div className="flex flex-col items-start">
+                          <span className={selectedProduct?.product_name ? 'text-neutral-dark font-medium' : 'text-neutral-medium'}>
+                            {selectedProduct?.product_name || 'Select Product'}
+                          </span>
+                          {selectedProduct?.product_name && selectedFormulaId && (
+                            <span className="text-xs text-neutral-medium">
+                              Formula: {formulasMap.get(selectedFormulaId) || 'Unknown'}
+                            </span>
+                          )}
+                        </div>
                         <span className="ml-2 text-neutral-medium">▼</span>
                       </button>
 
@@ -1733,11 +2058,25 @@ const ProductionSchedule: React.FC = () => {
                               onClick={() => {
                                 setSelectedProduct({ id: p.id, product_name: p.product_name })
                                 setSelectedProductId(p.id)
-                                setSelectedFormulaId("")
+                                // Auto-select formula if product has one
+                                const productFormula = formulas.find(f => f.product_id === p.id)
+                                if (productFormula) {
+                                  setSelectedFormulaId(productFormula.id)
+                                } else {
+                                  setSelectedFormulaId("")
+                                }
                                 setIsProductOpen(false)
                               }}
                             >
-                              <span className="text-neutral-dark">{p.product_name}</span>
+                              <div className="flex flex-col items-start">
+                                <span className="text-neutral-dark font-medium">{p.product_name}</span>
+                                {(() => {
+                                  const productFormula = formulas.find(f => f.product_id === p.id)
+                                  return productFormula ? (
+                                    <span className="text-xs text-neutral-medium">Formula: {productFormula.formula_name}</span>
+                                  ) : null
+                                })()}
+                              </div>
                             </button>
                           ))}
                         </div>
@@ -1746,18 +2085,12 @@ const ProductionSchedule: React.FC = () => {
 
                     <div className="space-y-3">
                       <label className="text-sm font-semibold text-neutral-dark">Formula</label>
-                      <select
-                        value={selectedFormulaId}
-                        onChange={(e) => setSelectedFormulaId(e.target.value)}
-                        className="w-full px-4 py-3 border border-neutral-soft rounded-xl bg-white"
-                      >
-                        <option value="">Select Formula</option>
-                        {formulasForProduct.map((f) => (
-                          <option key={f.id} value={f.id}>
-                            {f.formula_name}
-                          </option>
-                        ))}
-                      </select>
+                      <div className="w-full px-4 py-3 border border-neutral-soft rounded-xl bg-neutral-light/30 text-neutral-dark">
+                        {selectedFormulaId ? 
+                          formulasMap.get(selectedFormulaId) || 'Formula not found' : 
+                          'Auto-selected when product is chosen'
+                        }
+                      </div>
                     </div>
                   </div>
 
@@ -1809,12 +2142,13 @@ const ProductionSchedule: React.FC = () => {
                   {/* Lot / PO */}
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     <div className="space-y-3">
-                      <label className="text-sm font-semibold text-neutral-dark">Lot #</label>
+                      <label className="text-sm font-semibold text-neutral-dark">Finished Goods Lot Number <span className="text-red-500">*</span></label>
                       <input
                         placeholder="e.g., LOT-2024-001"
                         value={lot}
                         onChange={(e) => setLot(e.target.value)}
-                        className="w-full px-4 py-3 border border-neutral-soft rounded-xl focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all duration-200 bg-white text-neutral-dark placeholder-neutral-medium"
+                        className="w-full px-4 py-3 border border-neutral-soft rounded-xl bg-white"
+                        required
                       />
                     </div>
                     <div className="space-y-3">
@@ -1837,10 +2171,11 @@ const ProductionSchedule: React.FC = () => {
                         onChange={(e) => setRoom(e.target.value)}
                         className="w-full px-4 py-3 border border-neutral-soft rounded-xl bg-white"
                       >
-                        {roomsList.map((r) => (
-                          <option key={r} value={r}>
-                            {r}
-                          </option>
+                        {(productionLines && productionLines.length > 0
+                          ? productionLines.map(pl => pl.line_name || '')
+                          : roomsList
+                        ).map((r) => (
+                          <option key={r} value={r}>{r}</option>
                         ))}
                       </select>
                     </div>
@@ -1920,186 +2255,210 @@ const ProductionSchedule: React.FC = () => {
 
         {/* ───────── Edit Modal */}
         {editItem && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-            <div className="absolute inset-0 bg-black/50" onClick={() => !savingEdit && setEditItem(null)}></div>
-            <div className="relative z-10 w-full max-w-2xl bg-white rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden">
-              <div className="flex items-center justify-between px-6 py-4 border-b">
-                <h3 className="text-lg font-semibold">Edit Production Batch</h3>
-                <button onClick={() => !savingEdit && setEditItem(null)} className="p-2">
-                  <X className="h-5 w-5" />
+          <div className="fixed inset-0 z-[70] flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-black/60" onClick={() => !savingEdit && setEditItem(null)}></div>
+            <div className="relative z-10 w-full max-w-5xl h-[80vh] bg-white rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden flex flex-col">
+              <div className="flex items-center justify-between px-8 py-6 bg-gradient-to-r from-neutral-light to-neutral-light/80 border-b border-neutral-soft/50">
+                <div>
+                  <h2 className="text-2xl font-semibold text-neutral-dark">Edit Production Batch</h2>
+                  <p className="text-sm text-neutral-medium mt-1">Modify batch details</p>
+                </div>
+                <button onClick={() => !savingEdit && setEditItem(null)} className="p-3 text-neutral-medium hover:text-neutral-dark hover:bg-white/60 rounded-xl transition-all duration-200 hover:shadow-sm">
+                  <X className="h-6 w-6" />
                 </button>
               </div>
 
-              <div className="p-6 space-y-4">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div>
-                    <label className="text-sm font-medium">Product (text)</label>
-                    <input
-                      value={editItem.product_sku}
-                      onChange={(e) => setEditItem({ ...editItem, product_sku: e.target.value })}
-                      className="w-full px-3 py-2 border rounded-lg"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-sm font-medium">Qty Goal</label>
-                    <input
-                      type="number"
-                      value={String(editItem.qty ?? "")}
-                      onChange={(e) => setEditItem({ ...editItem, qty: Number(e.target.value || 0), required_capacity: Number(e.target.value || 0) })}
-                      className="w-full px-3 py-2 border rounded-lg"
-                    />
+              <div className="flex-1 overflow-y-auto">
+                <div className="p-8 space-y-6">
+                  {/* Row: Scheduled Date */}
+                  <div className="grid grid-cols-1 gap-6">
+                    <div>
+                      <label className="flex items-center text-sm font-semibold text-neutral-dark">Scheduled Date</label>
+                      <input
+                        type="date"
+                        value={editItem.start_date || ""}
+                        onChange={(e) => setEditItem({ ...editItem, start_date: e.target.value, end_date: e.target.value })}
+                        className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light bg-white text-neutral-dark"
+                      />
+                    </div>
                   </div>
 
-                  <div>
-                    <label className="text-sm font-medium">Customer</label>
-                    <select
-                      value={editItem.customer_id || ''}
-                      onChange={(e) => setEditItem({ ...editItem, customer_id: e.target.value || null })}
-                      className="w-full px-3 py-2 border rounded-lg bg-white"
+                  {/* Row: Customer / Product / Formula */}
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <div>
+                      <label className="flex items-center text-sm font-semibold text-neutral-dark">Customer</label>
+                      <select
+                        value={String(editItem.customer_id ?? '')}
+                        onChange={(e) => setEditItem({ ...editItem, customer_id: e.target.value || null })}
+                        className="w-full px-4 py-3 border border-neutral-soft rounded-lg bg-white focus:ring-2 focus:ring-primary-light focus:border-primary-light"
+                      >
+                        <option value="">Select Customer</option>
+                        {customers.map(c => (
+                          <option key={c.id} value={c.id}>{c.company_name}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="flex items-center text-sm font-semibold text-neutral-dark">Product</label>
+                      <input
+                        value={editItem.product_sku}
+                        onChange={(e) => setEditItem({ ...editItem, product_sku: e.target.value })}
+                        placeholder="Select Product"
+                        className="w-full px-4 py-4 border border-neutral-soft rounded-xl focus:ring-2 focus:ring-primary-light focus:border-primary-light bg-white text-neutral-dark placeholder-neutral-medium shadow-sm hover:shadow-md"
+                      />
+                    </div>
+                    <div>
+                      <label className="flex items-center text-sm font-semibold text-neutral-dark">Formula</label>
+                      <select
+                        value={String(editItem.formula_id ?? '')}
+                        onChange={(e) => setEditItem({ ...editItem, formula_id: e.target.value || null })}
+                        className="w-full px-4 py-3 border border-neutral-soft rounded-lg bg-white focus:ring-2 focus:ring-primary-light focus:border-primary-light"
+                      >
+                        <option value="">Select Formula</option>
+                        {formulas.map(f => (
+                          <option key={f.id} value={f.id}>{f.formula_name}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* Card: Material Requirements (display only for parity) */}
+                  <div className="rounded-xl border border-neutral-soft bg-gradient-to-br from-neutral-light/40 to-neutral-light/20 p-4">
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="text-sm font-semibold text-neutral-dark">Material Requirements</div>
+                      <button disabled className="px-3 py-1.5 text-xs rounded-md bg-neutral-light text-neutral-medium border border-neutral-soft cursor-not-allowed">Auto-Generate Purchase Orders for Shortages</button>
+                    </div>
+                    <div className="text-xs text-neutral-medium">Select a formula and enter a goal quantity</div>
+                  </div>
+
+                  {/* Row: Lot # / PO # */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div>
+                      <label className="flex items-center text-sm font-semibold text-neutral-dark">Finished Goods Lot Number</label>
+                      <input
+                        value={editItem.lot_number || ""}
+                        placeholder="e.g., LOT-2024-001"
+                        onChange={(e) => setEditItem({ ...editItem, lot_number: e.target.value })}
+                        className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light bg-white text-neutral-dark"
+                      />
+                    </div>
+                    <div>
+                      <label className="flex items-center text-sm font-semibold text-neutral-dark">Purchase Order #</label>
+                      <input
+                        value={editItem.po_number || ""}
+                        placeholder="e.g., PO-2024-001"
+                        onChange={(e) => setEditItem({ ...editItem, po_number: e.target.value })}
+                        className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light bg-white text-neutral-dark"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Row: Production Room / Goal (Qty) / Completed */}
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <div>
+                      <label className="flex items-center text-sm font-semibold text-neutral-dark">Production Room</label>
+                      <select
+                        value={editItem.room || ''}
+                        onChange={(e) => setEditItem({ ...editItem, room: e.target.value, assigned_line: e.target.value })}
+                        className="w-full px-4 py-3 border border-neutral-soft rounded-lg bg-white focus:ring-2 focus:ring-primary-light focus:border-primary-light"
+                      >
+                        {(productionLines && productionLines.length > 0
+                          ? productionLines.map(pl => pl.line_name || '')
+                          : roomsList
+                        ).map((r) => (
+                          <option key={r} value={r}>{r}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="flex items-center text-sm font-semibold text-neutral-dark">Goal (Qty)</label>
+                      <input
+                        type="number"
+                        value={String(editItem.qty ?? "")}
+                        placeholder="Target quantity"
+                        onChange={(e) => setEditItem({ ...editItem, qty: Number(e.target.value || 0), required_capacity: Number(e.target.value || 0) })}
+                        className="w-full px-4 py-4 border border-neutral-soft rounded-xl focus:ring-2 focus:ring-primary-light focus:border-primary-light bg-white text-neutral-dark placeholder-neutral-medium shadow-sm hover:shadow-md"
+                      />
+                    </div>
+                    <div>
+                      <label className="flex items-center text-sm font-semibold text-neutral-dark">Completed</label>
+                      <input
+                        type="number"
+                        value={String(editItem.completed_qty ?? 0)}
+                        onChange={(e) => setEditItem({ ...editItem, completed_qty: Number(e.target.value || 0) })}
+                        className="w-full px-4 py-4 border border-neutral-soft rounded-xl focus:ring-2 focus:ring-primary-light focus:border-primary-light bg-white text-neutral-dark placeholder-neutral-medium shadow-sm hover:shadow-md"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Row: Samples Received / Samples Sent */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div>
+                      <label className="flex items-center text-sm font-semibold text-neutral-dark">Samples Received</label>
+                      <select
+                        value={editItem.samples_received ? "Yes" : "No"}
+                        onChange={(e) => setEditItem({ ...editItem, samples_received: e.target.value === "Yes" })}
+                        className="w-full px-4 py-3 border border-neutral-soft rounded-lg bg-white focus:ring-2 focus:ring-primary-light focus:border-primary-light"
+                      >
+                        {yesNo.map((o) => (
+                          <option key={o} value={o}>{o}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="flex items-center text-sm font-semibold text-neutral-dark">Samples Sent</label>
+                      <input
+                        type="date"
+                        value={editItem.samples_sent || ""}
+                        onChange={(e) => setEditItem({ ...editItem, samples_sent: e.target.value })}
+                        className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light bg-white text-neutral-dark"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Row: Status */}
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <div>
+                      <label className="flex items-center text-sm font-semibold text-neutral-dark">Status</label>
+                      <select
+                        value={editItem.status}
+                        onChange={(e) => setEditItem({ ...editItem, status: e.target.value })}
+                        className="w-full px-4 py-3 border border-neutral-soft rounded-lg bg-white focus:ring-2 focus:ring-primary-light focus:border-primary-light"
+                      >
+                        {statusList.map((s) => (
+                          <option key={s} value={s}>{s}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="flex justify-end gap-3">
+                    <button
+                      onClick={() => setEditItem(null)}
+                      className="px-4 py-2 rounded-lg border border-neutral-soft bg-white hover:bg-neutral-light text-neutral-dark disabled:opacity-60"
+                      disabled={savingEdit}
                     >
-                      <option value="">Select Customer</option>
-                      {customers.map(c => (
-                        <option key={c.id} value={c.id}>{c.company_name}</option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="text-sm font-medium">Formula</label>
-                    <select
-                      value={editItem.formula_id || ''}
-                      onChange={(e) => setEditItem({ ...editItem, formula_id: e.target.value || null })}
-                      className="w-full px-3 py-2 border rounded-lg bg-white"
+                      Cancel
+                    </button>
+                    <button
+                      onClick={saveEdit}
+                      className="px-5 py-2.5 rounded-lg bg-primary-dark hover:bg-primary-medium text-white text-sm font-medium shadow-sm disabled:opacity-60"
+                      disabled={savingEdit}
                     >
-                      <option value="">Select Formula</option>
-                      {formulas.map(f => (
-                        <option key={f.id} value={f.id}>{f.formula_name}</option>
-                      ))}
-                    </select>
+                      {savingEdit ? 'Saving...' : 'Save'}
+                    </button>
                   </div>
-
-                  <div>
-                    <label className="text-sm font-medium">Completed</label>
-                    <input
-                      type="number"
-                      value={String(editItem.completed_qty ?? 0)}
-                      onChange={(e) => setEditItem({ ...editItem, completed_qty: Number(e.target.value || 0) })}
-                      className="w-full px-3 py-2 border rounded-lg"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="text-sm font-medium">Room</label>
-                    <select
-                      value={editItem.room || ''}
-                      onChange={(e) => setEditItem({ ...editItem, room: e.target.value, assigned_line: e.target.value })}
-                      className="w-full px-3 py-2 border rounded-lg bg-white"
-                    >
-                      {roomsList.map(r => (
-                        <option key={r} value={r}>{r}</option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="text-sm font-medium">Start Date</label>
-                    <input
-                      type="date"
-                      value={editItem.start_date || ""}
-                      onChange={(e) => setEditItem({ ...editItem, start_date: e.target.value, end_date: e.target.value })}
-                      className="w-full px-3 py-2 border rounded-lg"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="text-sm font-medium">Status</label>
-                    <select
-                      value={editItem.status}
-                      onChange={(e) => setEditItem({ ...editItem, status: e.target.value })}
-                      className="w-full px-3 py-2 border rounded-lg"
-                    >
-                      {statusList.map((s) => (
-                        <option key={s} value={s}>
-                          {s}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="text-sm font-medium">Lot #</label>
-                    <input
-                      value={editItem.lot_number || ""}
-                      onChange={(e) => setEditItem({ ...editItem, lot_number: e.target.value })}
-                      className="w-full px-3 py-2 border rounded-lg"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="text-sm font-medium">PO #</label>
-                    <input
-                      value={editItem.po_number || ""}
-                      onChange={(e) => setEditItem({ ...editItem, po_number: e.target.value })}
-                      className="w-full px-3 py-2 border rounded-lg"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="text-sm font-medium">Samples Received</label>
-                    <select
-                      value={editItem.samples_received ? "Yes" : "No"}
-                      onChange={(e) =>
-                        setEditItem({ ...editItem, samples_received: e.target.value === "Yes" })
-                      }
-                      className="w-full px-3 py-2 border rounded-lg"
-                    >
-                      {yesNo.map((o) => (
-                        <option key={o} value={o}>
-                          {o}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="text-sm font-medium">Samples Sent</label>
-                    <input
-                      type="date"
-                      value={editItem.samples_sent || ""}
-                      onChange={(e) => setEditItem({ ...editItem, samples_sent: e.target.value })}
-                      className="w-full px-3 py-2 border rounded-lg"
-                    />
-                  </div>
-                </div>
-
-                <div className="flex justify-end gap-3">
-                  <button
-                    onClick={() => setEditItem(null)}
-                    className="px-4 py-2 rounded-lg border"
-                    disabled={savingEdit}
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    onClick={saveEdit}
-                    className="px-5 py-2.5 rounded-lg bg-primary-dark hover:bg-primary-medium text-white text-sm font-semibold disabled:opacity-60"
-                    disabled={savingEdit}
-                  >
-                    {savingEdit ? "Saving…" : "Save"}
-                  </button>
                 </div>
               </div>
             </div>
           </div>
         )}
-
-        {/* ───────── Delete Confirm */}
+{/* ───────── Delete Confirm */}
         {delId && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
             <div className="absolute inset-0 bg-black/50" onClick={() => setDelId(null)}></div>
             <div className="relative z-10 w-full max-w-md bg-white rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden">
               <div className="px-6 py-4 border-b">
-                <div className="text-lg font-semibold">Delete Batch</div>
               </div>
               <div className="p-6 text-sm">
                 Are you sure you want to delete this batch?
@@ -2250,6 +2609,63 @@ const ProductionSchedule: React.FC = () => {
           </div>
         )}
       </div>
+
+      {/* QA Hold Modal - Positioned at component root level */}
+      {qaHoldModalBatch && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/50" onClick={() => { setQaHoldModalBatch(null); setQaHoldComponents([]) }}></div>
+          <div className="relative z-10 w-full max-w-2xl bg-white rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden">
+            <div className="px-6 pt-5 pb-3 border-b border-neutral-soft/40 flex items-center gap-3">
+              <div className="flex h-8 w-8 items-center justify-center rounded-full bg-amber-100">
+                <AlertTriangle className="h-4 w-4 text-amber-700" />
+              </div>
+              <div>
+                <h2 className="font-semibold text-neutral-dark">QA Hold – Components Locked</h2>
+                <p className="text-sm text-neutral-medium">
+                  One or more required components are on QA Hold. This batch cannot start until QA releases the hold.
+                </p>
+              </div>
+            </div>
+            <div className="px-6 py-4 space-y-4">
+              <div>
+                <div className="text-xs font-medium uppercase tracking-wide text-neutral-400 mb-1">
+                  Held Components
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {qaHoldComponents.map((c) => (
+                    <div
+                      key={String(c.material_id)}
+                      className="inline-flex flex-col md:flex-row md:items-center gap-1 md:gap-2 rounded-full bg-rose-50 px-3 py-1 border border-rose-100"
+                    >
+                      <span className="text-xs font-medium text-rose-700">
+                        {c.material_name}
+                        {c.sku ? ` (${c.sku})` : ''}
+                      </span>
+                      {c.qa_hold_reason && (
+                        <span className="text-[10px] text-rose-500">
+                          {c.qa_hold_reason}
+                        </span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <p className="text-xs text-neutral-500">
+                Please coordinate with QA to review and release any holds on these components. Once QA clears them, refresh this page and try starting the batch again.
+              </p>
+            </div>
+            <div className="px-6 py-3 border-t border-neutral-soft/40 flex justify-end gap-2 bg-neutral-light/30">
+              <button
+                type="button"
+                onClick={() => { setQaHoldModalBatch(null); setQaHoldComponents([]) }}
+                className="inline-flex items-center rounded-xl px-4 py-2 text-sm font-semibold bg-neutral-900 text-white hover:bg-neutral-800 shadow"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

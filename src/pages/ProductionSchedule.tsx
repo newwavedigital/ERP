@@ -2007,7 +2007,7 @@ const ProductionSchedule: React.FC = () => {
                               onClick={(e) => { e.stopPropagation(); onStartBatch(row.id); }}
                             >
                               Start
-                            </button>
+                            </button>   
                             {shortagesCache[row.id] && (
                               <button
                                 className="px-2.5 py-1 rounded-md bg-red-50 text-red-700 hover:bg-red-100 text-[11px]"

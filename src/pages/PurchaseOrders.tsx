@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 import { Plus, X, User, Package, Calendar, FileText, Eye, Pencil, Trash2, MapPin, BadgeCheck, Search, Filter, CheckCircle2 } from 'lucide-react'
 import { supabase } from '../lib/supabase'
@@ -10,6 +11,13 @@ import CopackAllocationSummary from '../components/CopackAllocationSummary'
 
 // Temporary global flag for PO Approval Debug Mode
 const DEBUG_PO = true
+
+function formatDate(dateStr?: string | null): string {
+  if (!dateStr) return '-'
+  const d = new Date(dateStr)
+  if (Number.isNaN(d.getTime())) return '-'
+  return d.toLocaleDateString()
+}
 
 const PurchaseOrders: React.FC = () => {
   const [isAddOpen, setIsAddOpen] = useState(false)
@@ -76,6 +84,110 @@ const PurchaseOrders: React.FC = () => {
   const [viewPrs, setViewPrs] = useState<Array<{ id: string; item_name: string; required_qty: number; needed_by: string | null; status: string; created_at: string | null; notes?: string | null }>>([])
   const [viewPrLoading, setViewPrLoading] = useState(false)
   const [productionLines, setProductionLines] = useState<Array<{ id: string; name: string }>>([])
+  const [asnModalOpen, setAsnModalOpen] = useState(false)
+  const [asnData, setAsnData] = useState<any[]>([])
+  const [asnPoStatus, setAsnPoStatus] = useState<string | null>(null)
+  const [asnLoading, setAsnLoading] = useState(false)
+  const [openMenuId, setOpenMenuId] = useState<string | null>(null)
+  const [dropdownPosition, setDropdownPosition] = useState<{ top: number; left: number } | null>(null)
+
+  // (removed) canShipPartial helper — superseded by explicit status + allow_partial_ship rules
+
+  // Alias with requested name to keep handlers simple
+  async function shipPOPartial(poId: string) {
+    await shipPartialPO(poId)
+  }
+
+  // Small helper to refresh POs
+  async function refreshPOs() {
+    const { data: poRows } = await supabase
+      .from('purchase_orders')
+      .select('*')
+      .order('created_at', { ascending: false })
+    setOrders(poRows ?? [])
+  }
+
+  // Handlers requested
+  const handleReadyToShip = async (poId: string) => {
+    try {
+      // Keep existing backend flow: mark Ready-to-Ship, not full ship here
+      await markReadyToShip(poId)
+      setToast({ show: true, message: 'Marked Ready to Ship', kind: 'success' })
+      await refreshPOs()
+    } catch (e) {
+      setToast({ show: true, message: 'Failed to mark Ready to Ship', kind: 'error' })
+    }
+  }
+
+  const handleShipPartial = async (poId: string) => {
+    try {
+      await shipPOPartial(poId)
+      setToast({ show: true, message: 'Partial shipment created', kind: 'success' })
+      await refreshPOs()
+    } catch (e) {
+      setToast({ show: true, message: 'Failed to create partial shipment', kind: 'error' })
+    }
+  }
+
+  // Ship remaining handler (uses the same partial RPC to ship whatever is allocated next)
+  const handleShipRemaining = async (poId: string) => {
+    try {
+      await shipPOPartial(poId)
+      setToast({ show: true, message: 'Remaining allocation shipped', kind: 'success' })
+      await refreshPOs()
+    } catch (e) {
+      setToast({ show: true, message: 'Failed to ship remaining items', kind: 'error' })
+    }
+  }
+
+  // Ship Partial RPC function
+  async function shipPartialPO(poId: string) {
+    try {
+      const { error } = await supabase.rpc('fn_ship_po_partial', {
+        p_po_id: poId,
+      })
+      if (error) throw error
+
+      setToast({ show: true, message: 'Partial shipment created successfully!', kind: 'success' })
+
+      const { data: poRows } = await supabase
+        .from('purchase_orders')
+        .select('*')
+        .order('created_at', { ascending: false })
+      setOrders(poRows ?? [])
+    } catch (err) {
+      console.error(err)
+      setToast({ show: true, message: 'Failed to create partial shipment.', kind: 'error' })
+    }
+  }
+
+  // Close dropdown when clicking outside or pressing escape
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as Element;
+      // Don't close if clicking inside the dropdown or on the menu button
+      if (target.closest('.dropdown-menu') || target.closest('.menu-button')) {
+        return;
+      }
+      setOpenMenuId(null);
+    }
+    
+    const handleEscapeKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setOpenMenuId(null)
+      }
+    }
+
+    if (openMenuId) {
+      document.addEventListener('mousedown', handleClickOutside)
+      document.addEventListener('keydown', handleEscapeKey)
+    }
+
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside)
+      document.removeEventListener('keydown', handleEscapeKey)
+    }
+  }, [openMenuId])
   // Debug state per PO
   const [debugMap, setDebugMap] = useState<Record<string, any>>({})
   const [lastApprovedId, setLastApprovedId] = useState<string | null>(null)
@@ -1186,6 +1298,85 @@ const PurchaseOrders: React.FC = () => {
     return { status: String(status).toLowerCase(), message: (data as any)?.message || null, data }
   }
 
+  // Ship PO (full ship) RPC function - used for 'Ready to Ship' rows
+  async function shipPO(poId: string) {
+    try {
+      const { data, error } = await supabase.rpc('fn_ship_po', { p_po_id: poId })
+      if (error) throw error
+
+      // If backend returns ASN rows, open the ASN modal immediately
+      if ((data as any)?.asn && Array.isArray((data as any).asn) && (data as any).asn.length > 0) {
+        setAsnData((data as any).asn)
+        setAsnPoStatus('shipped')
+        setAsnModalOpen(true)
+      }
+
+      setToast({ show: true, message: 'PO shipped successfully!', kind: 'success' })
+      await refreshPOs()
+    } catch (err) {
+      console.error(err)
+      setToast({ show: true, message: 'Failed to ship PO.', kind: 'error' })
+    }
+  }
+
+  // View ASN for shipped orders
+  async function viewASN(poId: string) {
+    try {
+      // Open immediately, then load
+      setAsnLoading(true)
+      setAsnModalOpen(true)
+
+      const { data, error } = await supabase
+        .from('asn')
+        .select(`
+          id,
+          po_id,
+          po_line_id,
+          asn_number,
+          tracking_number,
+          carrier,
+          shipped_qty,
+          created_at,
+          customer_id,
+          product_name
+        `)
+        .eq('po_id', poId)
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+
+      setAsnData(data || []);
+    } catch (err) {
+      console.error(err);
+      setToast({ show: true, message: "Failed to load ASN data.", kind: 'error' });
+    } finally {
+      setAsnLoading(false)
+    }
+  }
+
+  // Mark PO as Ready to Ship
+  async function markReadyToShip(poId: string) {
+    try {
+      const { error } = await supabase.rpc("fn_mark_ready_to_ship", {
+        p_po_id: poId,
+      });
+
+      if (error) throw error;
+
+      setToast({ show: true, message: "PO marked as Ready to Ship!", kind: 'success' });
+
+      const { data: poRows } = await supabase
+        .from('purchase_orders')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      setOrders(poRows ?? []);
+    } catch (err) {
+      console.error(err);
+      setToast({ show: true, message: "Failed to mark Ready to Ship.", kind: 'error' });
+    }
+  }
+
   // Approve + Allocate for a single PO (final action)
   const approveAndAllocate = async (po: any) => {
     const poId = String(po.id)
@@ -1455,13 +1646,312 @@ const PurchaseOrders: React.FC = () => {
                     className="px-5 py-2.5 rounded-xl border border-neutral-soft text-neutral-dark hover:bg-neutral-light/60 transition-all"
                     onClick={() => { setIsBundleBlocked(false); setBundleBlockInfo(null) }}
                   >
-                    OK – I’ll resolve the shortages
+                    OK – I'll resolve the shortages
                   </button>
                 </div>
               </div>
             </div>
           </div>
         )}
+
+        {/* ASN Modal - System Design Standards */}
+        {asnModalOpen && (
+          <div className="fixed inset-0 z-[80] flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-black/50" onClick={() => { setAsnModalOpen(false); setAsnPoStatus(null) }} />
+            <div className="relative z-10 w-full max-w-5xl bg-white rounded-2xl shadow-2xl border border-neutral-soft/30 overflow-hidden">
+              {/* Header */}
+              <div className="bg-gradient-to-r from-primary-dark to-primary-medium px-6 py-5 text-white">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center space-x-3">
+                    <div className="w-10 h-10 bg-white/20 rounded-full flex items-center justify-center">
+                      <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+                        <path d="M3 4a1 1 0 011-1h12a1 1 0 011 1v2a1 1 0 01-1 1H4a1 1 0 01-1-1V4zM3 10a1 1 0 011-1h6a1 1 0 011 1v6a1 1 0 01-1 1H4a1 1 0 01-1-1v-6zM14 9a1 1 0 00-1 1v6a1 1 0 001 1h2a1 1 0 001-1v-6a1 1 0 00-1-1h-2z"/>
+                      </svg>
+                    </div>
+                    <div>
+                      <h3 className="text-xl font-bold">Shipment Notification</h3>
+                      <p className="text-primary-light/80 text-sm">Advanced Shipping Notice (ASN)</p>
+                    </div>
+                  </div>
+                  {asnLoading && (
+                    <span className="mr-3 px-2.5 py-1 rounded-full text-xs bg-white/10 text-white/90 border border-white/20">Loading…</span>
+                  )}
+                  <button 
+                    className="p-2 hover:bg-white/20 rounded-lg transition-colors" 
+                    onClick={() => { setAsnModalOpen(false); setAsnPoStatus(null) }}
+                  >
+                    <X className="h-5 w-5" />
+                  </button>
+                </div>
+              </div>
+
+              <div className="p-6 bg-neutral-light/30">
+                {asnData.length === 0 ? (
+                  <div className="text-center py-12">
+                    <div className="w-16 h-16 bg-neutral-soft rounded-full flex items-center justify-center mx-auto mb-4">
+                      <svg className="w-8 h-8 text-neutral-medium" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4" />
+                      </svg>
+                    </div>
+                    <h4 className="text-lg font-semibold text-neutral-dark mb-2">No Shipments Found</h4>
+                    <p className="text-neutral-medium">No ASN data available for this purchase order.</p>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    {asnData.map((asn, index) => (
+                      <div key={asn.id || index} className="bg-white border border-neutral-soft rounded-xl p-6 hover:shadow-lg">
+                        {/* Shipment Header */}
+                        <div className="flex items-start justify-between mb-4">
+                          <div className="flex items-center space-x-3">
+                            <div className={`w-12 h-12 rounded-full flex items-center justify-center ${asnPoStatus === 'partially_shipped' ? 'bg-accent-warning/10' : 'bg-accent-success/10'}`}>
+                              <svg className={`w-6 h-6 ${asnPoStatus === 'partially_shipped' ? 'text-accent-warning' : 'text-accent-success'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4" />
+                              </svg>
+                            </div>
+                            <div>
+                              <h4 className="text-lg font-bold text-neutral-dark">{asn.asn_number || 'ASN-UNKNOWN'}</h4>
+                              <p className={`text-sm ${asnPoStatus === 'partially_shipped' ? 'text-accent-warning' : 'text-neutral-medium'}`}>
+                                {asnPoStatus === 'partially_shipped' ? 'Partially Shipped on ' : 'Shipped on '}{asn.created_at ? new Date(asn.created_at).toLocaleDateString('en-US', {
+                                  weekday: 'long',
+                                  year: 'numeric',
+                                  month: 'long',
+                                  day: 'numeric'
+                                }) : 'Unknown Date'}
+                              </p>
+                            </div>
+                          </div>
+                          <div className="text-right">
+                            {asnPoStatus === 'partially_shipped' ? (
+                              <div className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-accent-warning/10 text-accent-warning border border-accent-warning/20">
+                                ⧗ Partially Shipped
+                              </div>
+                            ) : (
+                              <div className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-accent-success/10 text-accent-success border border-accent-success/20">
+                                ✓ Shipped
+                              </div>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Shipment Details Grid */}
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                          {/* Product Info */}
+                          <div className="space-y-3">
+                            <h5 className="font-semibold text-neutral-dark text-sm uppercase tracking-wide">Product Details</h5>
+                            <div className="bg-neutral-light rounded-xl p-4 border border-neutral-soft/40">
+                              <div className="flex items-center space-x-3">
+                                <div className="w-8 h-8 bg-primary-light/10 rounded-lg flex items-center justify-center">
+                                  <svg className="w-4 h-4 text-primary-medium" fill="currentColor" viewBox="0 0 20 20">
+                                    <path fillRule="evenodd" d="M10 2L3 7v11a1 1 0 001 1h12a1 1 0 001-1V7l-7-5zM10 12a2 2 0 100-4 2 2 0 000 4z" clipRule="evenodd" />
+                                  </svg>
+                                </div>
+                                <div>
+                                  <p className="font-medium text-neutral-dark">{asn.product_name || 'Unknown Product'}</p>
+                                  <p className="text-sm text-neutral-medium">Qty: {Number(asn.shipped_qty || 0).toLocaleString()} units</p>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Carrier Info */}
+                          <div className="space-y-3">
+                            <h5 className="font-semibold text-neutral-dark text-sm uppercase tracking-wide">Carrier Information</h5>
+                            <div className="bg-neutral-light rounded-xl p-4 border border-neutral-soft/40">
+                              <div className="flex items-center space-x-3">
+                                <div className="w-8 h-8 bg-accent-warning/10 rounded-lg flex items-center justify-center">
+                                  <svg className="w-4 h-4 text-accent-warning" fill="currentColor" viewBox="0 0 20 20">
+                                    <path d="M8 16.5a1.5 1.5 0 11-3 0 1.5 1.5 0 013 0zM15 16.5a1.5 1.5 0 11-3 0 1.5 1.5 0 013 0z"/>
+                                    <path d="M3 4a1 1 0 00-1 1v10a1 1 0 001 1h1.05a2.5 2.5 0 014.9 0H10a1 1 0 001-1V5a1 1 0 00-1-1H3zM14 7a1 1 0 00-1 1v6.05A2.5 2.5 0 0115.95 16H17a1 1 0 001-1v-5a1 1 0 00-.293-.707L16 7.586A1 1 0 0015.414 7H14z"/>
+                                  </svg>
+                                </div>
+                                <div>
+                                  <p className="font-medium text-neutral-dark">{asn.carrier || 'UPS'}</p>
+                                  <p className="text-sm text-neutral-medium">Standard Delivery</p>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Tracking Info */}
+                          <div className="space-y-3">
+                            <h5 className="font-semibold text-neutral-dark text-sm uppercase tracking-wide">Tracking</h5>
+                            <div className="bg-neutral-light rounded-xl p-4 border border-neutral-soft/40">
+                              {asn.tracking_number ? (
+                                <div className="flex items-center space-x-3">
+                                  <div className="w-8 h-8 bg-primary-medium/10 rounded-lg flex items-center justify-center">
+                                    <svg className="w-4 h-4 text-primary-medium" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                    </svg>
+                                  </div>
+                                  <div>
+                                    <p className="font-mono text-sm font-medium text-primary-medium">{asn.tracking_number}</p>
+                                    <button className="text-xs text-primary-light hover:text-primary-medium underline transition-colors">
+                                      Track Package →
+                                    </button>
+                                  </div>
+                                </div>
+                              ) : (
+                                <div className="flex items-center space-x-3">
+                                  <div className="w-8 h-8 bg-neutral-soft rounded-lg flex items-center justify-center">
+                                    <svg className="w-4 h-4 text-neutral-medium" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                    </svg>
+                                  </div>
+                                  <div>
+                                    <p className="text-sm text-neutral-medium">Tracking Pending</p>
+                                    <p className="text-xs text-neutral-medium/70">Will be available soon</p>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Timeline */}
+                        <div className="mt-6 pt-4 border-t border-neutral-soft/40">
+                          <div className="flex items-center space-x-2 text-sm text-neutral-medium">
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                            </svg>
+                            <span>Created: {asn.created_at ? new Date(asn.created_at).toLocaleString('en-US', {
+                              month: 'short',
+                              day: 'numeric',
+                              year: 'numeric',
+                              hour: '2-digit',
+                              minute: '2-digit'
+                            }) : 'Unknown'}</span>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Footer */}
+                <div className="mt-8 pt-6 border-t border-neutral-soft/40 flex justify-between items-center">
+                  <div className="text-sm text-neutral-medium">
+                    {asnData.length > 0 && `${asnData.length} shipment${asnData.length !== 1 ? 's' : ''} found`}
+                  </div>
+                  <button 
+                    className="px-6 py-2.5 bg-primary-medium hover:bg-primary-dark text-white rounded-xl font-medium transition-all duration-300 hover:shadow-lg"
+                    onClick={() => setAsnModalOpen(false)}
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Portal-based Dropdown Menu */}
+        {openMenuId && dropdownPosition && createPortal(
+          <div 
+            className="dropdown-menu fixed w-48 bg-white rounded-xl shadow-2xl border border-neutral-soft/30 z-50"
+            style={{
+              top: `${dropdownPosition.top}px`,
+              left: `${dropdownPosition.left}px`
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="py-2">
+              {(() => {
+                const currentOrder = orders.find(o => o.id === openMenuId);
+                if (!currentOrder) return null;
+                
+                return (
+                  <>
+                    {/* View Option */}
+                    <button 
+                      className="w-full px-4 py-3 text-left text-sm text-neutral-dark hover:bg-neutral-light/60 transition-colors flex items-center space-x-3"
+                      onClick={() => {
+                        setIsViewOpen(currentOrder);
+                        setOpenMenuId(null);
+                      }}
+                    >
+                      <Eye className="h-4 w-4 text-primary-medium" />
+                      <span>View Details</span>
+                    </button>
+                    
+                    {/* Edit Option */}
+                    <button 
+                      className="w-full px-4 py-3 text-left text-sm text-neutral-dark hover:bg-neutral-light/60 transition-colors flex items-center space-x-3"
+                      onClick={async () => {
+                        setIsEditOpen(currentOrder);
+                        setIsAddOpen(true);
+                        setOpenMenuId(null);
+                        // Prefill base form values
+                        const fallbackName = currentOrder.customer_name || (customers.find(c=> String(c.id)===String(currentOrder.customer_id))?.name || '');
+                        setForm({
+                          date: currentOrder.date || '',
+                          customer: fallbackName,
+                          customer_id: currentOrder.customer_id ? String(currentOrder.customer_id) : '',
+                          product: currentOrder.product_name || '',
+                          packagingType: currentOrder.packaging_type || '',
+                          requestedShipDate: currentOrder.requested_ship_date || '',
+                          ship_date: currentOrder.requested_ship_date || '',
+                          quantity: String(currentOrder.quantity),
+                          caseQty: currentOrder.case_qty ? String(currentOrder.case_qty) : '',
+                          price: currentOrder.price ? String(currentOrder.price) : '',
+                          notes: currentOrder.notes || '',
+                          invoice: currentOrder.invoice || '',
+                          paymentTerms: currentOrder.payment_terms || '',
+                          status: currentOrder.status || 'Open',
+                          comments: currentOrder.comments || '',
+                          location: currentOrder.location || '',
+                          is_copack: !!currentOrder.is_copack,
+                          client_materials_required: !!currentOrder.client_materials_required,
+                          operation_supplies_materials: !!currentOrder.operation_supplies_materials,
+                          lines: []
+                        });
+                        // Prefill packaging types (array)
+                        if (Array.isArray(currentOrder.packaging_types)) {
+                          setSelectedPackagingTypes(currentOrder.packaging_types as string[]);
+                        } else if (currentOrder.packaging_type) {
+                          setSelectedPackagingTypes([String(currentOrder.packaging_type)]);
+                        } else {
+                          setSelectedPackagingTypes([]);
+                        }
+                        // Load additional items from purchase_order_items
+                        try {
+                          const { data: items } = await supabase
+                            .from('purchase_order_lines')
+                            .select('product_name, quantity')
+                            .eq('purchase_order_id', currentOrder.id);
+                          const extras = (items ?? [])
+                            .filter((it: any) => !(String(it.product_name || '') === String(currentOrder.product_name || '') && Number(it.quantity || 0) === Number(currentOrder.quantity || 0)))
+                            .map((it: any) => ({ id: (crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`), product: String(it.product_name || ''), qty: Number(it.quantity || 0) }));
+                          setExtraLines(extras);
+                        } catch {}
+                      }}
+                    >
+                      <Pencil className="h-4 w-4 text-neutral-medium" />
+                      <span>Edit Order</span>
+                    </button>
+                    
+                    {/* Divider */}
+                    <div className="border-t border-neutral-soft/40 my-1"></div>
+                    
+                    {/* Delete Option */}
+                    <button 
+                      className="w-full px-4 py-3 text-left text-sm text-accent-danger hover:bg-accent-danger/5 transition-colors flex items-center space-x-3"
+                      onClick={() => {
+                        setOpenMenuId(null);
+                        setDeleteTarget(currentOrder);
+                        setIsDeleteOpen(true);
+                      }}
+                    >
+                      <Trash2 className="h-4 w-4 text-accent-danger" />
+                      <span>Delete Order</span>
+                    </button>
+                  </>
+                );
+              })()}
+            </div>
+          </div>,
+          document.body
+        )}
+
         {/* No Finished Goods Modal */}
         {showNoFg && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -1785,7 +2275,9 @@ const PurchaseOrders: React.FC = () => {
                         ? 'bg-accent-danger/10 text-accent-danger border-accent-danger/30'
                         : (st === 'approved' || st === 'allocated')
                           ? 'bg-accent-success/10 text-accent-success border-accent-success/30'
-                          : 'bg-neutral-light/40 text-neutral-dark border-neutral-soft/60'
+                          : (st === 'partially_shipped')
+                            ? 'bg-accent-warning/10 text-accent-warning border-accent-warning/30'
+                            : 'bg-neutral-light/40 text-neutral-dark border-neutral-soft/60'
                       return (
                         <tr key={o.id} className="group hover:bg-gradient-to-r hover:from-primary-light/5 hover:to-primary-medium/5 transition-all duration-300 hover:shadow-sm">
                           <td className="px-8 py-6">{o.date || '-'}</td>
@@ -1804,76 +2296,114 @@ const PurchaseOrders: React.FC = () => {
                           <td className="px-8 py-6">{o.price ? `$${Number(o.price).toFixed(2)}` : '-'}</td>
                           <td className="px-8 py-6">{o.requested_ship_date || '-'}</td>
                           <td className="px-8 py-6">
-                            <span className={`inline-flex items-center px-3 py-1.5 rounded-xl text-xs font-semibold border ${statusClass}`}>
-                              {o.status}
-                            </span>
+                            <div className="flex flex-col items-start gap-0.5">
+                              <span className={`inline-flex items-center px-3 py-1.5 rounded-xl text-xs font-semibold border ${statusClass}`}>
+                                {o.status}
+                              </span>
+                              {String(o.status) === 'partially_shipped' && Number(o.backorder_qty ?? 0) > 0 && !!o.backorder_eta && (
+                                <span className="text-[11px] text-neutral-medium">Backorder ETA: {formatDate(o.backorder_eta as any)}</span>
+                              )}
+                            </div>
                           </td>
                           <td className="px-8 py-6">{o.is_rush ? 'Yes' : 'No'}</td>
                           <td className="px-8 py-6">
-                            <div className="flex items-center justify-center space-x-2">
-                              <button
-                                className={`group/btn px-3 py-3 rounded-xl transition-all duration-300 border ${fefoWarning ? 'text-neutral-medium bg-neutral-light/40 cursor-not-allowed border-neutral-soft' : 'text-primary-medium hover:text-white hover:bg-primary-medium hover:shadow-lg hover:scale-105 border-primary-light/30 hover:border-primary-medium'}`}
-                                onClick={() => handleApproveClick(o)}
-                                title="Approve & Allocate"
-                                disabled={!!fefoWarning}
-                              >
-                                Approve
-                              </button>
-                              <button className="group/btn p-3 text-primary-medium hover:text-white hover:bg-primary-medium rounded-xl transition-all duration-300 hover:shadow-lg hover:scale-105 border border-primary-light/30 hover:border-primary-medium" onClick={() => setIsViewOpen(o)} title="View">
-                                <Eye className="h-5 w-5" />
-                              </button>
-                              <button className="group/btn p-3 text-neutral-medium hover:text-white hover:bg-neutral-medium rounded-xl transition-all duration-300 hover:shadow-lg hover:scale-105 border border-neutral-soft hover:border-neutral-medium" onClick={async () => {
-                                setIsEditOpen(o)
-                                setIsAddOpen(true)
-                                // Prefill base form values
-                                const fallbackName = o.customer_name || (customers.find(c=> String(c.id)===String(o.customer_id))?.name || '')
-                                setForm({
-                                  date: o.date || '',
-                                  customer: fallbackName,
-                                  customer_id: o.customer_id ? String(o.customer_id) : '',
-                                  product: o.product_name || '',
-                                  packagingType: o.packaging_type || '',
-                                  requestedShipDate: o.requested_ship_date || '',
-                                  ship_date: o.requested_ship_date || '',
-                                  quantity: String(o.quantity),
-                                  caseQty: o.case_qty ? String(o.case_qty) : '',
-                                  price: o.price ? String(o.price) : '',
-                                  notes: o.notes || '',
-                                  invoice: o.invoice || '',
-                                  paymentTerms: o.payment_terms || '',
-                                  status: o.status || 'Open',
-                                  comments: o.comments || '',
-                                  location: o.location || '',
-                                  is_copack: !!o.is_copack,
-                                  client_materials_required: !!o.client_materials_required,
-                                  operation_supplies_materials: !!o.operation_supplies_materials,
-                                  lines: []
-                                })
-                                // Prefill packaging types (array)
-                                if (Array.isArray(o.packaging_types)) {
-                                  setSelectedPackagingTypes(o.packaging_types as string[])
-                                } else if (o.packaging_type) {
-                                  setSelectedPackagingTypes([String(o.packaging_type)])
-                                } else {
-                                  setSelectedPackagingTypes([])
-                                }
-                                // Load additional items from purchase_order_items
-                                try {
-                                  const { data: items } = await supabase
-                                    .from('purchase_order_lines')
-                                    .select('product_name, quantity')
-                                    .eq('purchase_order_id', o.id)
-                                  const extras = (items ?? [])
-                                    .filter((it: any) => !(String(it.product_name || '') === String(o.product_name || '') && Number(it.quantity || 0) === Number(o.quantity || 0)))
-                                    .map((it: any) => ({ id: (crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`), product: String(it.product_name || ''), qty: Number(it.quantity || 0) }))
-                                  setExtraLines(extras)
-                                } catch {}
-                              }} title="Edit">
-                                <Pencil className="h-5 w-5" />
-                              </button>
-                              <button className="group/btn p-3 text-accent-danger hover:text-white hover:bg-accent-danger rounded-xl transition-all duration-300 hover:shadow-lg hover:scale-105 border border-accent-danger/30 hover:border-accent-danger" onClick={() => { setDeleteTarget(o); setIsDeleteOpen(true) }} title="Delete">
-                                <Trash2 className="h-5 w-5" />
-                              </button>
+                            <div className="grid grid-cols-[1fr_auto] items-center w-full">
+                              {/* Centered Action Buttons */}
+                              <div className="justify-self-center">
+                                {/* Status-based button flow */}
+                                <div className="flex items-center gap-2">
+                                  {/* View ASN buttons only */}
+                                  {o.status === "Shipped" && (
+                                    <button
+                                      className="px-3 py-1.5 rounded-md bg-accent-success hover:bg-accent-success/90 text-white text-xs font-semibold"
+                                      onClick={() => { setOpenMenuId(null); setAsnPoStatus('shipped'); viewASN(o.id) }}
+                                    >
+                                      View ASN
+                                    </button>
+                                  )}
+                                  {String(o.status) === "partially_shipped" && (
+                                    <button
+                                      className="px-3 py-1.5 rounded-md bg-accent-warning hover:bg-accent-warning/90 text-white text-xs font-semibold"
+                                      onClick={() => { setOpenMenuId(null); setAsnPoStatus('partially_shipped'); viewASN(o.id) }}
+                                    >
+                                      View ASN
+                                    </button>
+                                  )}
+
+                                  {/* Keep Approve for new/Open */}
+                                  {(o.status === "Open" || !o.status) && (
+                                    <button
+                                      className={`group/btn px-3 py-3 rounded-xl transition-all duration-300 border ${fefoWarning ? 'text-neutral-medium bg-neutral-light/40 cursor-not-allowed border-neutral-soft' : 'text-primary-medium hover:text-white hover:bg-primary-medium hover:shadow-lg hover:scale-105 border-primary-light/30 hover:border-primary-medium'}`}
+                                      onClick={() => { setOpenMenuId(null); handleApproveClick(o) }}
+                                      title="Approve & Allocate"
+                                      disabled={!!fefoWarning}
+                                    >
+                                      Approve
+                                    </button>
+                                  )}
+                                </div>
+                                
+                              </div>
+
+                              {/* Right Edge: Shipping buttons (per rules) + Menu Button */}
+                              <div className="relative justify-self-end flex items-center gap-2">
+                                {/* SHIPPING BUTTON LOGIC (exact rules) */}
+                                {String(o.status) === 'allocated' && (
+                                  <button
+                                    className="bg-[#0d9488] text-white px-4 py-1 rounded-md shadow-sm text-sm"
+                                    onClick={() => handleReadyToShip(String(o.id))}
+                                  >
+                                    Ready to Ship
+                                  </button>
+                                )}
+                                {String(o.status) === 'Ready to Ship' && (
+                                  <button
+                                    className="bg-[#0d9488] text-white px-4 py-1 rounded-md shadow-sm text-sm"
+                                    onClick={() => shipPO(String(o.id))}
+                                  >
+                                    Ship Order
+                                  </button>
+                                )}
+
+                                {String(o.status) === 'partial' && (o as any).allow_partial_ship === true && (
+                                  <button
+                                    className="bg-[#0d9488] text-white px-4 py-1 rounded-md shadow-sm text-sm"
+                                    onClick={() => handleShipPartial(String(o.id))}
+                                  >
+                                    Ready to Partial Ship
+                                  </button>
+                                )}
+
+                                {String(o.status) === 'partially_shipped' && Number(o.backorder_qty ?? 0) > 0 && (
+                                  <button
+                                    className="bg-[#0d9488] text-white px-4 py-1 rounded-md shadow-sm text-sm"
+                                    onClick={() => handleShipRemaining(String(o.id))}
+                                  >
+                                    Ship Remaining
+                                  </button>
+                                )}
+
+                                {String(o.status) === 'partially_shipped' && Number(o.backorder_qty ?? 0) === 0 && (
+                                  <span className="text-xs text-accent-success/80">Completed</span>
+                                )}
+                                <button 
+                                  className="menu-button p-2 text-neutral-medium hover:text-primary-medium rounded-md transition-colors"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    const rect = e.currentTarget.getBoundingClientRect();
+                                    setDropdownPosition({
+                                      top: rect.top + window.scrollY,
+                                      left: rect.left + window.scrollX - 200 // Position to the left of menu button
+                                    });
+                                    setOpenMenuId(openMenuId === o.id ? null : o.id);
+                                  }}
+                                  title="Actions"
+                                >
+                                  <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z" />
+                                  </svg>
+                                </button>
+                              </div>
                             </div>
                           </td>
                         </tr>
@@ -2270,8 +2800,8 @@ const PurchaseOrders: React.FC = () => {
                                 ? 'bg-accent-danger/10 text-accent-danger border-accent-danger/30'
                                 : (st === 'approved' || st === 'allocated')
                                   ? 'bg-accent-success/10 text-accent-success border-accent-success/30'
-                                  : (st === 'backordered')
-                                    ? 'bg-amber-50 text-amber-700 border-amber-200'
+                                  : (st === 'partially_shipped')
+                                    ? 'bg-accent-warning/10 text-accent-warning border-accent-warning/30'
                                     : 'bg-neutral-light/40 text-neutral-dark border-neutral-soft/60'
                               return (
                                 <div className="space-y-1">

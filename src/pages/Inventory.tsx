@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react'
-import { Plus, Package, Box, Factory, LineChart, Inbox, Landmark, X, Tag, User, Scale, DollarSign, ClipboardList, Eye, Edit, Trash2, CheckCircle2, Clock, Upload, List, Grid3X3, FileText, RefreshCw } from 'lucide-react'
+import { Plus, Package, Box, Factory, LineChart, Inbox, Landmark, X, Tag, User, Scale, DollarSign, ClipboardList, Eye, Edit, Trash2, CheckCircle2, Clock, Upload, List, Grid3X3, FileText, RefreshCw, Bell } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 
 // Map filename extension to themed badge styles
@@ -52,6 +52,13 @@ interface RawMaterial {
   reorder_to_level?: number | null
   moq?: number | null
   eoq?: number | null
+  replenishmentStatus?: {
+    hasPending: boolean
+    qty: number
+    reqId: string | null
+    reqStatus: string | null
+    reqCreatedAt?: string | null
+  } | null
 }
 
 const Inventory: React.FC = () => {
@@ -103,14 +110,16 @@ const Inventory: React.FC = () => {
   const [fgPoMap, setFgPoMap] = useState<Record<string, { po_id: string; customer_name: string }>>({})
   // Reservation history modal state
   const [isHistoryOpen, setIsHistoryOpen] = useState<boolean>(false)
-  const [historyData, setHistoryData] = useState<Array<{ po_id: string; line_id: string; qty: number; created_at: string }>>([])
+  const [historyData, setHistoryData] = useState<Array<{ po_id: string; line_id: string; qty: number; created_at: string; line_name?: string | null }>>([])
   const [historyLoading, setHistoryLoading] = useState<boolean>(false)
   const [historyError, setHistoryError] = useState<string | null>(null)
   const [selectedMaterial, setSelectedMaterial] = useState<string | null>(null)
   const [openReplFor, setOpenReplFor] = useState<string | null>(null)
   const [replModalFor, setReplModalFor] = useState<RawMaterial | null>(null)
   const [replLoading, setReplLoading] = useState<boolean>(false)
-  const [replResult, setReplResult] = useState<any | null>(null)
+  const [prModalFor, setPrModalFor] = useState<RawMaterial | null>(null)
+  const [isGenerating, setIsGenerating] = useState<boolean>(false)
+  const [replRpcData, setReplRpcData] = useState<any | null>(null)
   const [rawForm, setRawForm] = useState({
     name: '',
     category: '',
@@ -171,7 +180,21 @@ const Inventory: React.FC = () => {
           setHistoryError('Cannot load reservation history')
           setHistoryData([])
         } else {
-          setHistoryData((data as any[]) || [])
+          const raw = (data as any[]) || []
+          // fetch production line names for line_id values
+          const ids = Array.from(new Set(raw.map((r: any) => r.line_id).filter((v: any) => v != null)))
+          let lineMap: Record<string, string> = {}
+          if (ids.length) {
+            try {
+              const { data: lines } = await supabase
+                .from('production_lines')
+                .select('id, line_name')
+                .in('id', ids)
+              lineMap = Object.fromEntries((lines || []).map((l: any) => [String(l.id), String(l.line_name || '')]))
+            } catch {}
+          }
+          const withNames = raw.map((r: any) => ({ ...r, line_name: lineMap[String(r.line_id)] || null }))
+          setHistoryData(withNames)
         }
       } finally {
         setHistoryLoading(false)
@@ -415,35 +438,107 @@ const Inventory: React.FC = () => {
     }
   }, [toast.show])
 
-  // Replenishment: open modal and run RPC check for raw materials
+  // Auto-Generate PR per spec
   const handleReplenishmentClick = async (material: RawMaterial) => {
     if (!supabase) return
-    setReplModalFor(material)
-    setReplLoading(true)
-    setReplResult(null)
+    if (material?.replenishmentStatus?.hasPending) {
+      setToast({ show: true, message: 'Requisition already exists' })
+      setOpenReplFor(material.id)
+      return
+    }
+    setIsGenerating(true)
     try {
-      const { data, error } = await supabase.rpc('fn_replenishment_check_raw', { p_material_id: material.id })
-      setReplLoading(false)
+      const { data, error } = await supabase.rpc('fn_replenishment_check', { p_material_id: material.id })
       if (error) {
-        console.error('fn_replenishment_check_raw error', error)
-        setToast({ show: true, message: 'Replenishment check failed' })
+        setToast({ show: true, message: error.message || 'Failed to generate PR' })
         return
       }
-      setReplResult(data ?? null)
-      const status = (data && (data.status || '')) as string
-      if (status.toLowerCase() === 'created') {
-        setToast({ show: true, message: 'Purchase Requisition Created' })
-      } else if (status.toLowerCase() === 'skipped') {
-        setToast({ show: true, message: 'Stock level above reorder point' })
-      } else {
-        setToast({ show: true, message: 'Replenishment completed' })
+      if (!data) {
+        setToast({ show: true, message: 'No response from replenishment function' })
+        return
       }
-      // expand inline panel for context
-      setOpenReplFor(material.id)
-    } catch (err) {
-      console.error('fn_replenishment_check_raw exception', err)
-      setReplLoading(false)
-      setToast({ show: true, message: 'Replenishment check failed' })
+      const status = String(data.status || '')
+      if (status === 'no_action') {
+        setToast({ show: true, message: String(data.message || 'Stock above reorder point') })
+        return
+      }
+      if (status === 'created') {
+        setReplModalFor(material)
+        setReplRpcData(data)
+        setToast({ show: true, message: 'Purchase Requisition processed' })
+        // refresh materials + statuses
+        try { await refreshMaterials() } catch {}
+      } else {
+        setToast({ show: true, message: String(data.message || 'No PR created') })
+      }
+    } finally {
+      setIsGenerating(false)
+    }
+  }
+
+  // Helper to refresh inventory + status
+  const refreshMaterials = async () => {
+    const { data, error } = await supabase
+      .from('inventory_materials')
+      .select('id, product_name, category, supplier_id, supplier_name, unit_of_measure, unit_weight, cost_per_unit, total_available, reserved_qty, reorder_point, reorder_to_level, moq, eoq, created_at, material_file_url')
+      .order('product_name', { ascending: true })
+    if (error) return
+    const rows = (data ?? []) as Array<any>
+    const mapped: RawMaterial[] = rows.map((r) => ({
+      id: String(r.id),
+      product_name: String(r.product_name ?? ''),
+      category: String(r.category ?? ''),
+      supplier_id: r.supplier_id ?? null,
+      supplier_name: r.supplier_name ?? null,
+      unit_of_measure: r.unit_of_measure ?? null,
+      unit_weight: r.unit_weight ?? null,
+      cost_per_unit: r.cost_per_unit ?? null,
+      total_available: Number(r.total_available ?? 0),
+      reserved_qty: Number(r.reserved_qty ?? 0),
+      reorder_point: Number(r.reorder_point ?? 0),
+      reorder_to_level: Number(r.reorder_to_level ?? 0),
+      moq: Number(r.moq ?? 0),
+      eoq: Number(r.eoq ?? 0),
+      created_at: r.created_at ?? null,
+      material_file_urls: (() => { try { const v = r.material_file_url; if (!v) return []; const arr = typeof v === 'string' ? JSON.parse(v) : v; return Array.isArray(arr) ? arr : [] } catch { return [] } })(),
+    }))
+    try {
+      const ids = mapped.map(m => m.id)
+      let statusRows: any[] = []
+      let reqRows: any[] = []
+      if (ids.length) {
+        const { data: s } = await supabase
+          .from('raw_material_replenishment_status')
+          .select('material_id, has_pending_pr, pending_qty')
+          .in('material_id', ids)
+        statusRows = s ?? []
+        const { data: rqs } = await supabase
+          .from('raw_material_requisitions')
+          .select('id, material_id, status, suggested_qty, created_at')
+          .in('material_id', ids)
+        reqRows = rqs ?? []
+      }
+      const latestReqByMat = new Map<string, any>()
+      reqRows.sort((a: any, b: any) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime())
+        .forEach((r: any) => { const k = String(r.material_id); if (!latestReqByMat.has(k)) latestReqByMat.set(k, r) })
+      const statusByMat = new Map(statusRows.map((s: any) => [String(s.material_id), s]))
+      const withStatus = mapped.map(m => {
+        const s: any = statusByMat.get(m.id) || {}
+        const rq: any = latestReqByMat.get(m.id) || {}
+        return {
+          ...m,
+          replenishmentStatus: {
+            hasPending: Boolean(s.has_pending_pr ?? (rq.status && String(rq.status).toLowerCase() !== 'closed' && String(rq.status).toLowerCase() !== 'canceled')),
+            qty: Number(s.pending_qty ?? rq.suggested_qty ?? 0),
+            reqId: (rq.id != null ? String(rq.id) : null),
+            reqStatus: rq.status != null ? String(rq.status) : null,
+            reqCreatedAt: rq.created_at ?? null,
+          }
+        }
+      })
+      setMaterials(withStatus)
+    } catch {
+      setMaterials(mapped)
     }
   }
 
@@ -512,7 +607,50 @@ const Inventory: React.FC = () => {
         created_at: r.created_at ?? null,
         material_file_urls: (() => { try { const v = r.material_file_url; if (!v) return []; const arr = typeof v === 'string' ? JSON.parse(v) : v; return Array.isArray(arr) ? arr : [] } catch { return [] } })(),
       }))
-      setMaterials(mapped)
+
+      // fetch replenishment status and latest requisition per material
+      try {
+        const ids = mapped.map(m => m.id)
+        let statusRows: any[] = []
+        let reqRows: any[] = []
+        if (ids.length) {
+          try {
+            const { data: s } = await supabase
+              .from('raw_material_replenishment_status')
+              .select('material_id, has_pending_pr, pending_qty')
+              .in('material_id', ids)
+            statusRows = s ?? []
+          } catch {}
+          try {
+            const { data: rqs } = await supabase
+              .from('raw_material_requisitions')
+              .select('id, material_id, status, suggested_qty, created_at')
+              .in('material_id', ids)
+            reqRows = rqs ?? []
+          } catch {}
+        }
+        const latestReqByMat = new Map<string, any>()
+        reqRows.sort((a: any, b: any) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime())
+          .forEach((r: any) => { const k = String(r.material_id); if (!latestReqByMat.has(k)) latestReqByMat.set(k, r) })
+        const statusByMat = new Map(statusRows.map((s: any) => [String(s.material_id), s]))
+        const withStatus = mapped.map(m => {
+          const s: any = statusByMat.get(m.id) || {}
+          const rq: any = latestReqByMat.get(m.id) || {}
+          return {
+            ...m,
+            replenishmentStatus: {
+              hasPending: Boolean(s.has_pending_pr ?? (rq.status && String(rq.status).toLowerCase() !== 'closed' && String(rq.status).toLowerCase() !== 'canceled')),
+              qty: Number(s.pending_qty ?? rq.suggested_qty ?? 0),
+              reqId: (rq.id != null ? String(rq.id) : null),
+              reqStatus: rq.status != null ? String(rq.status) : null,
+              reqCreatedAt: rq.created_at ?? null,
+            }
+          }
+        })
+        setMaterials(withStatus)
+      } catch {
+        setMaterials(mapped)
+      }
       setMaterialsLoading(false)
     }
 
@@ -628,13 +766,13 @@ const Inventory: React.FC = () => {
                     )
                   })()}
                 </div>
-                {replResult && (
+                {replRpcData && (
                   <div className="text-xs text-neutral-medium border border-neutral-soft rounded-xl p-3">
-                    {replResult.suggested_qty !== undefined && (
-                      <div className="mb-1">RPC Suggested Qty: <span className="font-semibold text-neutral-dark">{replResult.suggested_qty}</span></div>
+                    {replRpcData.suggested_qty !== undefined && (
+                      <div className="mb-1">RPC Suggested Qty: <span className="font-semibold text-neutral-dark">{replRpcData.suggested_qty}</span></div>
                     )}
-                    {replResult.message && (
-                      <div className="text-[11px] leading-snug">{replResult.message}</div>
+                    {replRpcData.message && (
+                      <div className="text-[11px] leading-snug">{replRpcData.message}</div>
                     )}
                   </div>
                 )}
@@ -672,6 +810,71 @@ const Inventory: React.FC = () => {
             </div>
           </div>
         )}
+        {/* PR Details Modal */}
+        {prModalFor && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-black/50" onClick={() => setPrModalFor(null)} />
+            <div className="relative z-10 w-full max-w-2xl bg-white rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden">
+              <div className="px-6 py-4 bg-gradient-to-r from-neutral-light to-neutral-light/80 border-b border-neutral-soft/50 flex items-center justify-between">
+                <div className="text-lg font-semibold text-neutral-dark">Replenishment Details</div>
+                <button className="p-2" onClick={() => setPrModalFor(null)}><X className="h-5 w-5"/></button>
+              </div>
+              <div className="p-6 space-y-5 text-sm">
+                {(() => {
+                  const m = prModalFor
+                  const net = Number(m.total_available || 0) - Number(m.reserved_qty || 0)
+                  const rto = Number(m.reorder_to_level || 0)
+                  const moq = Number(m.moq || 0)
+                  const eoq = Number(m.eoq || 0)
+                  const suggested = Math.max(moq, eoq, Math.max(0, rto - net))
+                  const created = m.replenishmentStatus?.reqCreatedAt
+                    ? new Date(m.replenishmentStatus.reqCreatedAt).toLocaleString(undefined, {
+                        weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+                        hour: 'numeric', minute: '2-digit', second: '2-digit'
+                      })
+                    : '—'
+                  const status = (m.replenishmentStatus?.reqStatus || '—') as string
+                  const statusCls = 'inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold ' +
+                    (String(status).toLowerCase() === 'open' ? 'bg-blue-100 text-blue-700' :
+                     String(status).toLowerCase() === 'approved' ? 'bg-emerald-100 text-emerald-700' :
+                     String(status).toLowerCase() === 'canceled' ? 'bg-red-100 text-red-700' : 'bg-neutral-100 text-neutral-700')
+                  return (
+                    <div className="space-y-4">
+                      <div>
+                        <div className="text-[11px] uppercase tracking-wider text-neutral-medium mb-1">Subject</div>
+                        <div className="text-base font-semibold text-neutral-dark">Purchase Requisition — {m.product_name}</div>
+                        <div className="mt-1 text-xs text-neutral-medium">Created {created}</div>
+                      </div>
+
+                      <div className="rounded-xl border border-neutral-soft bg-neutral-light/20">
+                        <div className="px-4 py-3 border-b border-neutral-soft/60 text-[12px] font-semibold text-neutral-dark">Details</div>
+                        <div className="p-4 space-y-2">
+                          <div><span className="text-neutral-medium">Material:</span> <span className="font-semibold text-neutral-dark">{m.product_name}</span></div>
+                          <div><span className="text-neutral-medium">Status:</span> <span className={statusCls}>{status}</span></div>
+                          <div><span className="text-neutral-medium">Suggested Qty:</span> <span className="font-semibold text-primary-medium">{suggested}</span></div>
+                        </div>
+                      </div>
+
+                      <div className="rounded-xl border border-neutral-soft bg-white">
+                        <div className="px-4 py-3 border-b border-neutral-soft/60 text-[12px] font-semibold text-neutral-dark">Inventory Snapshot</div>
+                        <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-y-2 gap-x-6">
+                          <div><span className="text-neutral-medium">Net Available:</span> <span className="font-semibold text-neutral-dark">{net}</span></div>
+                          <div><span className="text-neutral-medium">Reorder To Level:</span> <span className="font-semibold text-neutral-dark">{m.reorder_to_level ?? '—'}</span></div>
+                          <div><span className="text-neutral-medium">Reorder Point:</span> <span className="font-semibold text-neutral-dark">{m.reorder_point ?? '—'}</span></div>
+                          <div><span className="text-neutral-medium">MOQ:</span> <span className="font-semibold text-neutral-dark">{m.moq ?? '—'}</span></div>
+                          <div><span className="text-neutral-medium">EOQ:</span> <span className="font-semibold text-neutral-dark">{m.eoq ?? '—'}</span></div>
+                        </div>
+                      </div>
+                    </div>
+                  )
+                })()}
+              </div>
+              <div className="px-6 py-4 flex items-center justify-end gap-3 border-t border-neutral-soft/50">
+                <button className="px-5 py-2.5 rounded-xl border border-neutral-soft text-neutral-dark hover:bg-neutral-light/60 transition-all" onClick={() => setPrModalFor(null)}>Close</button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Reservation History Modal */}
         {isHistoryOpen && (
@@ -697,8 +900,7 @@ const Inventory: React.FC = () => {
                     <table className="min-w-full">
                       <thead>
                         <tr className="bg-gradient-to-r from-neutral-light/60 via-neutral-light/40 to-neutral-soft/30 border-b-2 border-neutral-soft/50">
-                          <th className="px-6 py-3 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">PO Number</th>
-                          <th className="px-6 py-3 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">Line ID</th>
+                          <th className="px-6 py-3 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">Production Line</th>
                           <th className="px-6 py-3 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">Quantity Reserved</th>
                           <th className="px-6 py-3 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">Date Created</th>
                         </tr>
@@ -706,8 +908,7 @@ const Inventory: React.FC = () => {
                       <tbody className="divide-y divide-neutral-soft/20">
                         {historyData.map((h, i) => (
                           <tr key={i} className="group">
-                            <td className="px-6 py-3 text-sm text-neutral-dark">{h.po_id}</td>
-                            <td className="px-6 py-3 text-sm text-neutral-dark">{h.line_id}</td>
+                            <td className="px-6 py-3 text-sm text-neutral-dark">{h.line_name || h.line_id}</td>
                             <td className="px-6 py-3 text-sm text-neutral-dark">{h.qty}</td>
                             <td className="px-6 py-3 text-sm text-neutral-dark">{new Date(h.created_at).toLocaleString()}</td>
                           </tr>
@@ -914,9 +1115,13 @@ const Inventory: React.FC = () => {
                           <tr className="hover:bg-neutral-light/20 transition">
                             <td className="px-6 py-4 text-sm text-neutral-dark font-medium">
                               {m.product_name}
-                              {((Number(m.total_available ?? 0) - Number(m.reserved_qty ?? 0)) <= Number(m.reorder_point ?? 0)) && (
+                              {m.replenishmentStatus?.hasPending ? (
+                                <span className="ml-2 inline-flex items-center rounded-full bg-blue-100 px-2 py-0.5 text-[11px] font-semibold text-blue-700">
+                                  <Bell className="h-3.5 w-3.5 mr-1" /> Pending PR ({m.replenishmentStatus.qty})
+                                </span>
+                              ) : ((Number(m.total_available ?? 0) - Number(m.reserved_qty ?? 0)) <= Number(m.reorder_point ?? 0)) ? (
                                 <span className="ml-2 inline-flex items-center rounded-full bg-red-100 px-2 py-0.5 text-[11px] font-semibold text-red-700">Replenishment Required</span>
-                              )}
+                              ) : null}
                             </td>
                             <td className="px-6 py-4 text-sm text-neutral-dark">{m.category || '—'}</td>
                             <td className="px-6 py-4 text-sm text-neutral-dark">{m.supplier_name || '—'}</td>
@@ -963,9 +1168,26 @@ const Inventory: React.FC = () => {
                                 }); setEditDocFiles([]); setIsEditOpen(true) }} className="p-2 text-neutral-medium hover:text-white hover:bg-neutral-medium rounded-lg border border-neutral-soft">
                                   <Edit className="h-4 w-4" />
                                 </button>
-                                <button type="button" onClick={() => handleReplenishmentClick(m)} className="px-3 py-1.5 text-xs inline-flex items-center gap-1 rounded-lg border border-primary-light text-primary-medium hover:bg-primary-light/20">
-                                  <ClipboardList className="h-4 w-4" /> Auto-Generate PR
-                                </button>
+                                {(() => {
+                                  const hasPending = Boolean(m.replenishmentStatus?.hasPending)
+                                  const net = Number(m.total_available || 0) - Number((m as any).reserved_qty || 0)
+                                  const rp = Number((m as any).reorder_point || 0)
+                                  if (hasPending) {
+                                    return (
+                                      <button type="button" onClick={() => setOpenReplFor(openReplFor === m.id ? null : m.id)} className="px-3 py-1.5 text-xs inline-flex items-center gap-1 rounded-lg border border-primary-light text-primary-medium hover:bg-primary-light/20">
+                                        <ClipboardList className="h-4 w-4" /> View PR Details
+                                      </button>
+                                    )
+                                  }
+                                  if (net <= rp) {
+                                    return (
+                                      <button type="button" onClick={() => handleReplenishmentClick(m)} className="px-3 py-1.5 text-xs inline-flex items-center gap-1 rounded-lg border border-primary-light text-primary-medium hover:bg-primary-light/20">
+                                        <ClipboardList className="h-4 w-4" /> Auto-Generate PR
+                                      </button>
+                                    )
+                                  }
+                                  return null
+                                })()}
                                 <button type="button" onClick={() => { setDeleteTarget(m); setIsDeleteOpen(true) }} className="p-2 text-accent-danger hover:text-white hover:bg-accent-danger rounded-lg border border-accent-danger/30">
                                   <Trash2 className="h-4 w-4" />
                                 </button>
@@ -974,31 +1196,111 @@ const Inventory: React.FC = () => {
                           </tr>
                           {openReplFor === m.id && (
                             <tr>
-                              <td colSpan={10} className="px-6 py-5 bg-neutral-light/20">
-                                <div className="rounded-xl bg-white border border-neutral-soft/40 shadow-sm p-4">
-                                  <div className="flex items-center justify-between mb-3">
-                                    <div className="flex items-center gap-2 text-neutral-dark font-semibold">
-                                      <Package className="h-4 w-4 text-primary-medium" /> Replenishment Panel
+                              <td colSpan={10} className="px-6 py-5 bg-gradient-to-br from-neutral-light/30 to-neutral-soft/20">
+                                <div className="rounded-2xl bg-white border border-neutral-soft/40 shadow-lg p-6">
+                                  <div className="flex items-center justify-between mb-6">
+                                    <div className="flex items-center gap-3">
+                                      <div className="p-2 rounded-lg bg-primary-light/20">
+                                        <Package className="h-5 w-5 text-primary-medium" />
+                                      </div>
+                                      <div>
+                                        <div className="text-lg font-semibold text-neutral-dark">Replenishment Panel</div>
+                                        <div className="text-xs text-neutral-medium">Material: {m.product_name}</div>
+                                      </div>
                                     </div>
-                                    {(() => { const net = Number(m.total_available || 0) - Number(m.reserved_qty || 0); const rp = Number(m.reorder_point || 0); return net <= rp ? (<span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-semibold bg-red-100 text-red-700">Replenishment Required</span>) : null })()}
+                                    {m.replenishmentStatus?.hasPending ? (
+                                      <span className="inline-flex items-center px-3 py-1.5 rounded-full text-sm font-semibold bg-blue-100 text-blue-700 border border-blue-200">
+                                        <Bell className="h-4 w-4 mr-2"/> Pending PR ({m.replenishmentStatus.qty})
+                                      </span>
+                                    ) : (() => { const net = Number(m.total_available || 0) - Number(m.reserved_qty || 0); const rp = Number(m.reorder_point || 0); return net <= rp ? (
+                                      <span className="inline-flex items-center px-3 py-1.5 rounded-full text-sm font-semibold bg-red-100 text-red-700 border border-red-200">Replenishment Required</span>
+                                    ) : null })()}
                                   </div>
-                                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                    <div className="space-y-2 text-sm">
-                                      <div className="flex items-center justify-between"><span className="text-neutral-medium">Total Available</span><span className="font-semibold text-neutral-dark">{m.total_available ?? '0'}</span></div>
-                                      <div className="flex items-center justify-between"><span className="text-neutral-medium">Reserved Qty</span><span className="font-semibold text-neutral-dark">{m.reserved_qty ?? 0}</span></div>
-                                      <div className="flex items-center justify-between"><span className="text-neutral-medium">Net Available</span><span className="font-semibold text-neutral-dark">{Number(m.total_available || 0) - Number(m.reserved_qty || 0)}</span></div>
-                                      <div className="flex items-center justify-between"><span className="text-neutral-medium">Reorder Point</span><span className="font-semibold text-neutral-dark">{m.reorder_point ?? '—'}</span></div>
+
+                                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                                    <div className="space-y-4">
+                                      <div className="rounded-xl border border-neutral-soft bg-gradient-to-r from-neutral-light/40 to-white p-4">
+                                        <div className="text-xs font-semibold text-neutral-dark uppercase tracking-wider mb-3 border-b border-neutral-soft/60 pb-2">Current Stock</div>
+                                        <div className="space-y-3">
+                                          <div className="flex items-center justify-between">
+                                            <span className="text-sm text-neutral-medium">Total Available</span>
+                                            <span className="text-lg font-semibold text-neutral-dark">{m.total_available ?? '0'}</span>
+                                          </div>
+                                          <div className="flex items-center justify-between">
+                                            <span className="text-sm text-neutral-medium">Reserved Qty</span>
+                                            <span className="text-lg font-semibold text-neutral-dark">{m.reserved_qty ?? 0}</span>
+                                          </div>
+                                          <div className="flex items-center justify-between pt-2 border-t border-neutral-soft/60">
+                                            <span className="text-sm font-semibold text-neutral-dark">Net Available</span>
+                                            <span className="text-xl font-semibold text-neutral-dark">{Number(m.total_available || 0) - Number(m.reserved_qty || 0)}</span>
+                                          </div>
+                                          <div className="flex items-center justify-between">
+                                            <span className="text-sm text-neutral-medium">Reorder Point</span>
+                                            <span className="text-lg font-semibold text-neutral-dark">{m.reorder_point ?? '—'}</span>
+                                          </div>
+                                        </div>
+                                      </div>
                                     </div>
-                                    <div className="space-y-2 text-sm">
-                                      <div className="flex items-center justify-between"><span className="text-neutral-medium">Reorder To Level</span><span className="font-semibold text-neutral-dark">{m.reorder_to_level ?? '—'}</span></div>
-                                      <div className="flex items-center justify-between"><span className="text-neutral-medium">MOQ</span><span className="font-semibold text-neutral-dark">{m.moq ?? '—'}</span></div>
-                                      <div className="flex items-center justify-between"><span className="text-neutral-medium">EOQ</span><span className="font-semibold text-neutral-dark">{m.eoq ?? '—'}</span></div>
+
+                                    <div className="space-y-4">
+                                      <div className="rounded-xl border border-neutral-soft bg-gradient-to-r from-white to-neutral-light/40 p-4">
+                                        <div className="text-xs font-semibold text-neutral-dark uppercase tracking-wider mb-3 border-b border-neutral-soft/60 pb-2">Ordering Parameters</div>
+                                        <div className="space-y-3">
+                                          <div className="flex items-center justify-between">
+                                            <span className="text-sm text-neutral-medium">Reorder To Level</span>
+                                            <span className="text-lg font-semibold text-neutral-dark">{m.reorder_to_level ?? '—'}</span>
+                                          </div>
+                                          <div className="flex items-center justify-between">
+                                            <span className="text-sm text-neutral-medium">MOQ</span>
+                                            <span className="text-lg font-semibold text-neutral-dark">{m.moq ?? '—'}</span>
+                                          </div>
+                                          <div className="flex items-center justify-between">
+                                            <span className="text-sm text-neutral-medium">EOQ</span>
+                                            <span className="text-lg font-semibold text-neutral-dark">{m.eoq ?? '—'}</span>
+                                          </div>
+                                        </div>
+                                      </div>
                                     </div>
                                   </div>
-                                  <div className="mt-4 flex items-center justify-end">
-                                    <button className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-primary-dark hover:bg-primary-medium text-white text-sm" onClick={() => handleReplenishmentClick(m)}>
-                                      <ClipboardList className="h-4 w-4" /> Auto-Generate PR
-                                    </button>
+
+                                  {m.replenishmentStatus?.hasPending && (
+                                    <div className="mt-6 p-4 bg-blue-50 rounded-xl border border-blue-200">
+                                      <div className="flex items-start gap-3">
+                                        <div className="p-1.5 rounded-lg bg-blue-200">
+                                          <Bell className="h-4 w-4 text-blue-700" />
+                                        </div>
+                                        <div className="flex-1">
+                                          <div className="font-semibold text-blue-800 mb-1">Pending Requisition</div>
+                                          <div className="grid grid-cols-2 gap-4 text-sm">
+                                            <div><span className="text-neutral-medium">Qty:</span> <span className="font-semibold text-neutral-dark">{m.replenishmentStatus.qty}</span></div>
+                                            <div><span className="text-neutral-medium">Status:</span> <span className="font-semibold text-neutral-dark">{m.replenishmentStatus.reqStatus || '—'}</span></div>
+                                          </div>
+                                        </div>
+                                      </div>
+                                    </div>
+                                  )}
+
+                                  <div className="mt-6 pt-4 border-t border-neutral-soft/60 flex items-center justify-end">
+                                    {(() => {
+                                      const hasPending = Boolean(m.replenishmentStatus?.hasPending)
+                                      const net = Number(m.total_available || 0) - Number(m.reserved_qty || 0)
+                                      const rp = Number(m.reorder_point || 0)
+                                      if (hasPending) {
+                                        return (
+                                          <button type="button" onClick={() => setPrModalFor(m)} className="px-4 py-2.5 text-sm inline-flex items-center gap-2 rounded-xl border-2 border-primary-medium text-primary-medium hover:bg-primary-medium hover:text-white transition-all duration-200 font-semibold">
+                                            <ClipboardList className="h-4 w-4" /> View PR Details
+                                          </button>
+                                        )
+                                      }
+                                      if (net <= rp) {
+                                        return (
+                                          <button type="button" disabled={isGenerating} onClick={() => handleReplenishmentClick(m)} className={`px-4 py-2.5 text-sm inline-flex items-center gap-2 rounded-xl border-2 border-primary-medium text-primary-medium hover:bg-primary-medium hover:text-white transition-all duration-200 font-semibold ${isGenerating ? 'opacity-60 cursor-not-allowed' : ''}`}>
+                                            <ClipboardList className="h-4 w-4" /> Auto-Generate PR
+                                          </button>
+                                        )
+                                      }
+                                      return null
+                                    })()}
                                   </div>
                                 </div>
                               </td>
@@ -1918,3 +2220,4 @@ const Inventory: React.FC = () => {
 }
 
 export default Inventory
+   

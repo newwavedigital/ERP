@@ -19,8 +19,25 @@ const PurchaseOrders: React.FC = () => {
   
   const [isLocationOpen, setIsLocationOpen] = useState(false)
   const [customers, setCustomers] = useState<Array<{id:string; name:string; credit_hold?: boolean; overdue_balance?: number}>>([])
-  const [products, setProducts] = useState<Array<{id:string; name:string; sku?:string; is_discontinued?: boolean; substitute_sku?: string | null}>>([])
-  const [materials, setMaterials] = useState<Array<{id:string; name:string; category?: string; is_client_supplied?: boolean}>>([])
+  const [products, setProducts] = useState<Array<{
+    id:string;
+    name:string;
+    sku?:string;
+    is_discontinued?: boolean;
+    substitute_sku?: string | null;
+    formula?: {
+      id: string;
+      product_id: string | null;
+      formula_name: string;
+      version?: number | null;
+      comments?: string | null;
+      customer_id?: string | null;
+      standard_yield?: string | null;
+      scrap_percent?: string | null;
+      items?: Array<{ material_id: string; qty_per_unit: string | null; uom: string | null; percentage: string | null }>
+    } | null;
+    meta?: { has_client_supplied?: boolean; all_ops_supplied?: boolean };
+  }>>([])
   const [orders, setOrders] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -58,6 +75,7 @@ const PurchaseOrders: React.FC = () => {
   const [viewFormulaItems, setViewFormulaItems] = useState<any[]>([])
   const [viewPrs, setViewPrs] = useState<Array<{ id: string; item_name: string; required_qty: number; needed_by: string | null; status: string; created_at: string | null; notes?: string | null }>>([])
   const [viewPrLoading, setViewPrLoading] = useState(false)
+  const [productionLines, setProductionLines] = useState<Array<{ id: string; name: string }>>([])
   // Debug state per PO
   const [debugMap, setDebugMap] = useState<Record<string, any>>({})
   const [lastApprovedId, setLastApprovedId] = useState<string | null>(null)
@@ -91,6 +109,21 @@ const PurchaseOrders: React.FC = () => {
   
   const locationRef = useRef<HTMLDivElement>(null)
   const statusRef = useRef<HTMLDivElement>(null)
+
+  const filteredProducts = useMemo(() => {
+    // Base: all products
+    let list = products
+    if (form.is_copack) {
+      if (form.client_materials_required) {
+        // Show products whose formula includes at least one client-supplied material
+        list = products.filter(p => !!p.meta?.has_client_supplied)
+      } else if (form.operation_supplies_materials) {
+        // Show products whose formula items are all ops-supplied (no client-supplied)
+        list = products.filter(p => !!p.meta?.all_ops_supplied)
+      }
+    }
+    return list
+  }, [products, form.is_copack, form.client_materials_required, form.operation_supplies_materials])
   const rushRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     const handle = (e: MouseEvent) => {
@@ -805,21 +838,86 @@ const PurchaseOrders: React.FC = () => {
     const load = async () => {
       setLoading(true)
       setError(null)
-      const [{ data: cData, error: cErr }, { data: pData, error: pErr }, { data: oData, error: oErr }, { data: mData, error: mErr }] = await Promise.all([
+      const [
+        { data: cData, error: cErr },
+        { data: pData, error: pErr },
+        { data: oData, error: oErr },
+        { data: fData },
+        { data: fiData },
+        { data: mats },
+        { data: linesData }
+      ] = await Promise.all([
         supabase.from('customers').select('id, company_name, credit_hold, overdue_balance').order('company_name', { ascending: true }),
-        // After running the provided SQL, these columns will exist
         supabase.from('products').select('id, product_name, is_discontinued, substitute_sku').order('product_name', { ascending: true }),
         supabase.from('purchase_orders').select('*').order('created_at', { ascending: false }),
-        supabase.from('inventory_materials').select('id, product_name, category, is_client_supplied').order('product_name', { ascending: true }),
+        supabase.from('formulas').select('id, product_id, formula_name, version, comments, customer_id, standard_yield, scrap_percent'),
+        supabase.from('formula_items').select('formula_id, material_id, qty_per_unit, uom, percentage'),
+        supabase.from('inventory_materials').select('id, is_client_supplied'),
+        supabase.from('production_lines').select('id, line_name').order('line_name', { ascending: true }),
       ])
       if (cErr) setError('Cannot load customers')
       if (!cErr) setCustomers((cData ?? []).map((r: any) => ({ id: String(r.id), name: String(r.company_name ?? ''), credit_hold: !!r.credit_hold, overdue_balance: Number(r.overdue_balance ?? 0) })))
-      if (!pErr) setProducts((pData ?? []).map((r: any) => ({ id: String(r.id), name: String(r.product_name ?? ''), is_discontinued: !!r.is_discontinued, substitute_sku: r.substitute_sku ?? null })))
-      if (!oErr) setOrders(oData ?? [])
-      if (!mErr) {
-        const all = (mData ?? [])
-        setMaterials(all.map((r: any) => ({ id: String(r.id), name: String(r.product_name ?? ''), category: r.category || '', is_client_supplied: !!r.is_client_supplied })))
+      if (!pErr) {
+        const formulas = Array.isArray(fData) ? fData : []
+        const items = Array.isArray(fiData) ? fiData : []
+        const itemsByFormula = new Map<string, Array<{ material_id: string; qty_per_unit: string | null; uom: string | null; percentage: string | null }>>()
+        items.forEach((it: any) => {
+          const k = String(it.formula_id || '')
+          if (!k) return
+          if (!itemsByFormula.has(k)) itemsByFormula.set(k, [])
+          itemsByFormula.get(k)!.push({
+            material_id: String(it.material_id || ''),
+            qty_per_unit: it.qty_per_unit ?? null,
+            uom: it.uom ?? null,
+            percentage: it.percentage ?? null,
+          })
+        })
+        // pick the latest formula per product_id (fallback: first)
+        const byProduct = new Map<string, any>()
+        formulas.forEach((f:any) => {
+          const pid = f.product_id ? String(f.product_id) : ''
+          const prev = byProduct.get(pid)
+          if (!prev) byProduct.set(pid, f)
+          else {
+            const ta = new Date(f.created_at || 0).getTime()
+            const tb = new Date(prev.created_at || 0).getTime()
+            if (ta >= tb) byProduct.set(pid, f)
+          }
+        })
+        const matFlag: Record<string, boolean> = {}
+        ;(mats ?? []).forEach((m:any)=> { matFlag[String(m.id)] = !!m.is_client_supplied })
+        const mapped = (pData ?? []).map((r:any) => {
+          const pid = String(r.id)
+          const f = byProduct.get(pid) || null
+          const items = f ? (itemsByFormula.get(String(f.id)) || []) : []
+          const hasClient = items.some((it:any)=> matFlag[String(it.material_id)] === true)
+          const allOps = items.length > 0 && items.every((it:any)=> matFlag[String(it.material_id)] === false)
+          return {
+            id: pid,
+            name: String(r.product_name ?? ''),
+            is_discontinued: !!r.is_discontinued,
+            substitute_sku: r.substitute_sku ?? null,
+            formula: f ? {
+              id: String(f.id),
+              product_id: f.product_id ? String(f.product_id) : null,
+              formula_name: String(f.formula_name || ''),
+              version: f.version ?? null,
+              comments: f.comments ?? null,
+              customer_id: f.customer_id ?? null,
+              standard_yield: f.standard_yield ?? null,
+              scrap_percent: f.scrap_percent ?? null,
+              items,
+            } : null,
+            meta: { has_client_supplied: hasClient, all_ops_supplied: allOps },
+          }
+        })
+        setProducts(mapped)
       }
+      if (!oErr) setOrders(oData ?? [])
+      try {
+        const list = (linesData ?? []).map((r:any)=> ({ id: String(r.id), name: String(r.line_name || '') }))
+        setProductionLines(list)
+      } catch {}
       setLoading(false)
     }
     load()
@@ -1224,11 +1322,9 @@ const PurchaseOrders: React.FC = () => {
 }
 
 
-      // BRAND MODE — strictly call only brand RPCs in order
+      // BRAND MODE — call the single allocation RPC (finished-first)
       const brandSeq = [
         'allocate_brand_po_finished_first',
-        'fn_allocate_po_to_finished_goods',
-        'fn_generate_pr_for_po_shortfall',
       ]
       let brandSummary: any = null
       for (const name of brandSeq) {
@@ -1237,8 +1333,8 @@ const PurchaseOrders: React.FC = () => {
           setToast({ show: true, message: res.message || 'RPC Error', kind: 'error' })
           break
         }
-        if (DEBUG_PO) dbg.sql_notices.push(`${name}: ${res.status}${res.message ? ` – ${res.message}` : ''}`)
-        if ((name === 'allocate_brand_po_finished_first' || name === 'fn_allocate_po_to_finished_goods') && res.data) {
+
+        if ((name === 'allocate_brand_po_finished_first') && res.data) {
           brandSummary = res.data
           // FEFO block: only for BRAND POs (not Copack)
           try {
@@ -1894,14 +1990,7 @@ const PurchaseOrders: React.FC = () => {
                       <label className="flex items-center text-sm font-medium text-neutral-dark">Product</label>
                       <select className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light" value={form.product} onChange={(e)=>setForm({...form, product:e.target.value})}>
                         <option value="">Select Product</option>
-                        {(!form.is_copack
-                          ? products
-                          : form.client_materials_required
-                            ? materials.filter(m => m.is_client_supplied)
-                            : form.operation_supplies_materials
-                              ? materials.filter(m => !m.is_client_supplied)
-                              : []
-                        ).map((p: any) => (
+                        {filteredProducts.map((p: any) => (
                           <option key={p.id} value={p.name}>
                             {p.name}{!form.is_copack && p.is_discontinued ? ' • Discontinued' : ''}
                           </option>
@@ -2011,9 +2100,20 @@ const PurchaseOrders: React.FC = () => {
                         </button>
                         {isLocationOpen && (
                           <div className="absolute z-[100] mt-2 w-full bg-white border border-neutral-soft rounded-xl shadow-xl max-h-56 overflow-auto">
-                            {['Main Room','Room A','Room B'].map(loc => (
-                              <button key={loc} type="button" className={`block w-full text-left px-4 py-2 hover:bg-neutral-light ${form.location===loc?'bg-neutral-light':''}`} onClick={()=>{setForm({...form, location:loc}); setIsLocationOpen(false)}}>{loc}</button>
-                            ))}
+                            {productionLines.length === 0 ? (
+                              <div className="px-4 py-2 text-sm text-neutral-medium">No production lines found</div>
+                            ) : (
+                              productionLines.map((ln) => (
+                                <button
+                                  key={ln.id}
+                                  type="button"
+                                  className={`block w-full text-left px-4 py-2 hover:bg-neutral-light ${form.location===ln.name?'bg-neutral-light':''}`}
+                                  onClick={()=>{setForm({...form, location: ln.name}); setIsLocationOpen(false)}}
+                                >
+                                  {ln.name}
+                                </button>
+                              ))
+                            )}
                           </div>
                         )}
                       </div>
@@ -2334,7 +2434,8 @@ const PurchaseOrders: React.FC = () => {
                   </>
                 )}
 
-                {/* Shipments */}
+                {/* Shipments (Brand PO only) */}
+                {!isViewOpen?.is_copack && (
                 <div className="space-y-3">
                   <h3 className="text-base font-semibold text-neutral-dark">Shipments</h3>
                   <div className="border border-neutral-soft/40 rounded-xl bg-neutral-light/20">
@@ -2369,8 +2470,10 @@ const PurchaseOrders: React.FC = () => {
                     )}
                   </div>
                 </div>
+                )}
 
-                {/* Raw Material PRs linked to this PO */}
+                {/* Raw Material PRs linked to this PO (Brand PO only) */}
+                {!isViewOpen?.is_copack && (
                 <div className="space-y-3">
                   <h3 className="text-base font-semibold text-neutral-dark">Raw Material Purchase Requisitions for this PO</h3>
                   <div className="border border-neutral-soft/40 rounded-xl bg-neutral-light/20">
@@ -2399,6 +2502,7 @@ const PurchaseOrders: React.FC = () => {
                     )}
                   </div>
                 </div>
+                )}
 
                 {(isViewOpen.notes || isViewOpen.comments) && (
                   <div className="space-y-1">

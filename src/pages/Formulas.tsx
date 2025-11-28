@@ -1,8 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { Plus, Inbox, X, Trash2 } from "lucide-react";
 import { supabase } from "../lib/supabase";
-
-type Product = { id: string; product_name: string };
 type Material = { id: string; product_name: string; unit_of_measure: string };
 type Customer = { id: string; company_name: string };
 
@@ -25,7 +23,6 @@ interface FormulasProps { openSignal?: number; embedded?: boolean }
 const Formulas: React.FC<FormulasProps> = ({ openSignal, embedded = false }) => {
   const [isAddOpen, setIsAddOpen] = useState(false);
 
-  const [products, setProducts] = useState<Product[]>([]);
   const [materials, setMaterials] = useState<Material[]>([]);
   const [customersList, setCustomersList] = useState<Customer[]>([]);
   const [formulasList, setFormulasList] = useState<any[]>([]); // ✅ FOR DISPLAYING FORMULAS
@@ -34,6 +31,7 @@ const Formulas: React.FC<FormulasProps> = ({ openSignal, embedded = false }) => 
 
   const [form, setForm] = useState({
     product_id: "",
+    product_name: "",
     customer_id: "",
     comments: "",
   });
@@ -43,7 +41,7 @@ const Formulas: React.FC<FormulasProps> = ({ openSignal, embedded = false }) => 
   ]);
 
   const resetForm = () => {
-    setForm({ product_id: "", customer_id: "", comments: "" });
+    setForm({ product_id: "", product_name: "", customer_id: "", comments: "" });
     setIngredients([{ ...emptyIngredient }]);
   };
 
@@ -61,15 +59,13 @@ const Formulas: React.FC<FormulasProps> = ({ openSignal, embedded = false }) => 
   /* ✅ 1. LOAD PRODUCTS, MATERIALS, CUSTOMERS */
   useEffect(() => {
     const load = async () => {
-      const [{ data: p }, { data: m }, { data: c }] = await Promise.all([
-        supabase.from("products").select("id, product_name"),
+      const [{ data: m }, { data: c }] = await Promise.all([
         supabase
           .from("inventory_materials")
           .select("id, product_name, unit_of_measure"),
         supabase.from("customers").select("id, company_name"),
       ]);
 
-      setProducts(p || []);
       setMaterials(m || []);
       setCustomersList(c || []);
     };
@@ -124,20 +120,15 @@ const Formulas: React.FC<FormulasProps> = ({ openSignal, embedded = false }) => 
   /* ✅ 3. CREATE FORMULA */
   const handleCreate = async () => {
     try {
-      if (!form.product_id || !form.customer_id) return;
+      if (!form.product_name || !form.customer_id) return;
       setSaving(true);
-
-      const selectedProduct = products.find(
-        (p) => p.id === form.product_id
-      )?.product_name;
-
       const { data: fdata, error: ferr } = await supabase
         .from("formulas")
         .insert([
           {
-            product_id: form.product_id,
+            product_id: form.product_id || null,
             customer_id: form.customer_id,
-            formula_name: `${selectedProduct} Formula`,
+            formula_name: form.product_name.trim(),
             comments: form.comments,
             version: 1,
           },
@@ -175,7 +166,7 @@ const Formulas: React.FC<FormulasProps> = ({ openSignal, embedded = false }) => 
       // Optimistic add to list so user sees result instantly (no full reload needed)
       setFormulasList(prev => [{
         ...fdata,
-        products: { product_name: selectedProduct || '' },
+        products: { product_name: form.product_name || '' },
         customers: { company_name: customersList.find(c=>c.id===form.customer_id)?.company_name || '' },
       }, ...prev]);
 
@@ -289,20 +280,17 @@ const Formulas: React.FC<FormulasProps> = ({ openSignal, embedded = false }) => 
                     <label className="text-sm font-medium text-neutral-dark">
                       Product
                     </label>
-                    <select
+                    <input
+                      type="text"
                       className="w-full px-4 py-3 border border-neutral-soft rounded-lg bg-white"
-                      value={form.product_id}
-                      onChange={(e) =>
-                        setForm({ ...form, product_id: e.target.value })
-                      }
-                    >
-                      <option value="">Select Product</option>
-                      {products.map((p) => (
-                        <option key={p.id} value={p.id}>
-                          {p.product_name}
-                        </option>
-                      ))}
-                    </select>
+                      placeholder="Formula Name"
+                      value={form.product_name}
+                      onChange={(e) => {
+                        const name = e.target.value;
+                        setForm({ ...form, product_name: name, product_id: "" });
+                      }}
+                    />
+                    
                   </div>
 
                   <div>
@@ -460,7 +448,7 @@ const Formulas: React.FC<FormulasProps> = ({ openSignal, embedded = false }) => 
                 </button>
 
                 <button
-                  disabled={saving || !form.product_id || !form.customer_id}
+                  disabled={saving || !form.product_name || !form.customer_id}
                   onClick={handleCreate}
                   className="px-5 py-2.5 rounded-lg bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white text-sm font-semibold shadow-sm disabled:opacity-60"
                 >

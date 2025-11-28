@@ -1,7 +1,7 @@
 // src/pages/ProductionSchedule.tsx
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from 'react-router-dom'
-import { Calendar, X, Plus, Eye, Pencil, Trash2, MoreVertical, AlertTriangle, FileText } from "lucide-react";
+import { Calendar, X, Plus, Eye, Pencil, Trash2, MoreVertical, AlertTriangle, FileText, Lightbulb } from "lucide-react";
 import { supabase } from "../lib/supabase";
 import ProductionLines from "./ProductionLines";
 
@@ -9,6 +9,16 @@ import ProductionLines from "./ProductionLines";
 // Types
 // ─────────────────────────────────────────────────────────────
 type Customer = { id: string; company_name: string };
+
+const diffMinutes = (a?: string | null, b?: string | null): number | null => {
+  if (!a || !b) return null
+  try { return Math.max(0, Math.round((new Date(b).getTime() - new Date(a).getTime()) / 60000)) } catch { return null }
+}
+
+const fmtDateTime = (d?: string | null) => {
+  if (!d) return '-'
+  try { return new Date(d).toLocaleString() } catch { return String(d) }
+}
 type Product = { id: string; product_name: string; product_image_url?: string; unit_of_measure?: string; allergen_profile?: string[] };
 type Formula = { id: string; formula_name: string; product_id: string | null };
 type ProductionLine = { id: string; line_name: string; allowed_allergens: string[] | null; sanitation_minutes?: number | null; needs_qa_signoff?: boolean | null };
@@ -42,6 +52,12 @@ type BatchRow = {
   created_at?: string;
   source_po_id?: string | null;
   source_po_line_id?: string | null;
+  // Compliance fields
+  sanitation_required?: boolean | null;
+  sanitation_start?: string | null;
+  sanitation_end?: string | null;
+  qa_required?: boolean | null;
+  qa_approved?: boolean | null;
 };
 
 type ScheduleItem = {
@@ -57,6 +73,13 @@ type ScheduleItem = {
   lot?: string;
   po?: string;
   sourcePoId?: string | null;
+  createdAt?: string | null;
+  // Compliance
+  sanitationRequired?: boolean | null;
+  sanitationStart?: string | null;
+  sanitationEnd?: string | null;
+  qaRequired?: boolean | null;
+  qaApproved?: boolean | null;
 };
 
 // ─────────────────────────────────────────────────────────────
@@ -161,6 +184,40 @@ const ProductionSchedule: React.FC = () => {
     setTimeout(() => setToasts(prev => prev.filter(x => x.id !== id)), 4000)
   }
 
+  // CAPA flags per batch (client-side; set to true after completion if CAPA was created)
+  const [capaMap, setCapaMap] = useState<Record<string, boolean>>({})
+
+  // Merge batches modal state
+  const [mergeModalOpen, setMergeModalOpen] = useState(false)
+  const [mergeTargets, setMergeTargets] = useState<ScheduleItem[]>([])
+  const handleOpenMergeModal = (batches: ScheduleItem[]) => {
+    setMergeTargets(batches)
+    setMergeModalOpen(true)
+  }
+  const handleOpenEditFromStartError = async (batchId: string) => {
+    try {
+      const row = await fetchRowById(batchId)
+      setEditItem(row)
+    } catch {
+      // fall back to toast
+      pushToast({ type: 'error', message: 'Unable to open batch for editing.' })
+    } finally {
+      setStartErrorModal(null)
+    }
+  }
+  const handleConfirmMerge = async () => {
+    try {
+      const ids = mergeTargets.map(b => b.id)
+      const { error } = await supabase.rpc('merge_batches', { batch_ids: ids as any })
+      if (error) { pushToast({ type:'error', message: `Merge failed: ${error.message}` }); return }
+      pushToast({ type:'success', message: 'Batches merged successfully' })
+      setMergeModalOpen(false)
+      await loadBatches()
+    } catch (e:any) {
+      pushToast({ type:'error', message: `Merge failed: ${e?.message || 'Unexpected error'}` })
+    }
+  }
+
   // Requirements preview
   type RequirementRow = {
     material: string
@@ -182,7 +239,7 @@ const ProductionSchedule: React.FC = () => {
   const [prExistsMap, setPrExistsMap] = useState<Record<string, boolean>>({})
   const SHORTAGE_CACHE_PREFIX = 'batchShortages:'
   // CAPA flags per batch (client-side; set to true after completion if CAPA was created)
-  const [capaMap, setCapaMap] = useState<Record<string, boolean>>({})
+  const [qaHoldMap, setQaHoldMap] = useState<Record<string, boolean>>({})
   const capaBadgeCount = useMemo(() => Object.keys(capaMap || {}).length, [capaMap])
   // Map: source_po_id -> 'CLIENT' | 'OPS' for copack batches
   const [poSourceMap, setPoSourceMap] = useState<Record<string, 'CLIENT' | 'OPS'>>({})
@@ -192,11 +249,13 @@ const ProductionSchedule: React.FC = () => {
   const [qaApprovedMap, setQaApprovedMap] = useState<Record<string, boolean>>({})
   const [allergenModalBatchId, setAllergenModalBatchId] = useState<string | null>(null)
 
+  // Modal: Block start if mandatory fields missing (e.g., lot_out)
+  const [startErrorModal, setStartErrorModal] = useState<{ batchId: string; message: string } | null>(null)
+
   // QA Hold modal state
   const [qaHoldModalBatch, setQaHoldModalBatch] = useState<ScheduleItem | null>(null)
   const [qaHoldComponents, setQaHoldComponents] = useState<QAHoldComponent[]>([])
   // QA Hold indicator per batch (client-side cache)
-  const [qaHoldMap, setQaHoldMap] = useState<Record<string, boolean>>({})
 
   const saveShortagesToCache = (batchId: string, shortages: ShortageRow[]) => {
     try { localStorage.setItem(SHORTAGE_CACHE_PREFIX + batchId, JSON.stringify(shortages)) } catch {}
@@ -248,6 +307,46 @@ const ProductionSchedule: React.FC = () => {
     setProductionLines(pl || []);
   };
 
+  // ───────── QA Approve action (optimistic)
+  const markQaApproved = async (batchId: string) => {
+    try {
+      const { error } = await supabase
+        .from('production_batches')
+        .update({ qa_approved: true })
+        .eq('id', batchId)
+      if (error) throw error
+      // Optimistic update: list rows
+      setItems(prev => prev.map(r => r.id === batchId ? { ...r, qaApproved: true } : r))
+      // Update view modal if open
+      setViewItem(prev => prev && prev.id === batchId ? { ...prev, qaApproved: true } as any : prev)
+      // Update gating map used by Start button disabled check
+      setQaApprovedMap(prev => ({ ...prev, [batchId]: true }))
+      pushToast({ type: 'success', message: 'QA marked as approved' })
+    } catch (e:any) {
+      pushToast({ type: 'error', message: e?.message || 'Failed to mark QA approved' })
+    }
+  }
+
+  // ───────── Mark Sanitation Complete RPC
+  const markSanitationComplete = async (batchId: string) => {
+    try {
+      const { error } = await supabase.rpc("mark_sanitation_complete", {
+        p_batch_id: batchId,
+      });
+
+      if (error) throw error;
+
+      // Optimistic UI: clear sanitation + conflict immediately
+      setItems(prev => prev.map(r => r.id === String(batchId) ? { ...r, sanitationRequired: false, sanitationStart: null, sanitationEnd: null } : r))
+      setAllergenConflictMap(prev => ({ ...prev, [String(batchId)]: false }))
+      pushToast({ type: 'success', message: 'Sanitation marked as complete!' });
+      await loadBatches();
+    } catch (err) {
+      console.error(err);
+      pushToast({ type: 'error', message: 'Failed to mark sanitation + QA complete.' });
+    }
+  }
+
   // Helper: cast ID to number if numeric to satisfy RPC/query param types
   const castBatchId = (v: string): any => (/^\d+$/.test(String(v)) ? Number(v) : v)
 
@@ -294,7 +393,7 @@ const ProductionSchedule: React.FC = () => {
       const { data, error } = await supabase
         .from("production_batches")
         .select(
-          "id, product_sku, qty, room, start_date, end_date, status, required_capacity, assigned_line, flags, formula_id, customer_id, lot_number, po_number, completed_qty, samples_received, samples_sent, created_at, source_po_id, source_po_line_id"
+          "id, product_sku, qty, room, start_date, end_date, status, required_capacity, assigned_line, flags, formula_id, customer_id, lot_number, po_number, completed_qty, samples_received, samples_sent, created_at, source_po_id, source_po_line_id, sanitation_required, sanitation_start, sanitation_end, qa_required, qa_approved"
         )
         .order("start_date", { ascending: false })
         .limit(200);
@@ -315,6 +414,12 @@ const ProductionSchedule: React.FC = () => {
           lot: r.lot_number || "",
           po: r.po_number || "",
           sourcePoId: r.source_po_id || null,
+          createdAt: r.created_at || null,
+          sanitationRequired: r.sanitation_required ?? null,
+          sanitationStart: r.sanitation_start || null,
+          sanitationEnd: r.sanitation_end || null,
+          qaRequired: r.qa_required ?? null,
+          qaApproved: r.qa_approved ?? null,
         })) ?? [];
 
       setItems(mapped);
@@ -474,7 +579,7 @@ const ProductionSchedule: React.FC = () => {
     const { data, error } = await supabase
       .from("production_batches")
       .select(
-        "id, product_sku, qty, room, start_date, end_date, status, required_capacity, assigned_line, flags, formula_id, customer_id, lot_number, po_number, completed_qty, samples_received, samples_sent, created_at, source_po_id, source_po_line_id"
+        "id, product_sku, qty, room, start_date, end_date, status, required_capacity, assigned_line, flags, formula_id, customer_id, lot_number, po_number, completed_qty, samples_received, samples_sent, created_at, source_po_id, source_po_line_id, sanitation_required, sanitation_start, sanitation_end, qa_required, qa_approved"
       )
       .eq("id", id)
       .single();
@@ -637,6 +742,9 @@ const ProductionSchedule: React.FC = () => {
           return
         }
         if (gate && typeof gate === 'object' && (gate as any).status === 'conflict') {
+          // Close any batch modals so conflict dialog is not stacked within them
+          setViewItem(null)
+          setEditItem(null)
           setAllergenConflictMap(prev => ({ ...prev, [id]: true }))
           setSanitationDetailsMap(prev => ({ ...prev, [id]: { minutes: (gate as any).sanitation_minutes ?? null, start: null, end: null } }))
           setQaRequiredMap(prev => ({ ...prev, [id]: !!(gate as any).qa_required }))
@@ -703,6 +811,19 @@ const ProductionSchedule: React.FC = () => {
         return
       }
 
+      // Check batch compliance requirements before starting
+      const batch = (items || []).find(r => String(r.id) === String(id))
+      if (batch) {
+        if (batch.sanitationRequired && !(batch as any).sanitationComplete) {
+          pushToast({ type: 'error', message: 'Cannot start batch: sanitation not completed.' })
+          return
+        }
+        if (batch.qaRequired && !batch.qaApproved) {
+          pushToast({ type: 'error', message: 'Cannot start batch: QA approval required.' })
+          return
+        }
+      }
+
       // Optional: double-check packaging type if batch came from PO and block unless fully allocated
       try {
         const row = (items || []).find(r => String(r.id) === String(id))
@@ -726,7 +847,23 @@ const ProductionSchedule: React.FC = () => {
         }
       } catch {}
 
-      // 3) No shortage: proceed to reserve/start
+      // 3) Mandatory fields check: ensure lot_out and other required fields via RPC
+      try {
+        const { data: traceCheck, error: traceErr } = await supabase.rpc('fn_record_lot_traceability', { p_batch_id: castBatchId(id) })
+        if (traceErr) {
+          setStartErrorModal({ batchId: id, message: traceErr.message || 'Required field missing. Please review batch details.' })
+          return
+        }
+        if (traceCheck && typeof traceCheck === 'object' && (traceCheck as any).status === 'error') {
+          setStartErrorModal({ batchId: id, message: String((traceCheck as any).message || 'Required field missing. Please review batch details.') })
+          return
+        }
+      } catch (vErr) {
+        setStartErrorModal({ batchId: id, message: 'Unable to validate batch requirements. Please try again.' })
+        return
+      }
+
+      // 4) No shortage and validations passed: proceed to reserve/start
       const { data, error } = await supabase.rpc('fn_reserve_for_batch', { p_batch_id: castBatchId(id) })
       if (error) throw error
       
@@ -745,13 +882,7 @@ const ProductionSchedule: React.FC = () => {
       // Success path
       await loadBatches()
       
-      // Record lot traceability after successful start
-      try {
-        await supabase.rpc('fn_record_lot_traceability', { p_batch_id: castBatchId(id) })
-      } catch (traceError) {
-        console.warn('Lot traceability recording failed:', traceError)
-        // Don't fail the start process if traceability fails
-      }
+      // Lot traceability already validated above. If needed, backend should handle idempotency.
       
       pushToast({ type: 'success', message: 'Batch started successfully' })
       // If batch can start, clear any cached shortage
@@ -976,6 +1107,7 @@ const ProductionSchedule: React.FC = () => {
             </table>
           </div>
         )}
+
       </div>
     )
   }
@@ -1097,40 +1229,6 @@ const ProductionSchedule: React.FC = () => {
                   })
                 )}
 
-        {/* Allergen Conflict Modal */}
-        {allergenModalBatchId && (() => {
-          const row = (items || []).find(r => String(r.id) === String(allergenModalBatchId))
-          const product = row ? productByName.get(String(row.product || '')) : undefined
-          const line = row ? productionLineByName.get(String(row.room || '')) : undefined
-          const productAllergens = (product?.allergen_profile || []) as string[]
-          const lineAllowed = (line?.allowed_allergens || []) as string[]
-          const minutes = sanitationDetailsMap[allergenModalBatchId]?.minutes ?? null
-          const qaReq = qaRequiredMap[allergenModalBatchId]
-          return (
-            <AllergenConflictModal
-              isOpen={true}
-              onClose={() => setAllergenModalBatchId(null)}
-              productAllergens={productAllergens}
-              lineAllowedAllergens={lineAllowed}
-              sanitationMinutes={minutes}
-              qaRequired={qaReq}
-              onApprove={() => {
-                const id = String(allergenModalBatchId)
-                setQaApprovedMap(prev => ({ ...prev, [id]: true }))
-                setAllergenConflictMap(prev => ({ ...prev, [id]: false }))
-                setAllergenModalBatchId(null)
-              }}
-              onReschedule={async () => {
-                try {
-                  const id = String(allergenModalBatchId)
-                  const full = await fetchRowById(id)
-                  setEditItem(full)
-                } catch {}
-                setAllergenModalBatchId(null)
-              }}
-            />
-          )
-        })()}
               </tbody>
             </table>
           </div>
@@ -1339,9 +1437,25 @@ const ProductionSchedule: React.FC = () => {
     onApprove: () => void
     onReschedule: () => void
   }
-  const AllergenConflictModal: React.FC<AllergenModalProps> = ({ isOpen, onClose, productAllergens, lineAllowedAllergens, sanitationMinutes, qaRequired, onApprove, onReschedule }) => {
+  const AllergenConflictModal: React.FC<AllergenModalProps> = ({ isOpen, onClose, productAllergens, lineAllowedAllergens, sanitationMinutes, qaRequired, onReschedule }) => {
     if (!isOpen) return null
     const mismatches = (productAllergens || []).filter(a => !(lineAllowedAllergens || []).includes(a))
+    
+    // Get active batch for QA approval check
+    const activeBatch = allergenModalBatchId ? (items || []).find(r => String(r.id) === String(allergenModalBatchId)) : null
+    const qaApproved = activeBatch?.qaApproved === true
+    
+    const onApprove = () => {
+      if (!activeBatch?.id) return;
+
+      if (!activeBatch.qaApproved) {
+        pushToast({ type: 'error', message: 'Cannot complete sanitation: QA approval required.' });
+        return;
+      }
+
+      markSanitationComplete(activeBatch.id);
+      onClose();
+    };
     return (
       <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
         <div className="absolute inset-0 bg-black/50" onClick={onClose}></div>
@@ -1384,8 +1498,28 @@ const ProductionSchedule: React.FC = () => {
               <div className="text-sm text-neutral-dark"><span className="font-semibold">Sanitation Window:</span> {sanitationMinutes != null ? `${sanitationMinutes} minutes` : 'N/A'}</div>
               <div className="text-sm text-neutral-dark mt-1"><span className="font-semibold">QA Requirement:</span> {qaRequired ? 'QA sign-off required before start' : 'No QA sign-off required'}</div>
             </div>
+            {qaRequired && !qaApproved && (
+              <div className="rounded-xl border border-amber-200 bg-amber-50/80 p-4">
+                <div className="flex items-start gap-3">
+                  <div className="h-6 w-6 rounded-full bg-amber-100 flex items-center justify-center text-amber-700 mt-0.5">
+                    <AlertTriangle className="h-4 w-4" />
+                  </div>
+                  <div>
+                    <div className="text-sm font-semibold text-amber-900">QA Approval Required</div>
+                    <div className="text-sm text-amber-800 mt-1">
+                      You need to approve QA first before you can mark sanitation as complete. Please ensure quality requirements are met.
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
             <div className="flex justify-end gap-3 pt-1">
-              <button className="px-5 py-2 rounded-lg bg-primary-dark hover:bg-primary-medium text-white text-sm" onClick={onApprove}>
+              <button 
+                className="px-5 py-2 rounded-lg bg-primary-dark hover:bg-primary-medium text-white text-sm disabled:opacity-50 disabled:cursor-not-allowed" 
+                onClick={onApprove}
+                disabled={!qaApproved}
+                title={!qaApproved ? 'QA approval required before completing sanitation' : ''}
+              >
                 Mark Sanitation + QA Complete
               </button>
               <button className="px-5 py-2 rounded-lg bg-amber-50 text-amber-700 hover:bg-amber-100 border border-amber-200 text-sm" onClick={onReschedule}>
@@ -1407,6 +1541,124 @@ const ProductionSchedule: React.FC = () => {
             <div key={t.id} className={`px-4 py-3 rounded-lg shadow-md text-sm ${t.type==='error' ? 'bg-red-50 text-red-700 border border-red-200' : 'bg-green-50 text-green-700 border border-green-200'}`}>{t.message}</div>
           ))}
         </div>
+
+        {/* Start Error Modal (block starting batch if RPC reports required fields missing) */}
+        {startErrorModal && (
+          <div className="fixed inset-0 z-[1100] flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-black/50" onClick={() => setStartErrorModal(null)}></div>
+            <div className="relative z-10 w-full max-w-md bg-white rounded-2xl shadow-2xl border border-neutral-soft/30 overflow-hidden">
+              <div className="px-6 py-4 border-b border-neutral-soft/40 bg-neutral-light/40">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-lg font-semibold text-neutral-dark">Cannot Start Batch</h3>
+                  <button className="text-neutral-medium hover:text-neutral-dark" onClick={() => setStartErrorModal(null)}>✕</button>
+                </div>
+              </div>
+              <div className="p-6 space-y-3">
+                <div className="text-sm text-neutral-medium">Batch ID</div>
+                <div className="text-neutral-dark font-semibold">{startErrorModal.batchId}</div>
+                <div className="mt-2 text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg p-3">
+                  {startErrorModal.message || 'A required field is missing. Please update the batch details.'}
+                </div>
+                <div className="text-xs text-neutral-medium">Update the missing/required fields (e.g., lot out) before starting this batch.</div>
+              </div>
+              <div className="px-6 py-4 border-t border-neutral-soft/40 bg-white flex items-center justify-end gap-3">
+                <button className="px-4 py-2 rounded-lg border border-neutral-soft text-neutral-dark bg-white hover:border-neutral-medium" onClick={() => setStartErrorModal(null)}>Close</button>
+                <button className="px-5 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold" onClick={() => handleOpenEditFromStartError(startErrorModal.batchId)}>Update Required Fields</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Allergen Conflict Modal (global, outside any other modal) */}
+        {allergenModalBatchId && (() => {
+          const row = (items || []).find(r => String(r.id) === String(allergenModalBatchId))
+          const product = row ? productByName.get(String(row.product || '')) : undefined
+          const line = row ? productionLineByName.get(String(row.room || '')) : undefined
+          const productAllergens = (product?.allergen_profile || []) as string[]
+          const lineAllowed = (line?.allowed_allergens || []) as string[]
+          const minutes = sanitationDetailsMap[allergenModalBatchId]?.minutes ?? null
+          const qaReq = qaRequiredMap[allergenModalBatchId]
+          return (
+            <AllergenConflictModal
+              isOpen={true}
+              onClose={() => setAllergenModalBatchId(null)}
+              productAllergens={productAllergens}
+              lineAllowedAllergens={lineAllowed}
+              sanitationMinutes={minutes}
+              qaRequired={qaReq}
+              onApprove={() => {
+                const id = String(allergenModalBatchId)
+                setQaApprovedMap(prev => ({ ...prev, [id]: true }))
+                setAllergenConflictMap(prev => ({ ...prev, [id]: false }))
+                setAllergenModalBatchId(null)
+              }}
+              onReschedule={async () => {
+                try {
+                  const id = String(allergenModalBatchId)
+                  const full = await fetchRowById(id)
+                  setEditItem(full)
+                } catch {}
+                setAllergenModalBatchId(null)
+              }}
+            />
+          )
+        })()}
+
+        {/* Merge Batches Preview Modal */}
+        {mergeModalOpen && (
+          <div className="fixed inset-0 z-[1100] flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-black/50" onClick={() => setMergeModalOpen(false)}></div>
+            <div className="relative z-10 w-full max-w-2xl bg-white rounded-2xl shadow-2xl border border-neutral-soft/30 overflow-hidden">
+              <div className="px-6 py-4 border-b border-neutral-soft/40 bg-neutral-light/40">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-lg font-semibold text-neutral-dark">Merge Batches Preview</h3>
+                  <button className="text-neutral-medium hover:text-neutral-dark" onClick={() => setMergeModalOpen(false)}>✕</button>
+                </div>
+              </div>
+              <div className="p-6 space-y-4">
+                <div className="text-sm text-neutral-medium">Product (SKU)</div>
+                <div className="text-neutral-dark font-semibold">{mergeTargets[0]?.product || '—'}</div>
+
+                <div className="mt-2">
+                  <div className="text-sm font-medium text-neutral-dark mb-2">Batches to merge</div>
+                  <div className="border border-neutral-soft rounded-lg overflow-hidden">
+                    <table className="w-full text-sm">
+                      <thead className="bg-neutral-light/40">
+                        <tr>
+                          <th className="px-3 py-2 text-left text-neutral-medium">Batch ID</th>
+                          <th className="px-3 py-2 text-left text-neutral-medium">PO Source</th>
+                          <th className="px-3 py-2 text-right text-neutral-medium">Qty</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {mergeTargets.map(b => (
+                          <tr key={b.id} className="border-t border-neutral-soft/40">
+                            <td className="px-3 py-2 text-neutral-dark">{b.id}</td>
+                            <td className="px-3 py-2 text-neutral-dark">{b.sourcePoId ? (poSourceMap[b.sourcePoId] || 'PO') : '—'}</td>
+                            <td className="px-3 py-2 text-right text-neutral-dark">{b.qty}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between mt-2 text-sm">
+                  <div className="text-neutral-medium">Final merged quantity</div>
+                  <div className="text-neutral-dark font-semibold">{mergeTargets.reduce((s, b) => s + Number(b.qty || 0), 0)}</div>
+                </div>
+
+                <div className="mt-3 text-xs text-neutral-medium">
+                  Material requirements impact will be recalculated for the merged batch based on the final quantity.
+                </div>
+              </div>
+              <div className="px-6 py-4 border-t border-neutral-soft/40 bg-white flex items-center justify-end gap-3">
+                <button className="px-4 py-2 rounded-lg border border-neutral-soft text-neutral-dark bg-white hover:border-neutral-medium" onClick={() => setMergeModalOpen(false)}>Cancel</button>
+                <button className="px-5 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold" onClick={handleConfirmMerge}>Confirm Merge</button>
+              </div>
+            </div>
+          </div>
+        )}
         {/* Header */}
         <div className="bg-white rounded-2xl shadow-md border border-neutral-soft/20 p-8 mb-6">
           <div className="flex items-center justify-between">
@@ -1530,6 +1782,63 @@ const ProductionSchedule: React.FC = () => {
           </div>
         ) : (
         <>
+        {/* Suggested Consolidation banners (Schedule tab only) */}
+        {activeSection === 'schedule' && (() => {
+          try {
+            const scheduled = items.filter(it => String(it.status).toLowerCase() === 'scheduled')
+            const bySku = new Map<string, ScheduleItem[]>()
+            for (const it of scheduled) {
+              const k = String(it.product || '')
+              if (!bySku.has(k)) bySku.set(k, [])
+              bySku.get(k)!.push(it)
+            }
+            const banners: Array<{ sku: string; targets: ScheduleItem[] }> = []
+            const WIN = 48 * 60 * 60 * 1000
+            for (const [sku, arr] of bySku) {
+              if (arr.length < 2) continue
+              const withTimes = arr.map(a => ({
+                t: (() => { try { return new Date((a.startDate || a.createdAt || '') as any).getTime() } catch { return NaN } })(),
+                row: a
+              })).filter(x => Number.isFinite(x.t)).sort((a,b)=>a.t-b.t)
+              let close = false
+              for (let i=0;i<withTimes.length && !close;i++) {
+                for (let j=i+1;j<withTimes.length && !close;j++) {
+                  if (Math.abs(withTimes[j].t-withTimes[i].t) <= WIN) close = true
+                }
+              }
+              if (close) banners.push({ sku, targets: withTimes.map(x=>x.row) })
+            }
+            if (banners.length === 0) return null
+            return (
+              <div className="mb-4 space-y-3">
+                {banners.map(entry => (
+                  <div key={entry.sku} className="p-4 rounded-xl border border-amber-200 bg-amber-50/80 shadow-sm">
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="flex items-start gap-3">
+                        <div className="h-8 w-8 rounded-full bg-amber-100 flex items-center justify-center text-amber-700">
+                          <Lightbulb className="h-4 w-4" />
+                        </div>
+                        <div>
+                          <div className="text-sm font-semibold text-amber-900">Suggested Consolidation</div>
+                          <div className="text-sm text-amber-800">
+                            You have multiple batches for <span className="font-semibold">{entry.sku}</span> scheduled close together. Consider merging them to reduce changeovers.
+                          </div>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-semibold rounded-lg bg-blue-600 text-white hover:bg-blue-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 shadow-sm transition"
+                        onClick={() => handleOpenMergeModal(entry.targets)}
+                      >
+                        Merge Batches
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )
+          } catch { return null }
+        })()}
         {/* Empty */}
         {filtered.length === 0 && !loading && (
           <div className="text-center py-20">
@@ -1583,6 +1892,9 @@ const ProductionSchedule: React.FC = () => {
                     </th>
                     <th className="px-6 py-3 text-left text-xs font-semibold text-neutral-medium uppercase tracking-wider">
                       Status
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-semibold text-neutral-medium uppercase tracking-wider">
+                      Compliance
                     </th>
                     <th className="px-6 py-3"></th>
                   </tr>
@@ -1666,13 +1978,32 @@ const ProductionSchedule: React.FC = () => {
                         )}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm">
+                        <div className="flex items-center gap-3">
+                          {row.sanitationRequired && (
+                            <div className="flex items-center gap-2">
+                              <div className="h-2 w-24 rounded-full bg-amber-200/80 shadow-[inset_0_0_2px_rgba(0,0,0,0.06)]" />
+                              <span className="text-[11px] text-amber-700 font-semibold whitespace-nowrap">
+                                Sanitation ({(() => { const m = diffMinutes(row.sanitationStart, row.sanitationEnd); return m != null ? `${m} min` : '—' })()})
+                              </span>
+                            </div>
+                          )}
+                          {row.qaRequired && (
+                            row.qaApproved ? (
+                              <span className="inline-flex px-2 py-0.5 rounded-full text-[10px] font-semibold border border-neutral-300 text-neutral-700 bg-white">QA OK</span>
+                            ) : (
+                              <span className="inline-flex px-2 py-0.5 rounded-full text-[10px] font-semibold border border-red-200 text-red-700 bg-red-50">QA Pending</span>
+                            )
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm">
                         <div className="flex items-center justify-end gap-3">
                           {/* Action buttons horizontal, smaller */}
                           <div className="flex flex-row gap-1">
                             <button
                               className="px-2.5 py-1 rounded-md bg-blue-50 text-blue-700 hover:bg-blue-100 text-[11px]"
-                              disabled={!!(startDisabled[row.id] || shortagesCache[row.id] || prExistsMap[row.id] || allergenConflictMap[row.id] || (qaRequiredMap[row.id] && !qaApprovedMap[row.id]))}
-                              title={(qaRequiredMap[row.id] && !qaApprovedMap[row.id]) ? 'QA approval required before starting.' : (allergenConflictMap[row.id] ? 'Allergen conflict must be resolved.' : undefined)}
+                              disabled={!!(startDisabled[row.id] || shortagesCache[row.id] || prExistsMap[row.id])}
+                              title={(qaRequiredMap[row.id] && !qaApprovedMap[row.id]) ? 'QA approval required (start will show notice).' : (allergenConflictMap[row.id] ? 'Allergen conflict will be shown.' : undefined)}
                               onClick={(e) => { e.stopPropagation(); onStartBatch(row.id); }}
                             >
                               Start
@@ -1880,6 +2211,45 @@ const ProductionSchedule: React.FC = () => {
                 </div>
 
                 <ViewContent batchId={viewItem.id} refreshKey={varianceRefreshKey} />
+
+                {/* Compliance section */}
+                <div className="px-6 pt-4 pb-6">
+                  <div className="rounded-xl border border-neutral-soft/30 bg-white p-4">
+                    <div className="text-sm font-semibold text-neutral-dark mb-3">Compliance</div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+                      <div>
+                        <div className="text-xs text-neutral-medium uppercase mb-1">Sanitation required</div>
+                        <div className="text-neutral-dark font-medium">{viewItem.sanitationRequired ? 'Yes' : 'No'}</div>
+                        {viewItem.sanitationRequired && (
+                          <div className="mt-2 text-neutral-dark">
+                            <div className="text-xs text-neutral-medium uppercase mb-1">Sanitation window</div>
+                            <div>{fmtDateTime(viewItem.sanitationStart)} → {fmtDateTime(viewItem.sanitationEnd)}</div>
+                            <div className="text-xs text-neutral-medium mt-1">{(() => { const m = diffMinutes(viewItem.sanitationStart, viewItem.sanitationEnd); return m != null ? `${m} minutes` : '' })()}</div>
+                          </div>
+                        )}
+                      </div>
+                      <div>
+                        <div className="text-xs text-neutral-medium uppercase mb-1">QA required</div>
+                        <div className="text-neutral-dark font-medium">{viewItem.qaRequired ? 'Yes' : 'No'}</div>
+                        {viewItem.qaRequired && (
+                          <div className="mt-2 flex items-center gap-3">
+                            <span className={`inline-flex px-2 py-0.5 rounded-full text-[11px] font-semibold ${viewItem.qaApproved ? 'border border-neutral-300 text-neutral-700 bg-white' : 'border border-red-200 text-red-700 bg-red-50'}`}>
+                              {viewItem.qaApproved ? 'QA OK' : 'QA Pending'}
+                            </span>
+                            {!viewItem.qaApproved && (
+                              <button
+                                className="px-3 py-1.5 rounded-md bg-green-600 hover:bg-green-700 text-white text-xs font-semibold"
+                                onClick={() => markQaApproved(viewItem.id)}
+                              >
+                                Mark QA Approved
+                              </button>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
           </div>

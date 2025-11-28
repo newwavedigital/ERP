@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
-import { Plus, X, User, Package, Calendar, FileText, Eye, Pencil, Trash2, MapPin, BadgeCheck, Search, Filter, CheckCircle2 } from 'lucide-react'
+import { Plus, X, User, Package, Calendar, FileText, Eye, Pencil, Trash2, MapPin, BadgeCheck, Search, Filter, CheckCircle2, Truck, PackageCheck } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 import { Status } from '../domain/enums'
 import { validatePODraft } from '../rules/po.rules'
@@ -2315,20 +2315,14 @@ const PurchaseOrders: React.FC = () => {
                                   {/* View ASN buttons only */}
                                   {o.status === "Shipped" && (
                                     <button
-                                      className="px-3 py-1.5 rounded-md bg-accent-success hover:bg-accent-success/90 text-white text-xs font-semibold"
+                                      className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-semibold bg-accent-success hover:bg-accent-success/90 text-white shadow-sm transition-all"
                                       onClick={() => { setOpenMenuId(null); setAsnPoStatus('shipped'); viewASN(o.id) }}
                                     >
+                                      <Eye className="h-4 w-4" />
                                       View ASN
                                     </button>
                                   )}
-                                  {String(o.status) === "partially_shipped" && (
-                                    <button
-                                      className="px-3 py-1.5 rounded-md bg-accent-warning hover:bg-accent-warning/90 text-white text-xs font-semibold"
-                                      onClick={() => { setOpenMenuId(null); setAsnPoStatus('partially_shipped'); viewASN(o.id) }}
-                                    >
-                                      View ASN
-                                    </button>
-                                  )}
+                                  {/* For partially_shipped, View ASN is rendered on the right with shipping buttons */}
 
                                   {/* Keep Approve for new/Open */}
                                   {(o.status === "Open" || !o.status) && (
@@ -2346,45 +2340,61 @@ const PurchaseOrders: React.FC = () => {
                               </div>
 
                               {/* Right Edge: Shipping buttons (per rules) + Menu Button */}
-                              <div className="relative justify-self-end flex items-center gap-2">
+                              <div className="relative justify-self-end flex items-center gap-3">
                                 {/* SHIPPING BUTTON LOGIC (exact rules) */}
                                 {String(o.status) === 'allocated' && (
                                   <button
-                                    className="bg-[#0d9488] text-white px-4 py-1 rounded-md shadow-sm text-sm"
+                                    className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-semibold bg-primary-light hover:bg-primary-medium text-white shadow-sm transition-all focus:outline-none focus:ring-2 focus:ring-primary-light/40"
                                     onClick={() => handleReadyToShip(String(o.id))}
                                   >
+                                    <Truck className="h-4 w-4" />
                                     Ready to Ship
                                   </button>
                                 )}
                                 {String(o.status) === 'Ready to Ship' && (
                                   <button
-                                    className="bg-[#0d9488] text-white px-4 py-1 rounded-md shadow-sm text-sm"
+                                    className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-semibold bg-primary-medium hover:bg-primary-dark text-white shadow-sm transition-all focus:outline-none focus:ring-2 focus:ring-primary-medium/40"
                                     onClick={() => shipPO(String(o.id))}
                                   >
+                                    <PackageCheck className="h-4 w-4" />
                                     Ship Order
                                   </button>
                                 )}
 
                                 {String(o.status) === 'partial' && (o as any).allow_partial_ship === true && (
                                   <button
-                                    className="bg-[#0d9488] text-white px-4 py-1 rounded-md shadow-sm text-sm"
+                                    className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-semibold bg-accent-warning hover:bg-accent-warning/90 text-white shadow-sm transition-all focus:outline-none focus:ring-2 focus:ring-accent-warning/40"
                                     onClick={() => handleShipPartial(String(o.id))}
                                   >
-                                    Ready to Partial Ship
+                                    <Truck className="h-4 w-4" />
+                                    Partial Ship
+                                  </button>
+                                )}
+
+                                {String(o.status) === 'partially_shipped' && (
+                                  <button
+                                    className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-semibold bg-accent-warning hover:bg-accent-warning/90 text-white shadow-sm transition-all"
+                                    onClick={() => { setOpenMenuId(null); setAsnPoStatus('partially_shipped'); viewASN(o.id) }}
+                                  >
+                                    <Eye className="h-4 w-4" />
+                                    View ASN
                                   </button>
                                 )}
 
                                 {String(o.status) === 'partially_shipped' && Number(o.backorder_qty ?? 0) > 0 && (
                                   <button
-                                    className="bg-[#0d9488] text-white px-4 py-1 rounded-md shadow-sm text-sm"
+                                    className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-semibold bg-primary-medium hover:bg-primary-dark text-white shadow-sm transition-all focus:outline-none focus:ring-2 focus:ring-primary-medium/40"
                                     onClick={() => handleShipRemaining(String(o.id))}
                                   >
+                                    <Truck className="h-4 w-4" />
                                     Ship Remaining
                                   </button>
                                 )}
 
                                 {String(o.status) === 'partially_shipped' && Number(o.backorder_qty ?? 0) === 0 && (
-                                  <span className="text-xs text-accent-success/80">Completed</span>
+                                  <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-medium bg-accent-success/10 text-accent-success border border-accent-success/20">
+                                    <CheckCircle2 className="h-3.5 w-3.5" /> Completed
+                                  </span>
                                 )}
                                 <button 
                                   className="menu-button p-2 text-neutral-medium hover:text-primary-medium rounded-md transition-colors"

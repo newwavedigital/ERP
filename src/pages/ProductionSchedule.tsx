@@ -1,7 +1,7 @@
 // src/pages/ProductionSchedule.tsx
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from 'react-router-dom'
-import { Calendar, X, Plus, Eye, Pencil, Trash2, MoreVertical, AlertTriangle, FileText, Lightbulb } from "lucide-react";
+import { Calendar, X, Plus, Eye, Pencil, Trash2, MoreVertical, AlertTriangle, FileText, Lightbulb, CheckCircle2 } from "lucide-react";
 import { supabase } from "../lib/supabase";
 import ProductionLines from "./ProductionLines";
 
@@ -10,14 +10,23 @@ import ProductionLines from "./ProductionLines";
 // ─────────────────────────────────────────────────────────────
 type Customer = { id: string; company_name: string };
 
+// COA fail detector (UI only)
+const hasCoaFlag = (flags: any): boolean => {
+  try {
+    if (!flags) return false
+    if (typeof flags === 'string') return flags.toUpperCase().includes('COA_FAIL')
+    const s = JSON.stringify(flags).toUpperCase()
+    return s.includes('COA_FAIL')
+  } catch { return false }
+}
+const isCoaFail = (row: { status?: string; flags?: any }) => {
+  const st = String(row.status || '')
+  return st === 'COA Failed' || (st.toUpperCase() === 'QA_HOLD' && hasCoaFlag(row.flags))
+}
+
 const diffMinutes = (a?: string | null, b?: string | null): number | null => {
   if (!a || !b) return null
   try { return Math.max(0, Math.round((new Date(b).getTime() - new Date(a).getTime()) / 60000)) } catch { return null }
-}
-
-const fmtDateTime = (d?: string | null) => {
-  if (!d) return '-'
-  try { return new Date(d).toLocaleString() } catch { return String(d) }
 }
 type Product = { id: string; product_name: string; product_image_url?: string; unit_of_measure?: string; allergen_profile?: string[] };
 type Formula = { id: string; formula_name: string; product_id: string | null };
@@ -62,7 +71,8 @@ type BatchRow = {
 
 type ScheduleItem = {
   id: string;
-  product: string;
+  sku?: string;
+  product?: string | null;
   customer: string;
   formula: string;
   qty: number;
@@ -70,7 +80,7 @@ type ScheduleItem = {
   room: string;
   startDate: string;
   status: string;
-  lot?: string;
+  lot?: string | null;
   po?: string;
   sourcePoId?: string | null;
   createdAt?: string | null;
@@ -80,13 +90,14 @@ type ScheduleItem = {
   sanitationEnd?: string | null;
   qaRequired?: boolean | null;
   qaApproved?: boolean | null;
+  flags?: any;
 };
 
 // ─────────────────────────────────────────────────────────────
 // UI helpers
 // ─────────────────────────────────────────────────────────────
 const roomsList = ["Main Room", "Bnutty Room", "Dilly's Room", "Room A", "Room B"];
-const statusList = ["Scheduled", "In Progress", "Completed", "Delayed"];
+const statusList = ["Scheduled", "In Progress", "Completed", "COA Failed", "Delayed"];
 const yesNo = ["No", "Yes"];
 
 const statusChip = (status: string) => {
@@ -97,6 +108,10 @@ const statusChip = (status: string) => {
       return "bg-yellow-100 text-yellow-800";
     case "Completed":
       return "bg-green-100 text-green-800";
+    case "QA_HOLD":
+      return "bg-blue-100 text-blue-800 border border-blue-200";
+    case "COA Failed":
+      return "bg-rose-100 text-rose-800 border border-rose-200";
     case "Delayed":
       return "bg-red-100 text-red-800";
     default:
@@ -256,6 +271,16 @@ const ProductionSchedule: React.FC = () => {
   const [qaHoldModalBatch, setQaHoldModalBatch] = useState<ScheduleItem | null>(null)
   const [qaHoldComponents, setQaHoldComponents] = useState<QAHoldComponent[]>([])
   // QA Hold indicator per batch (client-side cache)
+
+  // Disposition modal state
+  const [dispositionModal, setDispositionModal] = useState<{
+    isOpen: boolean;
+    batchId: string;
+    lotNumber: string;
+    action: 'REWORK' | 'DOWNGRADE' | 'SCRAP' | null;
+  }>({ isOpen: false, batchId: '', lotNumber: '', action: null })
+  const [dispositionNotes, setDispositionNotes] = useState('')
+  const [isApplyingDisposition, setIsApplyingDisposition] = useState(false)
 
   const saveShortagesToCache = (batchId: string, shortages: ShortageRow[]) => {
     try { localStorage.setItem(SHORTAGE_CACHE_PREFIX + batchId, JSON.stringify(shortages)) } catch {}
@@ -949,11 +974,11 @@ const ProductionSchedule: React.FC = () => {
           if (b?.formula_id) {
             const { data: f } = await supabase
               .from('formulas')
-              .select('standard_yield, scrap_tolerance')
+              .select('standard_yield, scrap_percent')
               .eq('id', b.formula_id as any)
               .maybeSingle()
             if (typeof f?.standard_yield === 'number') sy = f.standard_yield as number
-            if (typeof (f as any)?.scrap_tolerance === 'number') tol = (f as any).scrap_tolerance as number
+            if (typeof (f as any)?.scrap_percent === 'number') tol = (f as any).scrap_percent as number
           }
           setModalStandardYield(sy || 1)
           setModalScrapTolerance(tol || 0.05)
@@ -1043,13 +1068,60 @@ const ProductionSchedule: React.FC = () => {
     }
   }
 
+  // Disposition handlers
+  const openDispositionModal = (batchId: string, lotNumber: string, action: 'REWORK' | 'DOWNGRADE' | 'SCRAP') => {
+    setDispositionModal({ isOpen: true, batchId, lotNumber, action })
+    setDispositionNotes('')
+  }
+
+  const closeDispositionModal = () => {
+    setDispositionModal({ isOpen: false, batchId: '', lotNumber: '', action: null })
+    setDispositionNotes('')
+    setIsApplyingDisposition(false)
+  }
+
+  const applyDisposition = async () => {
+    if (!dispositionModal.action || !dispositionModal.batchId) return
+    
+    setIsApplyingDisposition(true)
+    try {
+      const { error } = await supabase.rpc("fn_apply_disposition", {
+          p_action: dispositionModal.action.toUpperCase(),
+          p_lot_number: dispositionModal.lotNumber,
+          p_notes: dispositionNotes || null,
+      })
+      
+      if (error) throw error
+      
+      pushToast({ 
+        type: 'success', 
+        message: `Disposition ${dispositionModal.action} applied successfully.` 
+      })
+      
+      // Refresh batch and finished goods
+      await loadBatches()
+      
+      // Close modal
+      closeDispositionModal()
+      
+    } catch (e: any) {
+      console.warn('Apply disposition error:', e)
+      pushToast({ 
+        type: 'error', 
+        message: e?.message || 'Failed to apply disposition' 
+      })
+    } finally {
+      setIsApplyingDisposition(false)
+    }
+  }
+
   // Traceability section component
   const TraceabilitySection: React.FC<{ batchId: string }> = ({ batchId }) => {
     const [traceabilityData, setTraceabilityData] = useState<Array<{
       raw_material_name: string;
       lot_in: string;
       lot_out: string;
-    }>>([])
+    }>>([]) 
     const [loading, setLoading] = useState(true)
 
     useEffect(() => {
@@ -1075,39 +1147,40 @@ const ProductionSchedule: React.FC = () => {
     }, [batchId])
 
     return (
-      <div className="mt-6 bg-neutral-light/40 p-5 rounded-xl">
-        <div className="text-lg font-semibold text-neutral-dark mb-4 flex items-center">
+      <div className="rounded-2xl border border-neutral-soft/40 bg-white shadow-sm hover:shadow-md transition-shadow p-6">
+        <div className="text-lg font-semibold text-neutral-dark mb-5 flex items-center">
           <FileText className="h-5 w-5 mr-2 text-primary-medium"/>
-          Traceability
+          Lot Traceability
         </div>
         
         {loading ? (
-          <div className="text-neutral-medium text-sm">Loading traceability data...</div>
+          <div className="text-neutral-medium text-sm">Loading lot traceability...</div>
         ) : traceabilityData.length === 0 ? (
-          <div className="text-neutral-medium text-sm">No traceability records found.</div>
+          <div className="text-neutral-medium text-sm">No lot traceability records available.</div>
         ) : (
-          <div className="overflow-x-auto border border-neutral-soft/40 rounded-xl">
-            <table className="min-w-full text-sm">
-              <thead>
-                <tr className="bg-neutral-light/40">
-                  <th className="px-4 py-3 text-left text-xs font-semibold text-neutral-medium uppercase">Raw Material</th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold text-neutral-medium uppercase">Lot In</th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold text-neutral-medium uppercase">Lot Out</th>
-                </tr>
-              </thead>
-              <tbody>
-                {traceabilityData.map((item, idx) => (
-                  <tr key={idx} className="border-t border-neutral-soft/30">
-                    <td className="px-4 py-3 text-neutral-dark">{item.raw_material_name}</td>
-                    <td className="px-4 py-3 text-neutral-dark">{item.lot_in || '-'}</td>
-                    <td className="px-4 py-3 text-neutral-dark">{item.lot_out || '-'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="space-y-4">
+            {traceabilityData.map((item, idx) => (
+              <div key={idx} className="bg-neutral-light/30 rounded-xl p-4 border border-neutral-soft/30">
+                <div className="grid grid-cols-1 gap-3">
+                  <div>
+                    <div className="text-xs font-semibold text-neutral-medium uppercase tracking-wide mb-1">Raw Material</div>
+                    <div className="text-sm font-medium text-neutral-dark">{item.raw_material_name}</div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <div className="text-xs font-semibold text-neutral-medium uppercase tracking-wide mb-1">Incoming Lot</div>
+                      <div className="text-sm text-neutral-dark">{item.lot_in || 'Not specified'}</div>
+                    </div>
+                    <div>
+                      <div className="text-xs font-semibold text-neutral-medium uppercase tracking-wide mb-1">Outgoing Lot</div>
+                      <div className="text-sm text-neutral-dark">{item.lot_out || 'Not specified'}</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ))}
           </div>
         )}
-
       </div>
     )
   }
@@ -1119,6 +1192,8 @@ const ProductionSchedule: React.FC = () => {
     const [busy, setBusy] = useState(true)
     const [activeTab, setActiveTab] = useState<'details' | 'variance' | 'capa'>('details')
     const [capaHistory, setCapaHistory] = useState<any[]>([])
+    const [qualityDeviations, setQualityDeviations] = useState<any[]>([])
+    const [segregationData, setSegregationData] = useState<{ segregated_qty: number; segregated_location: string | null; disposition: string | null } | null>(null)
 
     // reference setter to satisfy TS unused check in some tooling
     useEffect(() => { /* no-op */ }, [setActiveTab])
@@ -1131,7 +1206,7 @@ const ProductionSchedule: React.FC = () => {
           const [{ data: b, error: bErr }, { data: r, error: rErr }] = await Promise.all([
             supabase
               .from('production_batches')
-              .select('id, product_sku, qty, room, start_date, status, formula_id, customer_id, source_po_id, source_po_line_id, completed_qty, samples_received, samples_sent')
+              .select('id, product_sku, qty, room, start_date, status, formula_id, customer_id, source_po_id, source_po_line_id, completed_qty, samples_received, samples_sent, sanitation_required, qa_required, qa_approved')
               .eq('id', batchId)
               .single(),
             supabase
@@ -1159,6 +1234,36 @@ const ProductionSchedule: React.FC = () => {
               .order('created_at', { ascending: false })
             if (mounted) setCapaHistory(caps || [])
           } catch {}
+          // Load Quality Deviations separately for this batch
+          try {
+            const { data: qdev } = await supabase
+              .from('quality_deviations')
+              .select('id, batch_id, product_sku, issue_type, status, disposition, created_at, lot_number, severity, action_required')
+              .eq('batch_id', castBatchId(batchId))
+              .order('created_at', { ascending: false })
+            if (mounted) setQualityDeviations(qdev || [])
+          } catch {
+            if (mounted) setQualityDeviations([])
+          }
+          // Load segregation data from finished_goods for this product
+          try {
+            if (b?.product_sku) {
+              const { data: fgData } = await supabase
+                .from('finished_goods')
+                .select('segregated_qty, segregated_location, disposition')
+                .eq('product_name', b.product_sku)
+                .maybeSingle()
+              if (mounted && fgData) {
+                setSegregationData({
+                  segregated_qty: Number(fgData.segregated_qty || 0),
+                  segregated_location: fgData.segregated_location || null,
+                  disposition: fgData.disposition || null
+                })
+              }
+            }
+          } catch {
+            if (mounted) setSegregationData(null)
+          }
         } catch (e) {
           console.warn('Load batch view error', e)
         } finally {
@@ -1167,6 +1272,8 @@ const ProductionSchedule: React.FC = () => {
       })()
       return () => { mounted = false }
     }, [batchId, refreshKey])
+
+    const visibleCapa = useMemo(() => (capaHistory || []).filter((v: any) => String(v.issue_type || '').toUpperCase() !== 'COA_FAIL'), [capaHistory])
 
     return (
       <div className="p-6 space-y-6" data-active-tab={activeTab}>
@@ -1374,52 +1481,203 @@ const ProductionSchedule: React.FC = () => {
           </div>
         )}
 
-        {/* TRACEABILITY SECTION */}
-        <TraceabilitySection batchId={batchId} />
+        {/* Professional ERP Cards Grid */}
+        <div className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-5">
+          {/* Lot Traceability */}
+          <TraceabilitySection batchId={batchId} />
 
-        <div className="mt-6 bg-neutral-light/40 p-5 rounded-xl">
-          <div className="text-lg font-semibold mb-1">CAPA History ({capaHistory.length})</div>
-          {capaHistory.length > 0 && (
-            <div className="bg-yellow-50 border border-yellow-200 text-yellow-800 px-3 py-2 rounded mb-4 shadow-sm">
-              QA/Operations have been notified. CAPA review required.
+          {/* Corrective Actions */}
+          <div className="rounded-2xl border border-neutral-soft/40 bg-white shadow-sm hover:shadow-md transition-shadow p-6">
+            <div className="text-lg font-semibold text-neutral-dark mb-5 flex items-center">
+              <Lightbulb className="h-5 w-5 mr-2 text-primary-medium"/>
+              Corrective Actions (CAPA)
             </div>
-          )}
-          {capaHistory.length === 0 ? (
-            <div className="text-neutral-medium text-sm">No CAPA records yet.</div>
-          ) : (
-            <div className="space-y-3">
-              {capaHistory.map((v) => {
-                const over = (Number(v.scrap_percent ?? 0)) > (Number(v.tolerance ?? 0))
-                return (
-                  <div key={v.id} className="w-full rounded-xl border border-neutral-soft bg-white px-4 py-3 shadow-sm">
-                    <div className="flex items-start justify-between gap-4">
-                      <div>
-                        <div className="text-sm font-semibold text-neutral-dark">{v.product_sku || '-'}</div>
-                        <div className="mt-1 flex flex-wrap gap-x-6 gap-y-1 text-[13px] text-neutral-dark">
+            {visibleCapa.length > 0 && (
+              <div className="bg-accent-warning/10 border border-accent-warning/30 text-accent-warning px-4 py-3 rounded-xl mb-4">
+                <div className="text-sm font-medium">Quality team has been notified. Review required for corrective actions.</div>
+              </div>
+            )}
+            {visibleCapa.length === 0 ? (
+              <div className="text-neutral-medium text-sm">No corrective actions recorded.</div>
+            ) : (
+              <div className="space-y-4">
+                {visibleCapa.map((v) => {
+                  const over = (Number(v.scrap_percent ?? 0)) > (Number(v.tolerance ?? 0))
+                  return (
+                    <div key={v.id} className="bg-neutral-light/30 rounded-xl p-4 border border-neutral-soft/30">
+                      <div className="flex items-start justify-between gap-3 mb-3">
+                        <div className="text-sm font-semibold text-neutral-dark">{v.product_sku || 'Product not specified'}</div>
+                        <div className="text-xs text-neutral-medium">{new Date(v.created_at).toLocaleDateString()}</div>
+                      </div>
+                      <div className="grid grid-cols-1 gap-3">
+                        <div className="grid grid-cols-3 gap-4">
                           <div>
-                            <span className="text-neutral-medium">Scrap Qty: </span>
-                            <span className="font-semibold">{v.scrap_qty ?? '-'}</span>
+                            <div className="text-xs font-semibold text-neutral-medium uppercase tracking-wide mb-1">Scrap Quantity</div>
+                            <div className="text-sm text-neutral-dark">{v.scrap_qty ?? 'Not recorded'}</div>
                           </div>
                           <div>
-                            <span className="text-neutral-medium">Scrap %: </span>
-                            <span className={over ? 'font-semibold text-red-600' : 'font-semibold text-neutral-dark'}>
-                              {v.scrap_percent != null && !isNaN(Number(v.scrap_percent)) ? Number(v.scrap_percent).toFixed(2) + '%' : '-'}
-                            </span>
+                            <div className="text-xs font-semibold text-neutral-medium uppercase tracking-wide mb-1">Scrap Rate</div>
+                            <div className={`text-sm font-medium ${over ? 'text-accent-danger' : 'text-neutral-dark'}`}>
+                              {v.scrap_percent != null && !isNaN(Number(v.scrap_percent)) ? Number(v.scrap_percent).toFixed(2) + '%' : 'Not calculated'}
+                            </div>
                           </div>
                           <div>
-                            <span className="text-neutral-medium">Tolerance: </span>
-                            <span className="font-semibold">{v.tolerance != null && !isNaN(Number(v.tolerance)) ? Number(v.tolerance).toFixed(2) + '%' : '-'}</span>
+                            <div className="text-xs font-semibold text-neutral-medium uppercase tracking-wide mb-1">Tolerance Limit</div>
+                            <div className="text-sm text-neutral-dark">{v.tolerance != null && !isNaN(Number(v.tolerance)) ? Number(v.tolerance).toFixed(2) + '%' : 'Not set'}</div>
                           </div>
                         </div>
                       </div>
-                      <div className="text-xs text-neutral-medium whitespace-nowrap">{new Date(v.created_at).toLocaleString()}</div>
                     </div>
-                  </div>
-                )
-              })}
+                  )
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* Quality Issues */}
+          <div className="rounded-2xl border border-neutral-soft/40 bg-white shadow-sm hover:shadow-md transition-shadow p-6">
+            <div className="text-lg font-semibold text-neutral-dark mb-5 flex items-center">
+              <AlertTriangle className="h-5 w-5 mr-2 text-primary-medium"/>
+              Quality Issues (Deviations)
             </div>
-          )}
+            {qualityDeviations.length === 0 ? (
+              <div className="text-neutral-medium text-sm">No quality issues recorded.</div>
+            ) : (
+              <div className="space-y-4">
+                {qualityDeviations.map((d: any) => {
+                  const sevCls = String(d.severity || '').toLowerCase() === 'high'
+                    ? 'bg-accent-danger/10 text-accent-danger border border-accent-danger/30'
+                    : String(d.severity || '').toLowerCase() === 'medium'
+                      ? 'bg-accent-warning/10 text-accent-warning border border-accent-warning/30'
+                      : 'bg-neutral-light/50 text-neutral-medium border border-neutral-soft/50'
+                  return (
+                    <div key={d.id} className="bg-neutral-light/30 rounded-xl p-4 border border-neutral-soft/30">
+                      <div className="flex items-start justify-between gap-3 mb-3">
+                        <div className="text-sm font-semibold text-neutral-dark">{d.issue_type || 'Quality Issue'}</div>
+                        <div className="text-xs text-neutral-medium">{d.created_at ? new Date(d.created_at).toLocaleDateString() : 'Date not recorded'}</div>
+                      </div>
+                      <div className="grid grid-cols-1 gap-3">
+                        <div className="flex flex-wrap gap-2">
+                          {d.status ? (
+                            <span className="inline-flex px-3 py-1 rounded-full text-xs font-medium bg-primary-light/20 text-primary-dark border border-primary-light/40">
+                              Status: {d.status}
+                            </span>
+                          ) : null}
+                          {d.severity ? (
+                            <span className={`inline-flex px-3 py-1 rounded-full text-xs font-medium ${sevCls}`}>
+                              {d.severity} Priority
+                            </span>
+                          ) : null}
+                          {d.disposition ? (
+                            <span className="inline-flex px-3 py-1 rounded-full text-xs font-medium bg-accent-success/20 text-accent-success border border-accent-success/40">
+                              {d.disposition}
+                            </span>
+                          ) : null}
+                        </div>
+                        {d.action_required && (
+                          <div>
+                            <div className="text-xs font-semibold text-neutral-medium uppercase tracking-wide mb-1">Required Action</div>
+                            <div className="text-sm text-neutral-dark">{d.action_required}</div>
+                          </div>
+                        )}
+                        <div className="grid grid-cols-2 gap-4">
+                          <div>
+                            <div className="text-xs font-semibold text-neutral-medium uppercase tracking-wide mb-1">Product</div>
+                            <div className="text-sm text-neutral-dark">{d.product_sku || 'Not specified'}</div>
+                          </div>
+                          <div>
+                            <div className="text-xs font-semibold text-neutral-medium uppercase tracking-wide mb-1">Lot Number</div>
+                            <div className="text-sm text-neutral-dark">{d.lot_number || 'Not specified'}</div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* Batch Compliance */}
+          <div className="rounded-2xl border border-neutral-soft/40 bg-white shadow-sm hover:shadow-md transition-shadow p-6">
+            <div className="text-lg font-semibold text-neutral-dark mb-5 flex items-center">
+              <CheckCircle2 className="h-5 w-5 mr-2 text-primary-medium"/>
+              Batch Compliance
+            </div>
+            <div className="space-y-4">
+              <div className="bg-neutral-light/30 rounded-xl p-4 border border-neutral-soft/30">
+                <div className="text-xs font-semibold text-neutral-medium uppercase tracking-wide mb-2">Sanitation Requirements</div>
+                <div className="text-sm font-medium text-neutral-dark">{(row as any)?.sanitation_required ? 'Sanitation required before production' : 'No sanitation requirements'}</div>
+              </div>
+              <div className="bg-neutral-light/30 rounded-xl p-4 border border-neutral-soft/30">
+                <div className="text-xs font-semibold text-neutral-medium uppercase tracking-wide mb-2">Quality Assurance</div>
+                <div className="text-sm font-medium text-neutral-dark">{(row as any)?.qa_required ? 'QA approval required' : 'No QA requirements'}</div>
+              </div>
+              {(row as any)?.qa_required && (
+                <div className="bg-neutral-light/30 rounded-xl p-4 border border-neutral-soft/30">
+                  <div className="text-xs font-semibold text-neutral-medium uppercase tracking-wide mb-2">Approval Status</div>
+                  <div className="flex items-center gap-3">
+                    <span className={`inline-flex px-3 py-1.5 rounded-full text-xs font-medium ${((row as any)?.qa_approved ? 'bg-accent-success/20 text-accent-success border border-accent-success/40' : 'bg-accent-danger/20 text-accent-danger border border-accent-danger/40')}`}>
+                      {(row as any)?.qa_approved ? 'Quality Approved' : 'Awaiting QA Approval'}
+                    </span>
+                    {!(row as any)?.qa_approved ? (
+                      <button
+                        className="px-4 py-2 rounded-lg bg-accent-success hover:bg-accent-success/90 text-white text-xs font-semibold transition-colors"
+                        onClick={() => markQaApproved(String(batchId))}
+                      >
+                        Approve Quality
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
         </div>
+
+        {/* Lot Segregation Section - Separate from the four-card grid */}
+        {qualityDeviations.some((d: any) => String(d.issue_type || '').toUpperCase() === 'COA_FAIL') && (
+          <div className="rounded-2xl border border-red-200 bg-red-50 shadow-sm hover:shadow-md transition-shadow p-6 mt-6">
+            <div className="text-lg font-semibold text-red-800 mb-4 flex items-center">
+              <AlertTriangle className="h-5 w-5 mr-2 text-red-600"/>
+              Lot Segregation
+            </div>
+            <div className="text-sm font-medium text-red-800 mb-4">
+              Lot is segregated. Segregated Qty: {segregationData?.segregated_qty || 0} units. Location: {segregationData?.segregated_location || 'QA Hold Area'}.
+            </div>
+            
+            {/* Disposition Buttons - Show based on specified conditions */}
+            {(row as any)?.status === 'QA_HOLD' && 
+             (row as any)?.qa_required === true &&
+             (row as any)?.qa_approved === false &&
+             (segregationData?.segregated_qty || 0) > 0 &&
+             !segregationData?.disposition && (
+              <div className="bg-amber-50 rounded-xl p-4 border border-amber-200">
+                <div className="text-xs font-semibold text-amber-700 uppercase tracking-wide mb-3">Disposition Required for Segregated Lot</div>
+                <div className="flex flex-wrap gap-3">
+                  <button
+                    className="px-4 py-2 rounded-lg bg-yellow-500 hover:bg-yellow-600 text-white text-xs font-semibold transition-colors"
+                    onClick={() => openDispositionModal(String(batchId), (row as any)?.lot_number || 'Unknown', 'REWORK')}
+                  >
+                    Rework
+                  </button>
+                  <button
+                    className="px-4 py-2 rounded-lg bg-blue-500 hover:bg-blue-600 text-white text-xs font-semibold transition-colors"
+                    onClick={() => openDispositionModal(String(batchId), (row as any)?.lot_number || 'Unknown', 'DOWNGRADE')}
+                  >
+                    Downgrade
+                  </button>
+                  <button
+                    className="px-4 py-2 rounded-lg bg-red-500 hover:bg-red-600 text-white text-xs font-semibold transition-colors"
+                    onClick={() => openDispositionModal(String(batchId), (row as any)?.lot_number || 'Unknown', 'SCRAP')}
+                  >
+                    Scrap
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
       </div>
     )
   }
@@ -1659,6 +1917,68 @@ const ProductionSchedule: React.FC = () => {
             </div>
           </div>
         )}
+
+        {/* Disposition Confirmation Modal */}
+        {dispositionModal.isOpen && (
+          <div className="fixed inset-0 z-[1100] flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-black/50" onClick={closeDispositionModal}></div>
+            <div className="relative z-10 w-full max-w-md bg-white rounded-2xl shadow-2xl border border-neutral-soft/30 overflow-hidden">
+              <div className="px-6 py-4 border-b border-neutral-soft/40 bg-neutral-light/40">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-lg font-semibold text-neutral-dark">Confirm Disposition Action</h3>
+                  <button 
+                    className="text-neutral-medium hover:text-neutral-dark" 
+                    onClick={closeDispositionModal}
+                    disabled={isApplyingDisposition}
+                  >
+                    ✕
+                  </button>
+                </div>
+              </div>
+              <div className="p-6 space-y-4">
+                <div className="text-sm text-neutral-dark">
+                  Apply <span className="font-semibold">{dispositionModal.action}</span> to lot <span className="font-semibold">{dispositionModal.lotNumber}</span>?
+                </div>
+                
+                <div>
+                  <label className="block text-sm font-medium text-neutral-dark mb-2">
+                    Notes
+                  </label>
+                  <textarea
+                    value={dispositionNotes}
+                    onChange={(e) => setDispositionNotes(e.target.value)}
+                    className="w-full px-3 py-2 border border-neutral-soft rounded-lg text-sm resize-none"
+                    rows={3}
+                    placeholder="Enter disposition notes..."
+                    disabled={isApplyingDisposition}
+                  />
+                </div>
+                
+                <div className="flex justify-end gap-3 pt-2">
+                  <button 
+                    className="px-4 py-2 rounded-lg border text-sm" 
+                    onClick={closeDispositionModal}
+                    disabled={isApplyingDisposition}
+                  >
+                    Cancel
+                  </button>
+                  <button 
+                    className={`px-4 py-2 rounded-lg text-white text-sm font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+                      dispositionModal.action === 'REWORK' ? 'bg-yellow-500 hover:bg-yellow-600' :
+                      dispositionModal.action === 'DOWNGRADE' ? 'bg-blue-500 hover:bg-blue-600' :
+                      'bg-red-500 hover:bg-red-600'
+                    }`}
+                    onClick={applyDisposition}
+                    disabled={isApplyingDisposition}
+                  >
+                    {isApplyingDisposition ? 'Applying...' : `Confirm ${dispositionModal.action}`}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Header */}
         <div className="bg-white rounded-2xl shadow-md border border-neutral-soft/20 p-8 mb-6">
           <div className="flex items-center justify-between">
@@ -1953,29 +2273,37 @@ const ProductionSchedule: React.FC = () => {
                         {fmtDate(row.startDate)}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
-                        <span
-                          className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${statusChip(
-                            row.status
-                          )}`}
-                        >
-                          {row.status}
-                        </span>
-                        {qaHoldMap[row.id] && (
-                          <span className="ml-2 inline-flex px-2 py-0.5 rounded-full text-[10px] font-semibold bg-rose-100 text-rose-700 align-middle">
-                            QA Hold
+                        <div className="flex items-center gap-2">
+                          <span
+                            className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${statusChip(
+                              row.status
+                            )}`}
+                          >
+                            {row.status}
                           </span>
-                        )}
-                        {allergenConflictMap[row.id] && (
-                          <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-100 text-amber-700 align-middle shadow-sm">
-                            Allergen Conflict
-                          </span>
-                        )}
-                        {capaMap[row.id] && (
-                          <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-red-100 text-red-700 align-middle shadow-sm">
-                            CAPA
-                            <span className="ml-1 h-2 w-2 rounded-full bg-yellow-400 inline-block"></span>
-                          </span>
-                        )}
+                          {/* Secondary badges */}
+                          {isCoaFail(row) && (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-red-100 text-red-700 border border-red-300">
+                              COA Fail
+                            </span>
+                          )}
+                          {qaHoldMap[row.id] && (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-rose-100 text-rose-700 border border-rose-200">
+                              QA Hold
+                            </span>
+                          )}
+                          {allergenConflictMap[row.id] && (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-100 text-amber-700 border border-amber-200">
+                              Allergen Conflict
+                            </span>
+                          )}
+                          {capaMap[row.id] && (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-red-100 text-red-700 border border-red-200">
+                              CAPA
+                              <span className="ml-1 h-2 w-2 rounded-full bg-yellow-400 inline-block"></span>
+                            </span>
+                          )}
+                        </div>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm">
                         <div className="flex items-center gap-3">
@@ -2041,12 +2369,15 @@ const ProductionSchedule: React.FC = () => {
                             >
                               Cancel
                             </button>
-                            <button
-                              className="px-2.5 py-1 rounded-md bg-green-50 text-green-700 hover:bg-green-100 text-[11px]"
-                              onClick={(e) => { e.stopPropagation(); setCompleteId(row.id); }}
-                            >
-                              Complete
-                            </button>
+                            {/* Hide Complete when COA Fail */}
+                            {!isCoaFail(row) && (
+                              <button
+                                className="px-2.5 py-1 rounded-md bg-green-50 text-green-700 hover:bg-green-100 text-[11px]"
+                                onClick={(e) => { e.stopPropagation(); setCompleteId(row.id); }}
+                              >
+                                Complete
+                              </button>
+                            )}
                             <button
                               className="px-2.5 py-1 rounded-md bg-amber-50 text-amber-700 hover:bg-amber-100 text-[11px]"
                               onClick={(e) => { e.stopPropagation(); onGeneratePO(row.id); }}
@@ -2212,44 +2543,6 @@ const ProductionSchedule: React.FC = () => {
 
                 <ViewContent batchId={viewItem.id} refreshKey={varianceRefreshKey} />
 
-                {/* Compliance section */}
-                <div className="px-6 pt-4 pb-6">
-                  <div className="rounded-xl border border-neutral-soft/30 bg-white p-4">
-                    <div className="text-sm font-semibold text-neutral-dark mb-3">Compliance</div>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
-                      <div>
-                        <div className="text-xs text-neutral-medium uppercase mb-1">Sanitation required</div>
-                        <div className="text-neutral-dark font-medium">{viewItem.sanitationRequired ? 'Yes' : 'No'}</div>
-                        {viewItem.sanitationRequired && (
-                          <div className="mt-2 text-neutral-dark">
-                            <div className="text-xs text-neutral-medium uppercase mb-1">Sanitation window</div>
-                            <div>{fmtDateTime(viewItem.sanitationStart)} → {fmtDateTime(viewItem.sanitationEnd)}</div>
-                            <div className="text-xs text-neutral-medium mt-1">{(() => { const m = diffMinutes(viewItem.sanitationStart, viewItem.sanitationEnd); return m != null ? `${m} minutes` : '' })()}</div>
-                          </div>
-                        )}
-                      </div>
-                      <div>
-                        <div className="text-xs text-neutral-medium uppercase mb-1">QA required</div>
-                        <div className="text-neutral-dark font-medium">{viewItem.qaRequired ? 'Yes' : 'No'}</div>
-                        {viewItem.qaRequired && (
-                          <div className="mt-2 flex items-center gap-3">
-                            <span className={`inline-flex px-2 py-0.5 rounded-full text-[11px] font-semibold ${viewItem.qaApproved ? 'border border-neutral-300 text-neutral-700 bg-white' : 'border border-red-200 text-red-700 bg-red-50'}`}>
-                              {viewItem.qaApproved ? 'QA OK' : 'QA Pending'}
-                            </span>
-                            {!viewItem.qaApproved && (
-                              <button
-                                className="px-3 py-1.5 rounded-md bg-green-600 hover:bg-green-700 text-white text-xs font-semibold"
-                                onClick={() => markQaApproved(viewItem.id)}
-                              >
-                                Mark QA Approved
-                              </button>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                </div>
               </div>
             </div>
           </div>

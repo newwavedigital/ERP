@@ -99,7 +99,7 @@ const Inventory: React.FC = () => {
   const [deleting, setDeleting] = useState<boolean>(false)
   const [toast, setToast] = useState<{ show: boolean; message: string }>({ show: false, message: '' })
   // Finished goods state
-  const [fg, setFg] = useState<Array<{ id: string; product_name: string; available_qty: number; reserved_qty: number; location?: string | null; reorder_point?: number | null; updated_at?: string | null }>>([])
+  const [fg, setFg] = useState<Array<{ id: string; product_name: string; available_qty: number; reserved_qty: number; location?: string | null; reorder_point?: number | null; updated_at?: string | null; qa_hold?: boolean | null; qa_hold_reason?: string | null; segregated_qty?: number | null; segregated_location?: string | null }>>([])
   const [fgLoading, setFgLoading] = useState<boolean>(false)
   const [fgRefreshing, setFgRefreshing] = useState<boolean>(false)
   const [fgError, setFgError] = useState<string | null>(null)
@@ -211,7 +211,7 @@ const Inventory: React.FC = () => {
     try {
       const { data, error } = await supabase
         .from('finished_goods')
-        .select('id, product_name, available_qty, reserved_qty, location, updated_at')
+        .select('id, product_name, available_qty, reserved_qty, location, updated_at, qa_hold, qa_hold_reason, segregated_qty, segregated_location')
         .order('product_name', { ascending: true, nullsFirst: true })
 
       if (error) {
@@ -229,6 +229,10 @@ const Inventory: React.FC = () => {
         reserved_qty: Number(r.reserved_qty ?? 0),
         location: r.location ?? null,
         updated_at: r.updated_at ?? null,
+        qa_hold: Boolean(r.qa_hold ?? false),
+        qa_hold_reason: r.qa_hold_reason ?? null,
+        segregated_qty: Number(r.segregated_qty ?? 0),
+        segregated_location: r.segregated_location ?? null,
       }))
 
       setFg(items)
@@ -1021,6 +1025,7 @@ const Inventory: React.FC = () => {
                       <th className="px-6 py-4 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider whitespace-nowrap">Location</th>
                       <th className="px-6 py-4 text-right text-xs font-bold text-neutral-dark uppercase tracking-wider whitespace-nowrap w-28">Available Qty</th>
                       <th className="px-6 py-4 text-right text-xs font-bold text-neutral-dark uppercase tracking-wider whitespace-nowrap w-28">Reserved Qty</th>
+                      <th className="px-6 py-4 text-right text-xs font-bold text-neutral-dark uppercase tracking-wider whitespace-nowrap w-28">Segregated Qty</th>
                       <th className="px-6 py-4 text-center text-xs font-bold text-neutral-dark uppercase tracking-wider whitespace-nowrap w-32">Status</th>
                       <th className="px-6 py-4 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider whitespace-nowrap">Customer</th>
                     </tr>
@@ -1031,10 +1036,12 @@ const Inventory: React.FC = () => {
                       const key = item.product_name || item.id
                       const highlighted = highlightedRows[key] !== undefined
                       const hasStock = Number(item.available_qty || 0) > 0
-                      const status = hasStock ? 'Sufficient' : 'No Stock'
-                      const statusColor = hasStock ? 'text-emerald-600' : 'text-accent-danger'
+                      const qaHold = Boolean((item as any).qa_hold)
+                      const segregatedQty = Number((item as any).segregated_qty || 0)
+                      const status = qaHold ? 'QA Hold - Segregated Lot' : (hasStock ? 'Sufficient' : 'No Stock')
+                      const statusColor = qaHold ? 'text-rose-600' : (hasStock ? 'text-emerald-600' : 'text-accent-danger')
                       return (
-                        <tr key={item.id} className={`transition ${highlighted ? 'ring-2 ring-teal-400/70 ring-offset-2 ring-offset-teal-50 bg-teal-50/30' : 'hover:bg-neutral-light/20'}`}>
+                        <tr key={item.id} className={`transition ${highlighted ? 'ring-2 ring-teal-400/70 ring-offset-2 ring-offset-teal-50 bg-teal-50/30' : qaHold ? 'bg-gray-50 cursor-default' : 'hover:bg-neutral-light/20 cursor-pointer'}`}>
                           <td className="px-6 py-4 text-sm text-neutral-dark font-medium flex items-center gap-2 whitespace-nowrap">
                             {item.product_name}
                             {recentlyAllocated[key] && highlighted && (
@@ -1044,7 +1051,23 @@ const Inventory: React.FC = () => {
                           <td className="px-6 py-4 text-sm text-neutral-dark whitespace-nowrap">{item.location || '—'}</td>
                           <td className="px-6 py-4 text-sm text-neutral-dark text-right whitespace-nowrap">{item.available_qty}</td>
                           <td className="px-6 py-4 text-sm text-neutral-dark text-right whitespace-nowrap">{allocated}</td>
-                          <td className={`px-6 py-4 text-sm font-medium text-center whitespace-nowrap ${statusColor}`}>{status}</td>
+                          <td className="px-6 py-4 text-sm text-neutral-dark text-right whitespace-nowrap">{segregatedQty}</td>
+                          <td className={`px-6 py-4 text-sm font-medium text-center whitespace-nowrap ${statusColor}`}>
+                            {qaHold ? (
+                              <div className="flex flex-col items-center gap-1">
+                                <span className="inline-flex items-center rounded-full bg-rose-100 px-2.5 py-0.5 text-[11px] font-semibold text-rose-700 border border-rose-200">
+                                  QA Hold - Segregated Lot
+                                </span>
+                                {(item as any).qa_hold_reason ? (
+                                  <span className="text-[10px] text-rose-600/80 max-w-[220px] truncate" title={(item as any).qa_hold_reason}>
+                                    {(item as any).qa_hold_reason}
+                                  </span>
+                                ) : null}
+                              </div>
+                            ) : (
+                              status
+                            )}
+                          </td>
                           <td className="px-6 py-4 text-sm text-neutral-dark whitespace-nowrap">{fgPoMap[item.product_name]?.customer_name || '—'}</td>
                         </tr>
                       )

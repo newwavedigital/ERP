@@ -88,6 +88,7 @@ const PurchaseOrders: React.FC = () => {
   const [asnData, setAsnData] = useState<any[]>([])
   const [asnPoStatus, setAsnPoStatus] = useState<string | null>(null)
   const [asnLoading, setAsnLoading] = useState(false)
+  const [shippedTotals, setShippedTotals] = useState<Record<string, number>>({})
   const [openMenuId, setOpenMenuId] = useState<string | null>(null)
   const [dropdownPosition, setDropdownPosition] = useState<{ top: number; left: number } | null>(null)
 
@@ -104,7 +105,25 @@ const PurchaseOrders: React.FC = () => {
       .from('purchase_orders')
       .select('*')
       .order('created_at', { ascending: false })
-    setOrders(poRows ?? [])
+    const list = poRows ?? []
+    setOrders(list)
+
+    // Pull ASN shipped totals per PO to drive UI button visibility
+    if (list.length > 0) {
+      const ids = list.map((r: any) => String(r.id))
+      const { data: asnRows } = await supabase
+        .from('asn')
+        .select('po_id, shipped_qty')
+        .in('po_id', ids)
+      const totals: Record<string, number> = {}
+      ;(asnRows || []).forEach((r: any) => {
+        const pid = String(r.po_id)
+        totals[pid] = (totals[pid] || 0) + Number(r.shipped_qty || 0)
+      })
+      setShippedTotals(totals)
+    } else {
+      setShippedTotals({})
+    }
   }
 
   // Handlers requested
@@ -129,11 +148,112 @@ const PurchaseOrders: React.FC = () => {
     }
   }
 
-  // Ship remaining handler (uses the same partial RPC to ship whatever is allocated next)
+  // Ship remaining handler: ship ONLY the true remaining qty
   const handleShipRemaining = async (poId: string) => {
     try {
+      // Load ordered qty
+      const { data: poRow } = await supabase
+        .from('purchase_orders')
+        .select('quantity')
+        .eq('id', poId)
+        .maybeSingle()
+
+      const ordered = Number((poRow as any)?.quantity ?? 0)
+
+      // Sum already shipped from ASN
+      const { data: asns } = await supabase
+        .from('asn')
+        .select('shipped_qty')
+        .eq('po_id', poId)
+
+      const shipped = Array.isArray(asns)
+        ? asns.reduce((sum, r: any) => sum + Number(r?.shipped_qty ?? 0), 0)
+        : 0
+
+      const remaining = Math.max(0, ordered - shipped)
+      if (remaining <= 0) {
+        setToast({ show: true, message: 'Nothing remaining to ship.', kind: 'warning' })
+        return
+      }
+
+      // 1) Re-allocate from finished goods to ensure latest availability
+      await runRpc('allocate_brand_po_finished_first', poId)
+
+      // 2) Cap per-line allocated_qty so the total equals the remaining balance
+      const { data: lines } = await supabase
+        .from('purchase_order_lines')
+        .select('id, allocated_qty, product_name')
+        .eq('purchase_order_id', poId)
+        .order('created_at', { ascending: true })
+
+      let left = remaining
+      const updates: Array<{ id: string; allocated_qty: number; product_name?: string }> = []
+      const perProductShip: Record<string, number> = {}
+      ;(lines || []).forEach((ln: any) => {
+        const cur = Number(ln?.allocated_qty ?? 0)
+        const pname = String(ln?.product_name || '')
+        if (left <= 0) {
+          updates.push({ id: String(ln.id), allocated_qty: 0, product_name: pname })
+        } else {
+          const take = Math.min(cur, left)
+          updates.push({ id: String(ln.id), allocated_qty: take, product_name: pname })
+          if (pname) perProductShip[pname] = (perProductShip[pname] || 0) + take
+          left -= take
+        }
+      })
+
+      if (updates.length > 0) {
+        // Apply updates individually (row-level updates)
+        await Promise.all(
+          updates.map(u =>
+            supabase.from('purchase_order_lines').update({ allocated_qty: u.allocated_qty }).eq('id', u.id)
+          )
+        )
+      }
+
+      // 3) Ensure partial ship is allowed and minimum equals the exact remainder
+      await supabase.from('purchase_orders').update({
+        partial_allowed: true,
+        min_ship_qty: remaining,
+      }).eq('id', poId)
+
+      // 4) Ship only the capped allocation
       await shipPOPartial(poId)
-      setToast({ show: true, message: 'Remaining allocation shipped', kind: 'success' })
+
+      // 5) Adjust FG available_qty per product by shipped amount (RPC already reduces reserved)
+      await Promise.all(
+        Object.entries(perProductShip).map(async ([product_name, qty]) => {
+          if (!product_name || !qty) return
+          const { data: fgRow } = await supabase
+            .from('finished_goods')
+            .select('id, available_qty')
+            .eq('product_name', product_name)
+            .maybeSingle()
+          const fgId = (fgRow as any)?.id
+          const avail = Number((fgRow as any)?.available_qty ?? 0)
+          if (fgId) {
+            const newAvail = Math.max(0, avail - Number(qty))
+            await supabase.from('finished_goods').update({ available_qty: newAvail }).eq('id', fgId)
+          }
+        })
+      )
+
+      // 6) If fully shipped now, mark PO as submitted and clear backorder
+      const { data: asnsAfter } = await supabase
+        .from('asn')
+        .select('shipped_qty')
+        .eq('po_id', poId)
+      const shippedAfter = Array.isArray(asnsAfter)
+        ? asnsAfter.reduce((s, r: any) => s + Number(r?.shipped_qty ?? 0), 0)
+        : 0
+      if (shippedAfter >= ordered) {
+        await supabase
+          .from('purchase_orders')
+          .update({ status: 'submitted', backorder_eta: null, backorder_qty: 0 })
+          .eq('id', poId)
+      }
+
+      setToast({ show: true, message: `Shipped remaining qty (${remaining}).`, kind: 'success' })
       await refreshPOs()
     } catch (e) {
       setToast({ show: true, message: 'Failed to ship remaining items', kind: 'error' })
@@ -1345,7 +1465,11 @@ const PurchaseOrders: React.FC = () => {
 
       if (error) throw error;
 
-      setAsnData(data || []);
+      const rows = data || []
+      setAsnData(rows);
+      // Cache shipped total for this PO to drive UI conditions
+      const shippedSum = Array.isArray(rows) ? rows.reduce((s: number, r: any) => s + Number(r?.shipped_qty ?? 0), 0) : 0
+      setShippedTotals(prev => ({ ...prev, [poId]: shippedSum }))
     } catch (err) {
       console.error(err);
       setToast({ show: true, message: "Failed to load ASN data.", kind: 'error' });
@@ -1658,7 +1782,7 @@ const PurchaseOrders: React.FC = () => {
         {asnModalOpen && (
           <div className="fixed inset-0 z-[80] flex items-center justify-center p-4">
             <div className="absolute inset-0 bg-black/50" onClick={() => { setAsnModalOpen(false); setAsnPoStatus(null) }} />
-            <div className="relative z-10 w-full max-w-5xl bg-white rounded-2xl shadow-2xl border border-neutral-soft/30 overflow-hidden">
+            <div className="relative z-10 w-full max-w-5xl bg-white rounded-2xl shadow-2xl border border-neutral-soft/30 overflow-hidden max-h-[85vh] flex flex-col">
               {/* Header */}
               <div className="bg-gradient-to-r from-primary-dark to-primary-medium px-6 py-5 text-white">
                 <div className="flex items-center justify-between">
@@ -1685,7 +1809,7 @@ const PurchaseOrders: React.FC = () => {
                 </div>
               </div>
 
-              <div className="p-6 bg-neutral-light/30">
+              <div className="p-6 bg-neutral-light/30 flex-1 overflow-y-auto">
                 {asnData.length === 0 ? (
                   <div className="text-center py-12">
                     <div className="w-16 h-16 bg-neutral-soft rounded-full flex items-center justify-center mx-auto mb-4">
@@ -1703,33 +1827,61 @@ const PurchaseOrders: React.FC = () => {
                         {/* Shipment Header */}
                         <div className="flex items-start justify-between mb-4">
                           <div className="flex items-center space-x-3">
-                            <div className={`w-12 h-12 rounded-full flex items-center justify-center ${asnPoStatus === 'partially_shipped' ? 'bg-accent-warning/10' : 'bg-accent-success/10'}`}>
-                              <svg className={`w-6 h-6 ${asnPoStatus === 'partially_shipped' ? 'text-accent-warning' : 'text-accent-success'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4" />
-                              </svg>
-                            </div>
+                            {(() => {
+                              const isRemaining = asnPoStatus === 'partially_shipped' && index === 0
+                              const iconWrapClass = isRemaining
+                                ? 'bg-primary-medium/10'
+                                : (asnPoStatus === 'partially_shipped' ? 'bg-accent-warning/10' : 'bg-accent-success/10')
+                              const iconClass = isRemaining
+                                ? 'text-primary-medium'
+                                : (asnPoStatus === 'partially_shipped' ? 'text-accent-warning' : 'text-accent-success')
+                              return (
+                                <div className={`w-12 h-12 rounded-full flex items-center justify-center ${iconWrapClass}`}>
+                                  <svg className={`w-6 h-6 ${iconClass}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4" />
+                                  </svg>
+                                </div>
+                              )
+                            })()}
                             <div>
                               <h4 className="text-lg font-bold text-neutral-dark">{asn.asn_number || 'ASN-UNKNOWN'}</h4>
-                              <p className={`text-sm ${asnPoStatus === 'partially_shipped' ? 'text-accent-warning' : 'text-neutral-medium'}`}>
-                                {asnPoStatus === 'partially_shipped' ? 'Partially Shipped on ' : 'Shipped on '}{asn.created_at ? new Date(asn.created_at).toLocaleDateString('en-US', {
-                                  weekday: 'long',
-                                  year: 'numeric',
-                                  month: 'long',
-                                  day: 'numeric'
-                                }) : 'Unknown Date'}
-                              </p>
+                              {(() => {
+                                const isRemaining = asnPoStatus === 'partially_shipped' && index === 0
+                                const lineClass = isRemaining ? 'text-primary-medium' : (asnPoStatus === 'partially_shipped' ? 'text-accent-warning' : 'text-neutral-medium')
+                                const prefix = isRemaining ? 'Remaining Shipment on ' : (asnPoStatus === 'partially_shipped' ? 'Partially Shipped on ' : 'Shipped on ')
+                                return (
+                                  <p className={`text-sm ${lineClass}`}>
+                                    {prefix}{asn.created_at ? new Date(asn.created_at).toLocaleDateString('en-US', {
+                                      weekday: 'long',
+                                      year: 'numeric',
+                                      month: 'long',
+                                      day: 'numeric'
+                                    }) : 'Unknown Date'}
+                                  </p>
+                                )
+                              })()}
                             </div>
                           </div>
                           <div className="text-right">
-                            {asnPoStatus === 'partially_shipped' ? (
-                              <div className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-accent-warning/10 text-accent-warning border border-accent-warning/20">
-                                ⧗ Partially Shipped
-                              </div>
-                            ) : (
-                              <div className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-accent-success/10 text-accent-success border border-accent-success/20">
-                                ✓ Shipped
-                              </div>
-                            )}
+                            {(() => {
+                              const isRemaining = asnPoStatus === 'partially_shipped' && index === 0
+                              if (isRemaining) {
+                                return (
+                                  <div className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-primary-medium/10 text-primary-medium border border-primary-medium/20">
+                                    Remaining Shipment
+                                  </div>
+                                )
+                              }
+                              return asnPoStatus === 'partially_shipped' ? (
+                                <div className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-accent-warning/10 text-accent-warning border border-accent-warning/20">
+                                  Partially Shipped
+                                </div>
+                              ) : (
+                                <div className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-accent-success/10 text-accent-success border border-accent-success/20">
+                                  Shipped
+                                </div>
+                              )
+                            })()}
                           </div>
                         </div>
 
@@ -2271,9 +2423,11 @@ const PurchaseOrders: React.FC = () => {
                     })
                     .map((o:any) => {
                       const st = String(o.status || '').toLowerCase()
+                      const orderedQty = Number(o.quantity ?? 0)
+                      const shippedSum = shippedTotals[String(o.id)] ?? null
                       const statusClass = (st === 'on hold' || st === 'canceled')
                         ? 'bg-accent-danger/10 text-accent-danger border-accent-danger/30'
-                        : (st === 'approved' || st === 'allocated')
+                        : (st === 'approved' || st === 'allocated' || st === 'submitted' || st === 'shipped')
                           ? 'bg-accent-success/10 text-accent-success border-accent-success/30'
                           : (st === 'partially_shipped')
                             ? 'bg-accent-warning/10 text-accent-warning border-accent-warning/30'
@@ -2313,7 +2467,7 @@ const PurchaseOrders: React.FC = () => {
                                 {/* Status-based button flow */}
                                 <div className="flex items-center gap-2">
                                   {/* View ASN buttons only */}
-                                  {o.status === "Shipped" && (
+                                  {(o.status === "Shipped" || String(o.status).toLowerCase() === 'submitted') && (
                                     <button
                                       className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-semibold bg-accent-success hover:bg-accent-success/90 text-white shadow-sm transition-all"
                                       onClick={() => { setOpenMenuId(null); setAsnPoStatus('shipped'); viewASN(o.id) }}
@@ -2367,7 +2521,7 @@ const PurchaseOrders: React.FC = () => {
                                     onClick={() => handleShipPartial(String(o.id))}
                                   >
                                     <Truck className="h-4 w-4" />
-                                    Partial Ship
+                                    Partial Ship         
                                   </button>
                                 )}
 
@@ -2381,7 +2535,10 @@ const PurchaseOrders: React.FC = () => {
                                   </button>
                                 )}
 
-                                {String(o.status) === 'partially_shipped' && Number(o.backorder_qty ?? 0) > 0 && (
+                                {String(o.status) === 'partially_shipped' && (
+                                  // Show Ship Remaining only if shipped < ordered
+                                  (shippedSum === null ? Number(o.backorder_qty ?? 0) > 0 : shippedSum < orderedQty)
+                                ) && (
                                   <button
                                     className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-semibold bg-primary-medium hover:bg-primary-dark text-white shadow-sm transition-all focus:outline-none focus:ring-2 focus:ring-primary-medium/40"
                                     onClick={() => handleShipRemaining(String(o.id))}
@@ -2391,7 +2548,9 @@ const PurchaseOrders: React.FC = () => {
                                   </button>
                                 )}
 
-                                {String(o.status) === 'partially_shipped' && Number(o.backorder_qty ?? 0) === 0 && (
+                                {String(o.status) === 'partially_shipped' && (
+                                  shippedSum !== null ? shippedSum >= orderedQty : Number(o.backorder_qty ?? 0) === 0
+                                ) && (
                                   <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-medium bg-accent-success/10 text-accent-success border border-accent-success/20">
                                     <CheckCircle2 className="h-3.5 w-3.5" /> Completed
                                   </span>

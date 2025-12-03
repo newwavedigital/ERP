@@ -99,7 +99,7 @@ const Inventory: React.FC = () => {
   const [deleting, setDeleting] = useState<boolean>(false)
   const [toast, setToast] = useState<{ show: boolean; message: string }>({ show: false, message: '' })
   // Finished goods state
-  const [fg, setFg] = useState<Array<{ id: string; product_name: string; available_qty: number; reserved_qty: number; location?: string | null; reorder_point?: number | null; updated_at?: string | null; qa_hold?: boolean | null; qa_hold_reason?: string | null; segregated_qty?: number | null; segregated_location?: string | null; disposition?: string | null }>>([])
+  const [fg, setFg] = useState<Array<{ id: string; product_name: string; available_qty: number; reserved_qty: number; location?: string | null; reorder_point?: number | null; updated_at?: string | null; qa_hold?: boolean | null; qa_hold_reason?: string | null; segregated_qty?: number | null; segregated_location?: string | null; disposition?: string | null; manufacture_date?: string | null; expiry_date?: string | null }>>([])
   const [fgLoading, setFgLoading] = useState<boolean>(false)
   const [fgRefreshing, setFgRefreshing] = useState<boolean>(false)
   const [fgError, setFgError] = useState<string | null>(null)
@@ -108,6 +108,12 @@ const Inventory: React.FC = () => {
   const [recentlyAllocated, setRecentlyAllocated] = useState<Record<string, boolean>>({})
   const [fgBanner, setFgBanner] = useState<{ show: boolean; count: number; poNumber?: string | null }>({ show: false, count: 0, poNumber: null })
   const [fgPoMap, setFgPoMap] = useState<Record<string, { po_id: string; customer_name: string }>>({})
+  // FG purchase history modal state
+  const [fgHistOpen, setFgHistOpen] = useState<boolean>(false)
+  const [fgHistLoading, setFgHistLoading] = useState<boolean>(false)
+  const [fgHistError, setFgHistError] = useState<string | null>(null)
+  const [fgHistProduct, setFgHistProduct] = useState<string | null>(null)
+  const [fgHistRows, setFgHistRows] = useState<Array<{ id: string; created_at: string; customer_name: string | null; status: string; quantity: number | null; case_qty: number | null }>>([])
   // Reservation history modal state
   const [isHistoryOpen, setIsHistoryOpen] = useState<boolean>(false)
   const [historyData, setHistoryData] = useState<Array<{ po_id: string; line_id: string; qty: number; created_at: string; line_name?: string | null }>>([])
@@ -211,7 +217,7 @@ const Inventory: React.FC = () => {
     try {
       const { data, error } = await supabase
         .from('finished_goods')
-        .select('id, product_name, available_qty, reserved_qty, location, updated_at, qa_hold, qa_hold_reason, segregated_qty, segregated_location, disposition')
+        .select('id, product_name, available_qty, reserved_qty, location, updated_at, qa_hold, qa_hold_reason, segregated_qty, segregated_location, disposition, manufacture_date, expiry_date')
         .order('product_name', { ascending: true, nullsFirst: true })
 
       if (error) {
@@ -234,6 +240,8 @@ const Inventory: React.FC = () => {
         segregated_qty: Number(r.segregated_qty ?? 0),
         segregated_location: r.segregated_location ?? null,
         disposition: r.disposition ?? null,
+        manufacture_date: r.manufacture_date ?? null,
+        expiry_date: r.expiry_date ?? null,
       }))
 
       setFg(items)
@@ -319,6 +327,37 @@ const Inventory: React.FC = () => {
       .subscribe()
     return () => { if (channel) supabase?.removeChannel(channel) }
   }, [loadFinished])
+
+  // Load FG purchase history for a given product
+  const loadFgHistory = React.useCallback(async (productName: string) => {
+    if (!supabase) return
+    setFgHistLoading(true)
+    setFgHistError(null)
+    try {
+      const { data, error } = await supabase
+        .from('purchase_orders')
+        .select('id, created_at, customer_name, status, quantity, case_qty')
+        .eq('product_name', productName)
+        .order('created_at', { ascending: false })
+        .limit(50)
+      if (error) {
+        setFgHistRows([])
+        setFgHistError('Cannot load PO history')
+      } else {
+        const rows = (data ?? []).map((r: any) => ({
+          id: String(r.id),
+          created_at: r.created_at || new Date().toISOString(),
+          customer_name: r.customer_name ?? null,
+          status: String(r.status || ''),
+          quantity: (r.quantity != null ? Number(r.quantity) : null),
+          case_qty: (r.case_qty != null ? Number(r.case_qty) : null),
+        }))
+        setFgHistRows(rows)
+      }
+    } finally {
+      setFgHistLoading(false)
+    }
+  }, [])
 
   // UI behavior hooks for PO canceled and batch completed
   useEffect(() => {
@@ -1019,19 +1058,21 @@ const Inventory: React.FC = () => {
               <div className="p-10 text-center text-neutral-medium">No finished goods found</div>
             ) : (
               <div className="overflow-x-auto">
-                <table className="min-w-full table-fixed">
+                <table className="min-w-full table-fixed text-sm">
                   <thead>
-                    <tr className="bg-gradient-to-r from-neutral-light/60 via-neutral-light/40 to-neutral-soft/30 border-b-2 border-neutral-soft/50">
-                      <th className="px-6 py-4 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider whitespace-nowrap">Product</th>
-                      <th className="px-6 py-4 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider whitespace-nowrap">Location</th>
-                      <th className="px-6 py-4 text-right text-xs font-bold text-neutral-dark uppercase tracking-wider whitespace-nowrap w-28">Available Qty</th>
-                      <th className="px-6 py-4 text-right text-xs font-bold text-neutral-dark uppercase tracking-wider whitespace-nowrap w-28">Reserved Qty</th>
-                      <th className="px-6 py-4 text-right text-xs font-bold text-neutral-dark uppercase tracking-wider whitespace-nowrap w-28">Segregated Qty</th>
-                      <th className="px-6 py-4 text-center text-xs font-bold text-neutral-dark uppercase tracking-wider whitespace-nowrap w-32">Status</th>
-                      <th className="px-6 py-4 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider whitespace-nowrap">Customer</th>
+                    <tr className="bg-white border-b border-neutral-soft/60">
+                      <th className="px-5 py-3 text-left text-[11px] font-bold text-neutral-700 uppercase tracking-wider whitespace-nowrap">Product</th>
+                      <th className="px-5 py-3 text-left text-[11px] font-bold text-neutral-700 uppercase tracking-wider whitespace-nowrap">Location</th>
+                      <th className="px-5 py-3 text-left text-[11px] font-bold text-neutral-700 uppercase tracking-wider whitespace-nowrap">Mfg Date</th>
+                      <th className="px-5 py-3 text-left text-[11px] font-bold text-neutral-700 uppercase tracking-wider whitespace-nowrap">Expiry Date</th>
+                      <th className="px-5 py-3 text-right text-[11px] font-bold text-neutral-700 uppercase tracking-wider whitespace-nowrap w-28">Available Qty</th>
+                      <th className="px-5 py-3 text-right text-[11px] font-bold text-neutral-700 uppercase tracking-wider whitespace-nowrap w-28">Reserved Qty</th>
+                      <th className="px-5 py-3 text-right text-[11px] font-bold text-neutral-700 uppercase tracking-wider whitespace-nowrap w-28">Segregated Qty</th>
+                      <th className="px-5 py-3 text-center text-[11px] font-bold text-neutral-700 uppercase tracking-wider whitespace-nowrap w-32">Status</th>
+                      <th className="px-5 py-3 text-left text-[11px] font-bold text-neutral-700 uppercase tracking-wider whitespace-nowrap">History</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-neutral-soft/20">
+                  <tbody className="divide-y divide-neutral-soft/40">
                     {fg.map(item => {
                       const allocated = Number(item.reserved_qty || 0)
                       const key = item.product_name || item.id
@@ -1040,33 +1081,32 @@ const Inventory: React.FC = () => {
                       const qaHold = Boolean((item as any).qa_hold)
                       const segregatedQty = Number((item as any).segregated_qty || 0)
                       const status = qaHold ? 'QA Hold - Segregated Lot' : (hasStock ? 'Sufficient' : 'No Stock')
-                      const statusColor = qaHold ? 'text-rose-600' : (hasStock ? 'text-emerald-600' : 'text-accent-danger')
+                      const statusTone = qaHold ? 'rose' : (hasStock ? 'emerald' : 'red')
+                      const nf = new Intl.NumberFormat('en-US')
+                      const fmtDate = (v?: string | null) => (v ? new Date(v).toLocaleDateString('en-CA') : '—')
                       return (
-                        <tr key={item.id} className={`transition ${highlighted ? 'ring-2 ring-teal-400/70 ring-offset-2 ring-offset-teal-50 bg-teal-50/30' : qaHold ? 'bg-gray-50 cursor-default' : 'hover:bg-neutral-light/20 cursor-pointer'}`}>
-                          <td className="px-6 py-4 text-sm text-neutral-dark font-medium flex items-center gap-2 whitespace-nowrap">
-                            {item.product_name}
-                            {recentlyAllocated[key] && highlighted && (
-                              <span className="ml-2 text-xs px-2 py-0.5 rounded-full bg-teal-100 text-teal-700 border border-teal-300">Recently Allocated</span>
-                            )}
-                            {String((item as any).disposition || '').toUpperCase().includes('REWORK') && (
-                              <span
-                                className="ml-2 text-xs px-2 py-0.5 rounded-full bg-yellow-100 text-yellow-700 border border-yellow-200"
-                                title="This finished good came from a rework batch."
-                              >
-                                Rework
-                              </span>
-                            )}
+                        <tr key={item.id} className={`transition ${highlighted ? 'ring-1 ring-primary-light/50 bg-teal-50/30' : 'even:bg-neutral-light/20'} ${qaHold ? 'bg-gray-50' : ''}`}>
+                          <td className="px-5 py-3 text-neutral-900 font-medium whitespace-nowrap">
+                            <div className="flex items-center gap-2">
+                              <span className="truncate max-w-[280px]" title={item.product_name}>{item.product_name}</span>
+                              {recentlyAllocated[key] && highlighted && (
+                                <span className="ml-1 text-[10px] px-2 py-0.5 rounded-full bg-teal-50 text-teal-700 border border-teal-200">Allocated</span>
+                              )}
+                              {String((item as any).disposition || '').toUpperCase().includes('REWORK') && (
+                                <span className="ml-1 text-[10px] px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200" title="This finished good came from a rework batch.">Rework</span>
+                              )}
+                            </div>
                           </td>
-                          <td className="px-6 py-4 text-sm text-neutral-dark whitespace-nowrap">{item.location || '—'}</td>
-                          <td className="px-6 py-4 text-sm text-neutral-dark text-right whitespace-nowrap">{item.available_qty}</td>
-                          <td className="px-6 py-4 text-sm text-neutral-dark text-right whitespace-nowrap">{allocated}</td>
-                          <td className="px-6 py-4 text-sm text-neutral-dark text-right whitespace-nowrap">{segregatedQty}</td>
-                          <td className={`px-6 py-4 text-sm font-medium text-center whitespace-nowrap ${statusColor}`}>
+                          <td className="px-5 py-3 text-neutral-800 whitespace-nowrap">{item.location || '—'}</td>
+                          <td className="px-5 py-3 text-neutral-800 whitespace-nowrap">{fmtDate(item.manufacture_date)}</td>
+                          <td className="px-5 py-3 text-neutral-800 whitespace-nowrap">{fmtDate(item.expiry_date)}</td>
+                          <td className="px-5 py-3 text-right text-neutral-900 whitespace-nowrap font-mono tabular-nums">{nf.format(Number(item.available_qty || 0))}</td>
+                          <td className="px-5 py-3 text-right text-neutral-900 whitespace-nowrap font-mono tabular-nums">{nf.format(allocated)}</td>
+                          <td className="px-5 py-3 text-right text-neutral-900 whitespace-nowrap font-mono tabular-nums">{nf.format(segregatedQty)}</td>
+                          <td className="px-5 py-3 text-center whitespace-nowrap">
                             {qaHold ? (
                               <div className="flex flex-col items-center gap-1">
-                                <span className="inline-flex items-center rounded-full bg-rose-100 px-2.5 py-0.5 text-[11px] font-semibold text-rose-700 border border-rose-200">
-                                  QA Hold - Segregated Lot
-                                </span>
+                                <span className="inline-flex items-center rounded-full bg-rose-50 px-2.5 py-0.5 text-[11px] font-semibold text-rose-700 border border-rose-200">QA Hold - Segregated Lot</span>
                                 {(item as any).qa_hold_reason ? (
                                   <span className="text-[10px] text-rose-600/80 max-w-[220px] truncate" title={(item as any).qa_hold_reason}>
                                     {(item as any).qa_hold_reason}
@@ -1074,10 +1114,20 @@ const Inventory: React.FC = () => {
                                 ) : null}
                               </div>
                             ) : (
-                              status
+                              <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] font-semibold border bg-${statusTone}-50 text-${statusTone}-700 border-${statusTone}-200`}>{status}</span>
                             )}
                           </td>
-                          <td className="px-6 py-4 text-sm text-neutral-dark whitespace-nowrap">{fgPoMap[item.product_name]?.customer_name || '—'}</td>
+                          <td className="px-5 py-3 text-neutral-800 whitespace-nowrap">
+                            <button
+                              type="button"
+                              onClick={async () => { setFgHistProduct(item.product_name); setFgHistOpen(true); await loadFgHistory(item.product_name) }}
+                              className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border border-neutral-soft bg-white hover:bg-neutral-light/40 text-neutral-800 text-xs font-semibold"
+                              title={`View PO history for ${item.product_name}`}
+                            >
+                              <ClipboardList className="w-3.5 h-3.5 text-primary-medium" />
+                              View History
+                            </button>
+                          </td>
                         </tr>
                       )
                     })}
@@ -1088,6 +1138,52 @@ const Inventory: React.FC = () => {
             <div className="px-6 py-3 text-xs text-neutral-medium border-t border-neutral-soft/40 bg-white/60 flex items-center gap-2">
               <Clock className="w-3.5 h-3.5" /> Last synced at {fgLastSynced || '—'}
             </div>
+            {fgHistOpen && (
+              <div className="fixed inset-0 z-[75] flex items-center justify-center p-4">
+                <div className="absolute inset-0 bg-black/60" onClick={() => setFgHistOpen(false)}></div>
+                <div className="relative z-10 w-full max-w-3xl max-h-[80vh] bg-white rounded-2xl shadow-2xl border border-neutral-soft/30 overflow-hidden flex flex-col">
+                  <div className="flex items-center justify-between px-6 py-4 border-b border-neutral-soft/40 bg-white">
+                    <div>
+                      <h4 className="text-lg font-semibold text-neutral-dark">PO History</h4>
+                      <p className="text-sm text-neutral-medium">{fgHistProduct || ''}</p>
+                    </div>
+                    <button onClick={() => setFgHistOpen(false)} className="p-2 rounded-lg hover:bg-neutral-light/40 text-neutral-medium"><X className="w-5 h-5" /></button>
+                  </div>
+                  <div className="flex-1 overflow-auto">
+                    {fgHistLoading ? (
+                      <div className="p-8 text-center text-neutral-medium">Loading…</div>
+                    ) : fgHistError ? (
+                      <div className="p-8 text-center text-accent-danger">{fgHistError}</div>
+                    ) : fgHistRows.length === 0 ? (
+                      <div className="p-8 text-center text-neutral-medium">No purchase orders found for this product.</div>
+                    ) : (
+                      <div className="divide-y divide-neutral-soft/40">
+                        {fgHistRows.map((r) => {
+                          const created = new Date(r.created_at).toLocaleString()
+                          const nf = new Intl.NumberFormat('en-US')
+                          const qty = r.quantity != null ? nf.format(r.quantity) : '—'
+                          const statusTone = String(r.status || '').toLowerCase() === 'allocated' ? 'emerald' : 'neutral'
+                          return (
+                            <div key={r.id} className="px-6 py-4 hover:bg-neutral-light/20">
+                              <div className="flex items-center justify-between gap-4">
+                                <div className="min-w-0">
+                                  <div className="text-[15px] font-semibold text-neutral-900 truncate">{r.customer_name || '—'}</div>
+                                  <div className="mt-1 text-xs text-neutral-medium">Created • {created}</div>
+                                </div>
+                                <div className="flex items-center gap-3 flex-shrink-0">
+                                  <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] font-semibold border bg-${statusTone}-50 text-${statusTone}-700 border-${statusTone}-200`}>{r.status || '—'}</span>
+                                  <span className="text-sm text-neutral-900 font-mono tabular-nums">Qty: {qty}</span>
+                                </div>
+                              </div>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         ) : (
           <>

@@ -99,7 +99,7 @@ const Inventory: React.FC = () => {
   const [deleting, setDeleting] = useState<boolean>(false)
   const [toast, setToast] = useState<{ show: boolean; message: string }>({ show: false, message: '' })
   // Finished goods state
-  const [fg, setFg] = useState<Array<{ id: string; product_name: string; available_qty: number; reserved_qty: number; location?: string | null; reorder_point?: number | null; updated_at?: string | null; qa_hold?: boolean | null; qa_hold_reason?: string | null; segregated_qty?: number | null; segregated_location?: string | null }>>([])
+  const [fg, setFg] = useState<Array<{ id: string; product_name: string; available_qty: number; reserved_qty: number; location?: string | null; reorder_point?: number | null; updated_at?: string | null; qa_hold?: boolean | null; qa_hold_reason?: string | null; segregated_qty?: number | null; segregated_location?: string | null; disposition?: string | null }>>([])
   const [fgLoading, setFgLoading] = useState<boolean>(false)
   const [fgRefreshing, setFgRefreshing] = useState<boolean>(false)
   const [fgError, setFgError] = useState<string | null>(null)
@@ -211,7 +211,7 @@ const Inventory: React.FC = () => {
     try {
       const { data, error } = await supabase
         .from('finished_goods')
-        .select('id, product_name, available_qty, reserved_qty, location, updated_at, qa_hold, qa_hold_reason, segregated_qty, segregated_location')
+        .select('id, product_name, available_qty, reserved_qty, location, updated_at, qa_hold, qa_hold_reason, segregated_qty, segregated_location, disposition')
         .order('product_name', { ascending: true, nullsFirst: true })
 
       if (error) {
@@ -233,6 +233,7 @@ const Inventory: React.FC = () => {
         qa_hold_reason: r.qa_hold_reason ?? null,
         segregated_qty: Number(r.segregated_qty ?? 0),
         segregated_location: r.segregated_location ?? null,
+        disposition: r.disposition ?? null,
       }))
 
       setFg(items)
@@ -1046,6 +1047,14 @@ const Inventory: React.FC = () => {
                             {item.product_name}
                             {recentlyAllocated[key] && highlighted && (
                               <span className="ml-2 text-xs px-2 py-0.5 rounded-full bg-teal-100 text-teal-700 border border-teal-300">Recently Allocated</span>
+                            )}
+                            {String((item as any).disposition || '').toUpperCase().includes('REWORK') && (
+                              <span
+                                className="ml-2 text-xs px-2 py-0.5 rounded-full bg-yellow-100 text-yellow-700 border border-yellow-200"
+                                title="This finished good came from a rework batch."
+                              >
+                                Rework
+                              </span>
                             )}
                           </td>
                           <td className="px-6 py-4 text-sm text-neutral-dark whitespace-nowrap">{item.location || '—'}</td>

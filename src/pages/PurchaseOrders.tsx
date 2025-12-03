@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
-import { Plus, X, User, Package, Calendar, FileText, Eye, Pencil, Trash2, MapPin, BadgeCheck, Search, Filter, CheckCircle2, Truck, PackageCheck } from 'lucide-react'
+import { Plus, X, User, Package, Calendar, FileText, Eye, Pencil, Trash2, MapPin, BadgeCheck, Search, CheckCircle2, Truck, PackageCheck, AlertTriangle } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 import { Status } from '../domain/enums'
 import { validatePODraft } from '../rules/po.rules'
@@ -26,7 +26,7 @@ const PurchaseOrders: React.FC = () => {
   const [isCustomerOpen, setIsCustomerOpen] = useState(false)
   
   const [isLocationOpen, setIsLocationOpen] = useState(false)
-  const [customers, setCustomers] = useState<Array<{id:string; name:string; credit_hold?: boolean; overdue_balance?: number}>>([])
+  const [customers, setCustomers] = useState<Array<{id:string; name:string; credit_hold?: boolean; overdue_balance?: number; credit_limit?: number; current_balance?: number}>>([])
   const [products, setProducts] = useState<Array<{
     id:string;
     name:string;
@@ -91,6 +91,118 @@ const PurchaseOrders: React.FC = () => {
   const [shippedTotals, setShippedTotals] = useState<Record<string, number>>({})
   const [openMenuId, setOpenMenuId] = useState<string | null>(null)
   const [dropdownPosition, setDropdownPosition] = useState<{ top: number; left: number } | null>(null)
+  const [showPriorityModal, setShowPriorityModal] = useState(false)
+  const [showPlannerOverride, setShowPlannerOverride] = useState(false)
+  const [overridePo, setOverridePo] = useState<any | null>(null)
+  const [overrideQty, setOverrideQty] = useState<number>(0)
+  const [finishedGoodsData, setFinishedGoodsData] = useState<Record<string, { available_qty: number }>>({})
+  // Brand vs Copack list tabs
+  const [poTab, setPoTab] = useState<'brand' | 'copack'>('brand')
+
+  // Detect products with competing POs (same product across multiple open rows)
+  const competingCounts = useMemo(() => {
+    const counts: Record<string, number> = {}
+    ;(orders || []).forEach((po: any) => {
+      if (po?.is_copack) return // Copack POs do not compete for finished goods priority
+      const st = String(po?.status || '').toLowerCase()
+      const isPending = st === 'open' || st === 'draft' || !st
+      if (!isPending) return
+      const key = String(po.product_id || po.product_name || '').trim().toLowerCase()
+      if (!key) return
+      counts[key] = (counts[key] || 0) + 1
+    })
+    return counts
+  }, [orders])
+
+  const isCompetingPO = (po: any) => {
+    const key = String(po.product_id || po.product_name || '').trim().toLowerCase()
+    return key ? (competingCounts[key] || 0) > 1 : false
+  }
+
+  // Derived shortage indicators for the View modal
+  const hasViewShortfall = useMemo(() => (viewLines || []).some(l => Number(l.shortfall_qty || 0) > 0), [viewLines])
+  const shortfallQty = useMemo(() => (viewLines || []).reduce((s, l) => s + Number(l.shortfall_qty || 0), 0), [viewLines])
+
+  // Conflict detection helper
+  function detectConflict(po: any, fg: any) {
+    if (po?.is_copack) return false // No conflict escalation for Copack orders
+    return (
+      (po.allocated_qty || 0) < (po.quantity || 0) &&
+      (fg.available_qty || 0) <= 0 &&
+      (po.status === 'Open' || po.status === 'Draft' || !po.status)
+    );
+  }
+
+  // Show advisory if any risk detected
+  useEffect(() => {
+    const isBackordered = allocSummary?.status === 'backordered'
+    const hasShortage = Number(shortfallQty || 0) > 0
+    const viewShortage = hasViewShortfall === true
+    setShowBackorderAdvisory(!!(isBackordered || hasShortage || viewShortage))
+  }, [allocSummary?.status, shortfallQty, hasViewShortfall])
+
+  // ───────── PO Risk Banner helpers
+  type BannerKind = 'HOLD' | 'BACKORDER' | 'SHORTAGE' | 'RISK' | null
+  function getPOBannerStatus(list: any[]): BannerKind {
+    if (!Array.isArray(list) || list.length === 0) return null
+    // Highest priority first
+    if (list.some((o) => String(o.status || '').toLowerCase() === 'on_hold' || String(o.status || '').toLowerCase() === 'on hold')) return 'HOLD'
+    if (list.some((o) => String(o.status || '').toLowerCase() === 'backordered')) return 'BACKORDER'
+    if (list.some((o) => {
+      const st = String(o.status || '').toLowerCase()
+      return st === 'partial' || st === 'partially_shipped'
+    })) return 'SHORTAGE'
+    if (list.some((o) => {
+      const row: any = o || {}
+      const creditHold = row.customer_credit_hold === true
+      const overLimit = Number(row.current_balance || 0) > Number(row.credit_limit || 0)
+      const overdueOverLimit = Number(row.overdue_balance || 0) > Number(row.credit_limit || 0)
+      const riskFlag = !!row.risk_flag
+      return riskFlag || creditHold || overLimit || overdueOverLimit
+    })) return 'RISK'
+    return null
+  }
+
+  function renderPOBanner() {
+    const kind = getPOBannerStatus(orders)
+    if (!kind) return null
+    const map: Record<Exclude<BannerKind, null>, { cls: string; title: string; desc: string }> = {
+      HOLD: {
+        cls: 'border-red-300 bg-red-50 text-red-800',
+        title: 'On Hold',
+        desc: 'This PO is currently on hold due to rule validation.'
+      },
+      BACKORDER: {
+        cls: 'border-amber-300 bg-amber-50 text-amber-900',
+        title: 'Backorder',
+        desc: 'This PO has a backorder. Some items have insufficient finished goods.'
+      },
+      SHORTAGE: {
+        cls: 'border-orange-300 bg-orange-50 text-orange-900',
+        title: 'Shortage',
+        desc: 'This PO has allocation shortages.'
+      },
+      RISK: {
+        cls: 'border-yellow-300 bg-yellow-50 text-yellow-900',
+        title: 'Risk',
+        desc: 'This PO is flagged as risk based on rule validation.'
+      }
+    }
+    const meta = map[kind]
+    return (
+      <div className={`w-full mb-6`}>
+        <div className={`w-full rounded-lg border px-4 py-3 shadow-sm ${meta.cls} transition-opacity duration-300 ease-out`}>
+          <div className="flex items-start gap-3">
+            <div className="mt-0.5"><AlertTriangle className="h-5 w-5" /></div>
+            <div>
+              <div className="text-sm font-semibold">{meta.title}</div>
+              <div className="text-sm opacity-90">{meta.desc}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    )
+  }
 
   // (removed) canShipPartial helper — superseded by explicit status + allow_partial_ship rules
 
@@ -103,10 +215,48 @@ const PurchaseOrders: React.FC = () => {
   async function refreshPOs() {
     const { data: poRows } = await supabase
       .from('purchase_orders')
-      .select('*')
+      .select('*, risk_flag')
       .order('created_at', { ascending: false })
     const list = poRows ?? []
-    setOrders(list)
+
+    // Auto-recompute status/risk per latest customer financials
+    const next: any[] = []
+    for (const po of list as any[]) {
+      const cust: any = (customers || []).find((c: any) => c.id === po.customer_id) || null
+      const creditHold = !!cust?.credit_hold
+      const limit = Number(cust?.credit_limit ?? 0)
+      const overLimit = Number(cust?.current_balance ?? 0) > limit
+      const overdueOverLimit = Number(cust?.overdue_balance ?? 0) > limit
+
+      let desiredStatus: string | null = null
+      let desiredRisk = false
+      if (creditHold) {
+        desiredStatus = 'On Hold'
+        desiredRisk = true
+      } else if (overLimit || overdueOverLimit) {
+        desiredStatus = 'Risk'
+        desiredRisk = true
+      }
+
+      const shouldUpdate = (
+        (desiredStatus && po.status !== desiredStatus) ||
+        (!!po.risk_flag !== desiredRisk)
+      )
+
+      if (shouldUpdate) {
+        try {
+          await supabase
+            .from('purchase_orders')
+            .update({ status: desiredStatus ?? po.status, risk_flag: desiredRisk })
+            .eq('id', po.id)
+        } catch {}
+        next.push({ ...po, status: desiredStatus ?? po.status, risk_flag: desiredRisk })
+      } else {
+        next.push(po)
+      }
+    }
+
+    setOrders(next)
 
     // Pull ASN shipped totals per PO to drive UI button visibility
     if (list.length > 0) {
@@ -121,8 +271,25 @@ const PurchaseOrders: React.FC = () => {
         totals[pid] = (totals[pid] || 0) + Number(r.shipped_qty || 0)
       })
       setShippedTotals(totals)
+
+      // Pull finished goods availability for conflict detection
+      const productNames = [...new Set(list.map((r: any) => r.product_name).filter(Boolean))]
+      if (productNames.length > 0) {
+        const { data: fgRows } = await supabase
+          .from('finished_goods')
+          .select('product_name, available_qty')
+          .in('product_name', productNames)
+        const fgData: Record<string, { available_qty: number }> = {}
+        ;(fgRows || []).forEach((r: any) => {
+          fgData[r.product_name] = { available_qty: Number(r.available_qty || 0) }
+        })
+        setFinishedGoodsData(fgData)
+      } else {
+        setFinishedGoodsData({})
+      }
     } else {
       setShippedTotals({})
+      setFinishedGoodsData({})
     }
   }
 
@@ -151,14 +318,15 @@ const PurchaseOrders: React.FC = () => {
   // Ship remaining handler: ship ONLY the true remaining qty
   const handleShipRemaining = async (poId: string) => {
     try {
-      // Load ordered qty
+      // Load ordered qty and product info
       const { data: poRow } = await supabase
         .from('purchase_orders')
-        .select('quantity')
+        .select('quantity, product_name')
         .eq('id', poId)
         .maybeSingle()
 
       const ordered = Number((poRow as any)?.quantity ?? 0)
+      const productName = (poRow as any)?.product_name || ''
 
       // Sum already shipped from ASN
       const { data: asns } = await supabase
@@ -173,6 +341,23 @@ const PurchaseOrders: React.FC = () => {
       const remaining = Math.max(0, ordered - shipped)
       if (remaining <= 0) {
         setToast({ show: true, message: 'Nothing remaining to ship.', kind: 'warning' })
+        return
+      }
+
+      // Check finished goods availability
+      const { data: fgRow } = await supabase
+        .from('finished_goods')
+        .select('available_qty')
+        .eq('product_name', productName)
+        .maybeSingle()
+
+      const availableQty = Number((fgRow as any)?.available_qty ?? 0)
+      if (availableQty < remaining) {
+        setToast({ 
+          show: true, 
+          message: `Insufficient stock. Available: ${availableQty}, Required: ${remaining}`, 
+          kind: 'error' 
+        })
         return
       }
 
@@ -211,14 +396,21 @@ const PurchaseOrders: React.FC = () => {
         )
       }
 
-      // 3) Ensure partial ship is allowed and minimum equals the exact remainder
+      // 3) Update PO status to partially_shipped
       await supabase.from('purchase_orders').update({
-        partial_allowed: true,
-        min_ship_qty: remaining,
+        status: 'partially_shipped'
       }).eq('id', poId)
 
-      // 4) Ship only the capped allocation
-      await shipPOPartial(poId)
+      // 4) Create ASN entry for only the remaining quantity
+      const { error: asnError } = await supabase
+        .from('asn')
+        .insert({
+          po_id: poId,
+          shipped_qty: remaining,
+          asn_number: `ASN-${new Date().getFullYear()}${String(new Date().getMonth() + 1).padStart(2, '0')}${String(new Date().getDate()).padStart(2, '0')}-${poId.slice(-6)}-REMAINING`
+        })
+      
+      if (asnError) throw asnError
 
       // 5) Adjust FG available_qty per product by shipped amount (RPC already reduces reserved)
       await Promise.all(
@@ -260,6 +452,63 @@ const PurchaseOrders: React.FC = () => {
     }
   }
 
+  // Planner Override Functions
+  const openPlannerOverride = (po: any) => {
+    setOverridePo(po)
+    setOverrideQty(po.allocated_qty || 0)
+    setShowPlannerOverride(true)
+  }
+
+  const closePlannerOverride = () => {
+    setShowPlannerOverride(false)
+    setOverridePo(null)
+    setOverrideQty(0)
+  }
+
+  const applyOverride = async (poId: string, qty: number) => {
+    try {
+      const timestamp = new Date().toLocaleString()
+      const oldComments = overridePo?.comments || ''
+      const newComments = `${oldComments}\n[Escalation] ${timestamp} — Planner override applied: Manual allocation set to ${qty}`
+      
+      await supabase
+        .from('purchase_orders')
+        .update({ 
+          allocated_qty: qty,
+          comments: newComments
+        })
+        .eq('id', poId)
+      
+      setToast({ show: true, message: 'Manual override applied successfully', kind: 'success' })
+      closePlannerOverride()
+      await refreshPOs()
+    } catch (e) {
+      setToast({ show: true, message: 'Failed to apply override', kind: 'error' })
+    }
+  }
+
+  const markClientCommunication = async (poId: string) => {
+    try {
+      const timestamp = new Date().toLocaleString()
+      const oldComments = overridePo?.comments || ''
+      const newComments = `${oldComments}\n[Escalation] ${timestamp} — Marked for client communication: Waiting for customer approval on shortfall`
+      
+      await supabase
+        .from('purchase_orders')
+        .update({ 
+          comments: newComments,
+          status: 'Client Communication Required'
+        })
+        .eq('id', poId)
+      
+      setToast({ show: true, message: 'Marked for client communication', kind: 'success' })
+      closePlannerOverride()
+      await refreshPOs()
+    } catch (e) {
+      setToast({ show: true, message: 'Failed to mark for client communication', kind: 'error' })
+    }
+  }
+
   // Ship Partial RPC function
   async function shipPartialPO(poId: string) {
     try {
@@ -272,7 +521,7 @@ const PurchaseOrders: React.FC = () => {
 
       const { data: poRows } = await supabase
         .from('purchase_orders')
-        .select('*')
+        .select('*, risk_flag')
         .order('created_at', { ascending: false })
       setOrders(poRows ?? [])
     } catch (err) {
@@ -335,6 +584,7 @@ const PurchaseOrders: React.FC = () => {
     is_copack: false,
     client_materials_required: false,
     operation_supplies_materials: false,
+    deposit_paid: false,
     lines: [] as Array<{ sku?: string; product_name: string; qty: number; is_discontinued?: boolean; substitute_sku?: string | null }>
   })
   const customerRef = useRef<HTMLDivElement>(null)
@@ -873,15 +1123,43 @@ const PurchaseOrders: React.FC = () => {
     return '—'
   }
 
-  const hasViewShortfall = useMemo(
-    () => viewLines.some(l => Number(l.shortfall_qty || 0) > 0),
-    [viewLines]
-  )
+  // (removed duplicate hasViewShortfall; computed earlier near top with shortfallQty)
 
   // (removed) viewCopackAllocRows memo was unused after switching Copack table to viewLines
   // Pre-approval check: discontinued + substitutes
   const handleApproveClick = async (po: any) => {
     try {
+      // Front-end priority validation
+      // Refetch latest POs (visible or all – using same base query as list)
+      const { data: allPos } = await supabase
+        .from('purchase_orders')
+        .select('id, requested_ship_date, deposit_paid, created_at, status')
+        .order('created_at', { ascending: false })
+      const list = Array.isArray(allPos) ? allPos : []
+      
+      // Filter out POs that are already processed (approved, allocated, shipped, etc.)
+      const pendingPOs = list.filter((p: any) => {
+        const status = String(p.status || '').toLowerCase()
+        return status === 'open' || status === 'draft' || !status
+      })
+      
+      const sorted = [...pendingPOs].sort((a: any, b: any) => {
+        const ad = new Date(a.requested_ship_date || 0).getTime()
+        const bd = new Date(b.requested_ship_date || 0).getTime()
+        if (ad !== bd) return ad - bd // earlier ship date first
+        const adep = !!a.deposit_paid ? 1 : 0
+        const bdep = !!b.deposit_paid ? 1 : 0
+        if (adep !== bdep) return bdep - adep // deposit first
+        const ac = new Date(a.created_at || 0).getTime()
+        const bc = new Date(b.created_at || 0).getTime()
+        return ac - bc // older first
+      })
+      const top = sorted[0]
+      if (top && String(top.id) !== String(po.id)) {
+        setShowPriorityModal(true)
+        return
+      }
+
       // Load PO lines
       const { data: lines, error } = await supabase
         .from('purchase_order_lines')
@@ -898,6 +1176,7 @@ const PurchaseOrders: React.FC = () => {
 
       if (discontinuedItems.length === 0) {
         await approveAndAllocate(po) // pass full PO
+        setToast({ show: true, message: 'PO approved successfully. THEN allocate by priority score.', kind: 'success' })
         return
       }
 
@@ -940,6 +1219,7 @@ const PurchaseOrders: React.FC = () => {
       // find the full PO object so we can decide RPC by is_copack
       const poObj = (orders || []).find((o:any) => String(o.id) === String(id)) || { id }
       await approveAndAllocate(poObj)
+      setToast({ show: true, message: 'PO approved successfully. THEN allocate by priority score.', kind: 'success' })
     } catch (e: any) {
       setToast({ show: true, message: e?.message || 'Failed to apply substitutes', kind: 'error' })
     }
@@ -1079,16 +1359,16 @@ const PurchaseOrders: React.FC = () => {
         { data: mats },
         { data: linesData }
       ] = await Promise.all([
-        supabase.from('customers').select('id, company_name, credit_hold, overdue_balance').order('company_name', { ascending: true }),
+        supabase.from('customers').select('id, company_name, credit_hold, overdue_balance, credit_limit, current_balance').order('company_name', { ascending: true }),
         supabase.from('products').select('id, product_name, is_discontinued, substitute_sku').order('product_name', { ascending: true }),
-        supabase.from('purchase_orders').select('*').order('created_at', { ascending: false }),
+        supabase.from('purchase_orders').select('*, risk_flag').order('created_at', { ascending: false }),
         supabase.from('formulas').select('id, product_id, formula_name, version, comments, customer_id, standard_yield, scrap_percent'),
         supabase.from('formula_items').select('formula_id, material_id, qty_per_unit, uom, percentage'),
         supabase.from('inventory_materials').select('id, is_client_supplied'),
         supabase.from('production_lines').select('id, line_name').order('line_name', { ascending: true }),
       ])
       if (cErr) setError('Cannot load customers')
-      if (!cErr) setCustomers((cData ?? []).map((r: any) => ({ id: String(r.id), name: String(r.company_name ?? ''), credit_hold: !!r.credit_hold, overdue_balance: Number(r.overdue_balance ?? 0) })))
+      if (!cErr) setCustomers((cData ?? []).map((r: any) => ({ id: String(r.id), name: String(r.company_name ?? ''), credit_hold: !!r.credit_hold, overdue_balance: Number(r.overdue_balance ?? 0), credit_limit: Number(r.credit_limit ?? 0), current_balance: Number(r.current_balance ?? 0) })))
       if (!pErr) {
         const formulas = Array.isArray(fData) ? fData : []
         const items = Array.isArray(fiData) ? fiData : []
@@ -1155,6 +1435,16 @@ const PurchaseOrders: React.FC = () => {
     load()
   }, [])
 
+  // One-time normalization after customers and orders are loaded
+  const didNormalize = useRef(false)
+  useEffect(() => {
+    if (didNormalize.current) return
+    if ((customers?.length || 0) === 0) return
+    if ((orders?.length || 0) === 0) return
+    didNormalize.current = true
+    refreshPOs()
+  }, [customers.length, orders.length])
+
   useEffect(() => {
     const loadPackagingTypes = async () => {
       try {
@@ -1195,6 +1485,7 @@ const PurchaseOrders: React.FC = () => {
       is_copack: false,
       client_materials_required: false,
       operation_supplies_materials: false,
+      deposit_paid: false,
       lines: []
     })
   }
@@ -1234,25 +1525,53 @@ const PurchaseOrders: React.FC = () => {
     }
 
     const customer = customers.find(c => c.id === draft.customer_id) || null
+    let ruleResult: any = null
 
-    // VALIDATE AGAINST RULE ENGINE
-    const result = validatePODraft(draft, customer, productsIndex)
-
-    if (!result.ok) {
-      setToast({ show: true, message: result.errors.join(' '), kind: 'error' })
-      return
+    // Brand vs Copack validation
+    if (draft.is_copack) {
+      // Minimal validation for Copack orders: require Quantity and Location only
+      const qtyOk = Number(form.quantity || 0) > 0
+      const locationOk = !!draft.location
+      if (!qtyOk || !locationOk) {
+        setToast({ show: true, message: 'For Copack orders, please provide Quantity and Location.', kind: 'error' })
+        return
+      }
+      // Skip brand rule engine for Copack
+    } else {
+      // VALIDATE AGAINST RULE ENGINE (Brand PO)
+      ruleResult = validatePODraft(draft, customer, productsIndex)
+      if (!ruleResult.ok) {
+        setToast({ show: true, message: ruleResult.errors.join(' '), kind: 'error' })
+        return
+      }
     }
 
-    // Auto status rules
+    // Auto status & risk flag rules
     let status = form.status || 'Draft'
-    if (result.flags.creditHold) status = 'On Hold'
+    const creditHold = !!(customer as any)?.credit_hold
+    const limit = Number((customer as any)?.credit_limit ?? 0)
+    const overLimit = Number((customer as any)?.current_balance ?? 0) > limit
+    const overdueOverLimit = Number((customer as any)?.overdue_balance ?? 0) > limit
+    let risk_flag = false
+    if (creditHold) {
+      status = 'On Hold'
+      risk_flag = true
+    } else if (overLimit || overdueOverLimit) {
+      // Credit hold is false but exceeds limit/overdue → mark as Risk
+      status = 'Risk'
+      risk_flag = true
+    }
 
-    const is_rush = result.flags.rush === true
+    let is_rush = false
+    if (ruleResult?.flags?.rush === true) is_rush = true
 
     setLoading(true)
     try {
       const mainProd = products.find(p => p.name === form.product) || null
       let po_id: string
+      const today = new Date()
+      const todayStr = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}`
+      const shipDate = draft.is_copack ? (draft.ship_date || form.requestedShipDate || form.date || todayStr) : (draft.ship_date || null)
 
       if (isEditOpen?.id) {
         // UPDATE existing head
@@ -1264,11 +1583,13 @@ const PurchaseOrders: React.FC = () => {
             customer_name: form.customer || (customers.find(c=>c.id===draft.customer_id)?.name || null),
             product_id: mainProd?.id || null,
             product_name: form.product || null,
-            requested_ship_date: draft.ship_date,
+            requested_ship_date: shipDate,
             quantity: form.quantity ? Number(form.quantity) : null,
             price: form.price ? Number(form.price) : null,
             location: draft.location || null,
             status,
+            risk_flag,
+            deposit_paid: !!form.deposit_paid,
             is_rush,
             is_copack: !!draft.is_copack,
             client_materials_required: !!draft.client_materials_required,
@@ -1290,11 +1611,13 @@ const PurchaseOrders: React.FC = () => {
             customer_name: form.customer || (customers.find(c=>c.id===draft.customer_id)?.name || null),
             product_id: mainProd?.id || null,
             product_name: form.product || null,
-            requested_ship_date: draft.ship_date,
+            requested_ship_date: shipDate,
             quantity: form.quantity ? Number(form.quantity) : null,
             price: form.price ? Number(form.price) : null,
             location: draft.location || null,
             status,
+            risk_flag,
+            deposit_paid: !!form.deposit_paid,
             is_rush,
             is_copack: !!draft.is_copack,
             client_materials_required: !!draft.client_materials_required,
@@ -1312,11 +1635,18 @@ const PurchaseOrders: React.FC = () => {
       // Replace lines for this PO
       await supabase.from('purchase_order_lines').delete().eq('purchase_order_id', po_id)
 
-      const linesPayload = (draft.lines || []).map(l => ({
+      let linesPayload = (draft.lines || []).map(l => ({
         purchase_order_id: po_id,
         product_name: l.product_name,
         quantity: l.qty,
       }))
+
+      // For Copack orders, auto-create a single line from the selected product and quantity
+      if (draft.is_copack) {
+        const baseName = form.product || mainProd?.name || ''
+        const qty = Number(form.quantity || 0)
+        linesPayload = [{ purchase_order_id: po_id, product_name: baseName, quantity: qty }]
+      }
 
       if (linesPayload.length === 0) throw new Error('PO must have at least one line.')
 
@@ -1340,7 +1670,7 @@ const PurchaseOrders: React.FC = () => {
       showQueue(0)
 
       // Refresh orders list
-      const { data } = await supabase.from('purchase_orders').select('*').order('created_at', { ascending: false })
+      const { data } = await supabase.from('purchase_orders').select('*, risk_flag').order('created_at', { ascending: false })
       setOrders(data ?? [])
       resetForm()
       setIsAddOpen(false)
@@ -1491,7 +1821,7 @@ const PurchaseOrders: React.FC = () => {
 
       const { data: poRows } = await supabase
         .from('purchase_orders')
-        .select('*')
+        .select('*, risk_flag')
         .order('created_at', { ascending: false });
 
       setOrders(poRows ?? []);
@@ -1510,7 +1840,7 @@ const PurchaseOrders: React.FC = () => {
       // Load the most recent PO to decide the flow
       const { data: poRow, error: fetchErr } = await supabase
         .from('purchase_orders')
-        .select('*')
+        .select('*, risk_flag')
         .eq('id', poId)
         .maybeSingle()
       if (fetchErr) throw fetchErr
@@ -1593,7 +1923,7 @@ const PurchaseOrders: React.FC = () => {
   // refresh PO list
   const { data: poRows } = await supabase
     .from('purchase_orders')
-    .select('*')
+    .select('*, risk_flag')
     .order('created_at', { ascending: false })
 
   setOrders(poRows ?? [])
@@ -1681,7 +2011,7 @@ const PurchaseOrders: React.FC = () => {
       // Refresh PO list
       const { data: poRows } = await supabase
         .from('purchase_orders')
-        .select('*')
+        .select('*, risk_flag')
         .order('created_at', { ascending: false })
       setOrders(poRows ?? [])
 
@@ -1828,13 +2158,23 @@ const PurchaseOrders: React.FC = () => {
                         <div className="flex items-start justify-between mb-4">
                           <div className="flex items-center space-x-3">
                             {(() => {
-                              const isRemaining = asnPoStatus === 'partially_shipped' && index === 0
-                              const iconWrapClass = isRemaining
-                                ? 'bg-primary-medium/10'
-                                : (asnPoStatus === 'partially_shipped' ? 'bg-accent-warning/10' : 'bg-accent-success/10')
-                              const iconClass = isRemaining
-                                ? 'text-primary-medium'
-                                : (asnPoStatus === 'partially_shipped' ? 'text-accent-warning' : 'text-accent-success')
+                              // Check if this is a remaining shipment (created from Ship Remaining button)
+                              const isRemainingShipment = asn.asn_number && asn.asn_number.includes('REMAINING')
+                              // Check if this is a partial shipment (orange)
+                              const isPartialShipment = asnPoStatus === 'partially_shipped' && !isRemainingShipment
+                              
+                              const iconWrapClass = isRemainingShipment
+                                ? 'bg-blue-100'  // Blue for remaining shipment
+                                : isPartialShipment 
+                                  ? 'bg-orange-100'  // Orange for partial shipment
+                                  : 'bg-accent-success/10'  // Green for complete shipment
+                              
+                              const iconClass = isRemainingShipment
+                                ? 'text-blue-600'
+                                : isPartialShipment 
+                                  ? 'text-orange-600'
+                                  : 'text-accent-success'
+                              
                               return (
                                 <div className={`w-12 h-12 rounded-full flex items-center justify-center ${iconWrapClass}`}>
                                   <svg className={`w-6 h-6 ${iconClass}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1846,9 +2186,21 @@ const PurchaseOrders: React.FC = () => {
                             <div>
                               <h4 className="text-lg font-bold text-neutral-dark">{asn.asn_number || 'ASN-UNKNOWN'}</h4>
                               {(() => {
-                                const isRemaining = asnPoStatus === 'partially_shipped' && index === 0
-                                const lineClass = isRemaining ? 'text-primary-medium' : (asnPoStatus === 'partially_shipped' ? 'text-accent-warning' : 'text-neutral-medium')
-                                const prefix = isRemaining ? 'Remaining Shipment on ' : (asnPoStatus === 'partially_shipped' ? 'Partially Shipped on ' : 'Shipped on ')
+                                const isRemainingShipment = asn.asn_number && asn.asn_number.includes('REMAINING')
+                                const isPartialShipment = asnPoStatus === 'partially_shipped' && !isRemainingShipment
+                                
+                                const lineClass = isRemainingShipment 
+                                  ? 'text-blue-600' 
+                                  : isPartialShipment 
+                                    ? 'text-orange-600' 
+                                    : 'text-neutral-medium'
+                                
+                                const prefix = isRemainingShipment 
+                                  ? 'Remaining Shipment on ' 
+                                  : isPartialShipment 
+                                    ? 'Partial Shipment on ' 
+                                    : 'Shipped on '
+                                
                                 return (
                                   <p className={`text-sm ${lineClass}`}>
                                     {prefix}{asn.created_at ? new Date(asn.created_at).toLocaleDateString('en-US', {
@@ -1864,19 +2216,26 @@ const PurchaseOrders: React.FC = () => {
                           </div>
                           <div className="text-right">
                             {(() => {
-                              const isRemaining = asnPoStatus === 'partially_shipped' && index === 0
-                              if (isRemaining) {
+                              const isRemainingShipment = asn.asn_number && asn.asn_number.includes('REMAINING')
+                              const isPartialShipment = asnPoStatus === 'partially_shipped' && !isRemainingShipment
+                              
+                              if (isRemainingShipment) {
                                 return (
-                                  <div className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-primary-medium/10 text-primary-medium border border-primary-medium/20">
+                                  <div className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-700 border border-blue-200">
                                     Remaining Shipment
                                   </div>
                                 )
                               }
-                              return asnPoStatus === 'partially_shipped' ? (
-                                <div className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-accent-warning/10 text-accent-warning border border-accent-warning/20">
-                                  Partially Shipped
-                                </div>
-                              ) : (
+                              
+                              if (isPartialShipment) {
+                                return (
+                                  <div className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-orange-100 text-orange-700 border border-orange-200">
+                                    Partial Shipment
+                                  </div>
+                                )
+                              }
+                              
+                              return (
                                 <div className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-accent-success/10 text-accent-success border border-accent-success/20">
                                   Shipped
                                 </div>
@@ -2054,6 +2413,7 @@ const PurchaseOrders: React.FC = () => {
                           is_copack: !!currentOrder.is_copack,
                           client_materials_required: !!currentOrder.client_materials_required,
                           operation_supplies_materials: !!currentOrder.operation_supplies_materials,
+                          deposit_paid: currentOrder.deposit_paid ?? false,
                           lines: []
                         });
                         // Prefill packaging types (array)
@@ -2284,302 +2644,413 @@ const PurchaseOrders: React.FC = () => {
 
         {/* Header */}
         <div className="bg-white rounded-2xl shadow-md border border-neutral-soft/20 p-8 mb-8">
-          <div className="flex justify-between items-center">
+          <div className="flex items-center justify-between">
             <div>
               <h1 className="text-3xl font-bold text-neutral-dark mb-2">Purchase Orders</h1>
               <p className="text-neutral-medium text-lg">Manage inbound customer purchase orders</p>
             </div>
-            <button onClick={() => { setIsEditOpen(null); resetForm(); setSelectedPackagingTypes([]); setExtraLines([]); setIsAddOpen(true) }} className="px-8 py-4 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold transition-all duration-300 shadow-lg hover:shadow-xl transform hover:-translate-y-0.5 flex items-center">
+            <button onClick={() => { setIsEditOpen(null); setForm((prev:any)=>({ ...(prev||{}), is_copack: poTab==='copack' })); resetForm(); setForm((prev:any)=>({ ...(prev||{}), is_copack: poTab==='copack' })); setSelectedPackagingTypes([]); setExtraLines([]); setIsAddOpen(true) }} className="px-8 py-4 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold transition-all duration-300 shadow-lg hover:shadow-xl transform hover:-translate-y-0.5 flex items-center">
               <Plus className="h-5 w-5 mr-3" />
               Add Purchase Order
             </button>
           </div>
         </div>
 
-        {/* Search and Filter */}
-        <div className="bg-white rounded-2xl shadow-md border border-neutral-soft/20 p-8 mb-8">
-          <div className="flex flex-col md:flex-row gap-6">
-            <div className="w-full md:w-1/2">
-              <label className="flex items-center text-sm font-semibold text-neutral-dark mb-3">Search POs</label>
-              <div className="relative">
-                <Search className="absolute left-4 top-1/2 transform -translate-y-1/2 h-5 w-5 text-neutral-medium" />
-                <input
-                  type="text"
-                  placeholder="Search customer or product..."
-                  className="w-full pl-12 pr-4 py-4 border border-neutral-soft rounded-xl focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all duration-200 bg-white text-neutral-dark placeholder-neutral-medium shadow-sm hover:shadow-md hover:border-neutral-medium"
-                  value={search}
-                  onChange={(e)=>setSearch(e.target.value)}
-                />
-              </div>
+      {/* PO Risk Banner */}
+      {renderPOBanner()}
+
+      {/* Search and Filter */}
+      <div className="bg-white rounded-2xl shadow-md border border-neutral-soft/20 p-8 mb-8">
+        <div className="flex items-center justify-between gap-6">
+          <div className="flex-1 max-w-md">
+            <label className="flex items-center text-sm font-semibold text-neutral-dark mb-3">Search POs</label>
+            <div className="relative">
+              <Search className="absolute left-4 top-1/2 transform -translate-y-1/2 h-5 w-5 text-neutral-medium" />
+              <input
+                type="text"
+                placeholder="Search customer or product..."
+                className="w-full pl-12 pr-4 py-4 border border-neutral-soft rounded-xl focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all duration-200 bg-white text-neutral-dark placeholder-neutral-medium shadow-sm hover:shadow-md hover:border-neutral-medium"
+                value={search}
+                onChange={(e)=>setSearch(e.target.value)}
+              />
             </div>
-            <div className="w-full md:flex-1 flex flex-col gap-4">
-              <label className="flex items-center text-sm font-semibold text-neutral-dark">
-                <Filter className="h-5 w-5 mr-3 text-primary-medium" />
-                Filter & Sort
-              </label>
-              <div className="flex gap-3">
-                <div className="relative w-1/2" ref={statusRef}>
-                  <button
-                    type="button"
-                    onClick={()=>setIsStatusOpen(v=>!v)}
-                    className="w-full flex items-center justify-between px-4 py-3 border border-neutral-soft rounded-xl text-left bg-white transition-all shadow-sm hover:border-neutral-medium focus:ring-2 focus:ring-primary-light focus:border-primary-light hover:shadow-md"
-                  >
-                    <span className={statusFilter==='All' ? 'text-neutral-medium' : 'text-neutral-dark'}>
-                      {statusFilter === 'All' ? 'All Statuses' : statusFilter}
-                    </span>
-                    <span className="ml-2 text-neutral-medium">▼</span>
-                  </button>
-                  {isStatusOpen && (
-                    <div className="absolute left-0 right-0 z-[100] mt-2 w-full bg-white border border-neutral-soft rounded-xl shadow-xl max-h-56 overflow-auto">
-                      {(['All', ...Object.values(Status)] as string[]).map((opt) => (
-                        <button key={opt} type="button" className={`block w-full text-left px-4 py-2 hover:bg-neutral-light ${statusFilter===opt ? 'bg-neutral-light' : ''}`} onClick={()=>{ setStatusFilter(opt); setIsStatusOpen(false) }}>
-                          {opt}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-                <div className="relative w-1/2" ref={rushRef}>
-                  <button
-                    type="button"
-                    onClick={()=>setIsRushOpen(v=>!v)}
-                    className="w-full flex items-center justify-between px-4 py-3 border border-neutral-soft rounded-xl text-left bg-white transition-all shadow-sm hover:border-neutral-medium focus:ring-2 focus:ring-primary-light focus:border-primary-light hover:shadow-md"
-                  >
-                    <span className={rushFilter==='All' ? 'text-neutral-medium' : 'text-neutral-dark'}>
-                      {rushFilter}
-                    </span>
-                    <span className="ml-2 text-neutral-medium">▼</span>
-                  </button>
-                  {isRushOpen && (
-                    <div className="absolute left-0 right-0 z-[100] mt-2 w-full bg-white border border-neutral-soft rounded-xl shadow-xl max-h-56 overflow-auto">
-                      {['All','Rush Only','Non-Rush'].map(opt => (
-                        <button key={opt} type="button" className={`block w-full text-left px-4 py-2 hover:bg-neutral-light ${rushFilter===opt ? 'bg-neutral-light' : ''}`} onClick={()=>{ setRushFilter(opt); setIsRushOpen(false) }}>
-                          {opt}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
+          </div>
+          <div className="flex flex-col gap-4 flex-shrink-0">
+            <label className="flex items-center text-sm font-semibold text-neutral-dark">
+              <Search className="h-5 w-5 mr-3 text-primary-medium" />
+              Filter & Sort
+            </label>
+            <div className="flex gap-3">
+              <div className="relative" ref={statusRef}>
+                <button
+                  type="button"
+                  onClick={()=>setIsStatusOpen(v=>!v)}
+                  className="flex items-center justify-between px-4 py-3 border border-neutral-soft rounded-xl text-left bg-white transition-all shadow-sm hover:border-neutral-medium focus:ring-2 focus:ring-primary-light focus:border-primary-light hover:shadow-md w-[180px]"
+                >
+                  <span className={statusFilter==='All' ? 'text-neutral-medium' : 'text-neutral-dark'}>
+                    {statusFilter === 'All' ? 'All Statuses' : statusFilter}
+                  </span>
+                  <span className="ml-2 text-neutral-medium">▼</span>
+                </button>
+                {isStatusOpen && (
+                  <div className="absolute left-0 right-0 z-[100] mt-2 w-full bg-white border border-neutral-soft rounded-xl shadow-xl max-h-56 overflow-auto">
+                    {(['All', ...Object.values(Status)] as string[]).map((opt) => (
+                      <button key={opt} type="button" className={`block w-full text-left px-4 py-2 hover:bg-neutral-light ${statusFilter===opt ? 'bg-neutral-light' : ''}`} onClick={()=>{ setStatusFilter(opt); setIsStatusOpen(false) }}>
+                        {opt}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div className="relative" ref={rushRef}>
+                <button
+                  type="button"
+                  onClick={()=>setIsRushOpen(v=>!v)}
+                  className="flex items-center justify-between px-4 py-3 border border-neutral-soft rounded-xl text-left bg-white transition-all shadow-sm hover:border-neutral-medium focus:ring-2 focus:ring-primary-light focus:border-primary-light hover:shadow-md w-[140px]"
+                >
+                  <span className={rushFilter==='All' ? 'text-neutral-medium' : 'text-neutral-dark'}>
+                    {rushFilter}
+                  </span>
+                  <span className="ml-2 text-neutral-medium">▼</span>
+                </button>
+                {isRushOpen && (
+                  <div className="absolute left-0 right-0 z-[100] mt-2 w-full bg-white border border-neutral-soft rounded-xl shadow-xl max-h-56 overflow-auto">
+                    {['All','Rush Only','Non-Rush'].map(opt => (
+                      <button key={opt} type="button" className={`block w-full text-left px-4 py-2 hover:bg-neutral-light ${rushFilter===opt ? 'bg-neutral-light' : ''}`} onClick={()=>{ setRushFilter(opt); setIsRushOpen(false) }}>
+                        {opt}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           </div>
         </div>
+      </div>
 
-        {/* Table */}
-        <div className="bg-white rounded-2xl shadow-md border border-neutral-soft/20 p-6">
+      {/* Table (redesigned as cards) */}
+      <div className="bg-white rounded-2xl shadow-md border border-neutral-soft/20 p-6">
+        {/* Local tabs row just above the list */}
+        <div className="mb-4 flex items-center justify-end">
+          <div className="inline-flex items-center rounded-lg bg-neutral-light/60 p-1 border border-neutral-soft/60">
+            <button
+              className={`px-3 py-1.5 text-sm rounded-md ${poTab==='brand' ? 'bg-primary-medium text-white shadow' : 'text-neutral-dark hover:bg-white'}`}
+              onClick={() => setPoTab('brand')}
+            >
+              Brand
+            </button>
+            <button
+              className={`px-3 py-1.5 text-sm rounded-md ${poTab==='copack' ? 'bg-primary-medium text-white shadow' : 'text-neutral-dark hover:bg-white'}`}
+              onClick={() => setPoTab('copack')}
+            >
+              Copack
+            </button>
+          </div>
+        </div>
           {error && <div className="mb-4 text-sm text-red-600">{error}</div>}
           {loading ? (
             <div className="p-12 text-center text-neutral-medium">Loading…</div>
           ) : orders.length === 0 ? (
             <div className="p-12 text-center text-neutral-medium">No purchase orders yet</div>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="min-w-full">
-                <thead>
-                  <tr className="bg-gradient-to-r from-neutral-light/60 via-neutral-light/40 to-neutral-soft/30 border-b-2 border-neutral-soft/50">
-                    <th className="px-8 py-6 text-left text-sm font-bold text-neutral-dark uppercase tracking-wider">
-                      <div className="flex items-center space-x-2">
-                        <Calendar className="h-4 w-4 text-primary-medium" />
-                        <span>Date</span>
-                      </div>
-                    </th>
-                    <th className="px-8 py-6 text-left text-sm font-bold text-neutral-dark uppercase tracking-wider">
-                      <div className="flex items-center space-x-2">
-                        <User className="h-4 w-4 text-primary-medium" />
-                        <span>Customer</span>
-                      </div>
-                    </th>
-                    <th className="px-8 py-6 text-left text-sm font-bold text-neutral-dark uppercase tracking-wider">
-                      <div className="flex items-center space-x-2">
-                        <Package className="h-4 w-4 text-primary-medium" />
-                        <span>Product</span>
-                      </div>
-                    </th>
-                    <th className="px-8 py-6 text-left text-sm font-bold text-neutral-dark uppercase tracking-wider">Qty</th>
-                    <th className="px-8 py-6 text-left text-sm font-bold text-neutral-dark uppercase tracking-wider">Price</th>
-                    <th className="px-8 py-6 text-left text-sm font-bold text-neutral-dark uppercase tracking-wider">
-                      <div className="flex items-center space-x-2">
-                        <Calendar className="h-4 w-4 text-primary-medium" />
-                        <span>Ship Date</span>
-                      </div>
-                    </th>
-                    <th className="px-8 py-6 text-left text-sm font-bold text-neutral-dark uppercase tracking-wider">
-                      <div className="flex items-center space-x-2">
-                        <BadgeCheck className="h-4 w-4 text-primary-medium" />
-                        <span>Status</span>
-                      </div>
-                    </th>
-                    <th className="px-8 py-6 text-left text-sm font-bold text-neutral-dark uppercase tracking-wider">Rush</th>
-                    <th className="px-8 py-6 text-center text-sm font-bold text-neutral-dark uppercase tracking-wider">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-neutral-soft/20">
-                  {orders
-                    .filter((o:any)=>{
-                      const hit = (o.customer_name||'').toLowerCase().includes(search.toLowerCase()) || (o.product_name||'').toLowerCase().includes(search.toLowerCase())
-                      const statusOk = statusFilter==='All' ? true : o.status===statusFilter
-                      const rushOk = rushFilter==='All' ? true : rushFilter==='Rush Only' ? !!o.is_rush : !o.is_rush
-                      return hit && statusOk && rushOk
-                    })
-                    .map((o:any) => {
-                      const st = String(o.status || '').toLowerCase()
-                      const orderedQty = Number(o.quantity ?? 0)
-                      const shippedSum = shippedTotals[String(o.id)] ?? null
-                      const statusClass = (st === 'on hold' || st === 'canceled')
-                        ? 'bg-accent-danger/10 text-accent-danger border-accent-danger/30'
-                        : (st === 'approved' || st === 'allocated' || st === 'submitted' || st === 'shipped')
-                          ? 'bg-accent-success/10 text-accent-success border-accent-success/30'
-                          : (st === 'partially_shipped')
-                            ? 'bg-accent-warning/10 text-accent-warning border-accent-warning/30'
-                            : 'bg-neutral-light/40 text-neutral-dark border-neutral-soft/60'
-                      return (
-                        <tr key={o.id} className="group hover:bg-gradient-to-r hover:from-primary-light/5 hover:to-primary-medium/5 transition-all duration-300 hover:shadow-sm">
-                          <td className="px-8 py-6">{o.date || '-'}</td>
-                          <td className="px-8 py-6">
-                            <div className="text-sm font-medium text-neutral-dark truncate max-w-[260px]">{o.customer_name || o.customer_id}</div>
-                          </td>
-                          <td className="px-8 py-6">
-                            <div className="text-sm text-neutral-dark truncate max-w-[260px] flex items-center gap-2">
-                              <span className="truncate">{o.product_name || o.product_id}</span>
-                              {o.is_copack && (
-                                <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-indigo-100 text-indigo-700">COPACK</span>
-                              )}
-                            </div>
-                          </td>
-                          <td className="px-8 py-6">{o.quantity}</td>
-                          <td className="px-8 py-6">{o.price ? `$${Number(o.price).toFixed(2)}` : '-'}</td>
-                          <td className="px-8 py-6">{o.requested_ship_date || '-'}</td>
-                          <td className="px-8 py-6">
-                            <div className="flex flex-col items-start gap-0.5">
-                              <span className={`inline-flex items-center px-3 py-1.5 rounded-xl text-xs font-semibold border ${statusClass}`}>
-                                {o.status}
-                              </span>
-                              {String(o.status) === 'partially_shipped' && Number(o.backorder_qty ?? 0) > 0 && !!o.backorder_eta && (
-                                <span className="text-[11px] text-neutral-medium">Backorder ETA: {formatDate(o.backorder_eta as any)}</span>
-                              )}
-                            </div>
-                          </td>
-                          <td className="px-8 py-6">{o.is_rush ? 'Yes' : 'No'}</td>
-                          <td className="px-8 py-6">
-                            <div className="grid grid-cols-[1fr_auto] items-center w-full">
-                              {/* Centered Action Buttons */}
-                              <div className="justify-self-center">
-                                {/* Status-based button flow */}
-                                <div className="flex items-center gap-2">
-                                  {/* View ASN buttons only */}
-                                  {(o.status === "Shipped" || String(o.status).toLowerCase() === 'submitted') && (
-                                    <button
-                                      className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-semibold bg-accent-success hover:bg-accent-success/90 text-white shadow-sm transition-all"
-                                      onClick={() => { setOpenMenuId(null); setAsnPoStatus('shipped'); viewASN(o.id) }}
-                                    >
-                                      <Eye className="h-4 w-4" />
-                                      View ASN
-                                    </button>
-                                  )}
-                                  {/* For partially_shipped, View ASN is rendered on the right with shipping buttons */}
-
-                                  {/* Keep Approve for new/Open */}
-                                  {(o.status === "Open" || !o.status) && (
-                                    <button
-                                      className={`group/btn px-3 py-3 rounded-xl transition-all duration-300 border ${fefoWarning ? 'text-neutral-medium bg-neutral-light/40 cursor-not-allowed border-neutral-soft' : 'text-primary-medium hover:text-white hover:bg-primary-medium hover:shadow-lg hover:scale-105 border-primary-light/30 hover:border-primary-medium'}`}
-                                      onClick={() => { setOpenMenuId(null); handleApproveClick(o) }}
-                                      title="Approve & Allocate"
-                                      disabled={!!fefoWarning}
-                                    >
-                                      Approve
-                                    </button>
-                                  )}
-                                </div>
-                                
-                              </div>
-
-                              {/* Right Edge: Shipping buttons (per rules) + Menu Button */}
-                              <div className="relative justify-self-end flex items-center gap-3">
-                                {/* SHIPPING BUTTON LOGIC (exact rules) */}
-                                {String(o.status) === 'allocated' && (
-                                  <button
-                                    className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-semibold bg-primary-light hover:bg-primary-medium text-white shadow-sm transition-all focus:outline-none focus:ring-2 focus:ring-primary-light/40"
-                                    onClick={() => handleReadyToShip(String(o.id))}
-                                  >
-                                    <Truck className="h-4 w-4" />
-                                    Ready to Ship
-                                  </button>
-                                )}
-                                {String(o.status) === 'Ready to Ship' && (
-                                  <button
-                                    className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-semibold bg-primary-medium hover:bg-primary-dark text-white shadow-sm transition-all focus:outline-none focus:ring-2 focus:ring-primary-medium/40"
-                                    onClick={() => shipPO(String(o.id))}
-                                  >
-                                    <PackageCheck className="h-4 w-4" />
-                                    Ship Order
-                                  </button>
-                                )}
-
-                                {String(o.status) === 'partial' && (o as any).allow_partial_ship === true && (
-                                  <button
-                                    className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-semibold bg-accent-warning hover:bg-accent-warning/90 text-white shadow-sm transition-all focus:outline-none focus:ring-2 focus:ring-accent-warning/40"
-                                    onClick={() => handleShipPartial(String(o.id))}
-                                  >
-                                    <Truck className="h-4 w-4" />
-                                    Partial Ship         
-                                  </button>
-                                )}
-
-                                {String(o.status) === 'partially_shipped' && (
-                                  <button
-                                    className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-semibold bg-accent-warning hover:bg-accent-warning/90 text-white shadow-sm transition-all"
-                                    onClick={() => { setOpenMenuId(null); setAsnPoStatus('partially_shipped'); viewASN(o.id) }}
-                                  >
-                                    <Eye className="h-4 w-4" />
-                                    View ASN
-                                  </button>
-                                )}
-
-                                {String(o.status) === 'partially_shipped' && (
-                                  // Show Ship Remaining only if shipped < ordered
-                                  (shippedSum === null ? Number(o.backorder_qty ?? 0) > 0 : shippedSum < orderedQty)
-                                ) && (
-                                  <button
-                                    className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-semibold bg-primary-medium hover:bg-primary-dark text-white shadow-sm transition-all focus:outline-none focus:ring-2 focus:ring-primary-medium/40"
-                                    onClick={() => handleShipRemaining(String(o.id))}
-                                  >
-                                    <Truck className="h-4 w-4" />
-                                    Ship Remaining
-                                  </button>
-                                )}
-
-                                {String(o.status) === 'partially_shipped' && (
-                                  shippedSum !== null ? shippedSum >= orderedQty : Number(o.backorder_qty ?? 0) === 0
-                                ) && (
-                                  <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-medium bg-accent-success/10 text-accent-success border border-accent-success/20">
-                                    <CheckCircle2 className="h-3.5 w-3.5" /> Completed
+            <div className="space-y-4">
+              {(() => {
+                // First filter the orders
+                const filteredOrders = orders.filter((o:any)=>{
+                  const hit = (o.customer_name||'').toLowerCase().includes(search.toLowerCase()) || (o.product_name||'').toLowerCase().includes(search.toLowerCase())
+                  const statusOk = statusFilter==='All' ? true : o.status===statusFilter
+                  const rushOk = rushFilter==='All' ? true : rushFilter==='Rush Only' ? !!o.is_rush : !o.is_rush
+                  return hit && statusOk && rushOk
+                })
+                
+                // Create a sorted copy for priority ranking (don't mutate original)
+                const sortedForPriority = [...filteredOrders].sort((a: any, b: any) => {
+                  const ad = new Date(a.requested_ship_date || 0).getTime()
+                  const bd = new Date(b.requested_ship_date || 0).getTime()
+                  if (ad !== bd) return ad - bd // earlier ship date first
+                  const adep = !!a.deposit_paid ? 1 : 0
+                  const bdep = !!b.deposit_paid ? 1 : 0
+                  if (adep !== bdep) return bdep - adep // deposit first
+                  const ac = new Date(a.created_at || 0).getTime()
+                  const bc = new Date(b.created_at || 0).getTime()
+                  return ac - bc // older first
+                })
+                
+                const filtered = sortedForPriority.filter((o:any) => (!!o.is_copack) === (poTab === 'copack'))
+                return filtered.map((o:any) => {
+                  const st = String(o.status || '').toLowerCase()
+                  const orderedQty = Number(o.quantity ?? 0)
+                  const shippedSum = shippedTotals[String(o.id)] ?? null
+                  const statusClass = (st === 'on hold' || st === 'canceled')
+                    ? 'bg-accent-danger/10 text-accent-danger border-accent-danger/30'
+                    : (st === 'approved' || st === 'allocated' || st === 'submitted' || st === 'shipped')
+                      ? 'bg-accent-success/10 text-accent-success border-accent-success/30'
+                      : (st === 'partially_shipped')
+                        ? 'bg-accent-warning/10 text-accent-warning border-accent-warning/30'
+                        : 'bg-neutral-light/40 text-neutral-dark border-neutral-soft/60'
+                  
+                  // Find this PO's priority rank in the sorted list
+                  const brandQueue = sortedForPriority.filter((p:any) => !p.is_copack)
+                  const priorityRank = brandQueue.findIndex((p:any) => p.id === o.id) + 1
+                  const depositPaid = !!o.deposit_paid
+                  return (
+                    <div key={o.id} className="rounded-2xl border border-neutral-soft/40 bg-gradient-to-br from-white to-neutral-light/30 p-5 shadow-sm hover:shadow-md transition-all">
+                      <div className="flex items-start justify-between pb-3 border-b border-neutral-soft/60">
+                        <div className="flex items-start gap-4">
+                          <div className="space-y-1">
+                            <div className="text-[11px] uppercase tracking-wide text-neutral-medium">PO Date</div>
+                            <div className="text-sm font-semibold text-neutral-dark">{o.date || '-'}</div>
+                          </div>
+                          {isCompetingPO(o) && !o.is_copack && (
+                            <div className="space-y-1">
+                              <div className="text-[11px] uppercase tracking-wide text-neutral-medium">Priority Score</div>
+                              <div className="flex items-center gap-2">
+                                <span className="inline-flex items-center px-2 py-1 rounded-lg text-xs font-bold bg-primary-100 text-primary-700 border border-primary-200">
+                                  #{priorityRank}
+                                </span>
+                                {depositPaid && (
+                                  <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-green-100 text-green-700">
+                                    PRIORITY
                                   </span>
                                 )}
-                                <button 
-                                  className="menu-button p-2 text-neutral-medium hover:text-primary-medium rounded-md transition-colors"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    const rect = e.currentTarget.getBoundingClientRect();
-                                    setDropdownPosition({
-                                      top: rect.top + window.scrollY,
-                                      left: rect.left + window.scrollX - 200 // Position to the left of menu button
-                                    });
-                                    setOpenMenuId(openMenuId === o.id ? null : o.id);
-                                  }}
-                                  title="Actions"
-                                >
-                                  <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z" />
-                                  </svg>
-                                </button>
                               </div>
                             </div>
-                          </td>
-                        </tr>
-                      )
-                    })}
-                </tbody>
-              </table>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className={`inline-flex items-center px-3 py-1.5 rounded-xl text-xs font-semibold border ${statusClass}`}>{o.status}</span>
+                          {o.is_rush && !o.is_copack && (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-orange-100 text-orange-700">RUSH</span>
+                          )}
+                          <button 
+                            className="menu-button p-2 text-neutral-medium hover:text-primary-medium rounded-md transition-colors"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              const rect = e.currentTarget.getBoundingClientRect();
+                              setDropdownPosition({
+                                top: rect.top + window.scrollY,
+                                left: rect.left + window.scrollX - 200
+                              });
+                              setOpenMenuId(openMenuId === o.id ? null : o.id);
+                            }}
+                            title="Actions"
+                          >
+                            <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z" />
+                            </svg>
+                          </button>
+                        </div>
+                      </div>
+                      <div className={`pt-4 grid grid-cols-1 ${o.is_copack ? 'md:grid-cols-2' : 'md:grid-cols-3'} gap-6`}>
+                        <div className="space-y-1">
+                          <label className="flex items-center text-[11px] font-semibold text-neutral-medium uppercase tracking-wide">
+                            <User className="h-4 w-4 mr-2 text-primary-medium" /> Customer
+                          </label>
+                          <div className="text-sm font-semibold text-neutral-dark">{o.customer_name || o.customer_id}</div>
+                        </div>
+                        <div className="space-y-1">
+                          <label className="flex items-center text-[11px] font-semibold text-neutral-medium uppercase tracking-wide">
+                            <Package className="h-4 w-4 mr-2 text-primary-medium" /> Product
+                          </label>
+                          <div className="text-sm text-neutral-dark flex items-center gap-2">
+                            <span className="font-medium">{o.product_name || o.product_id}</span>
+                            {o.is_copack && (
+                              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-indigo-100 text-indigo-700">COPACK</span>
+                            )}
+                            {o.deposit_paid && (
+                              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-100 text-emerald-700">Deposit</span>
+                            )}
+                            {isCompetingPO(o) && !o.is_copack && (
+                              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-100 text-amber-700">Competing</span>
+                            )}
+                            {o.is_copack && (
+                              <div className="ml-4 flex items-center gap-2">
+                                <Package className="h-4 w-4 text-primary-medium" />
+                                <span className="text-[11px] uppercase tracking-wide text-neutral-medium">Qty</span>
+                                <span className="text-sm font-semibold text-neutral-dark">{Number(o.quantity ?? 0)}</span>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-3 gap-6">
+                          {!o.is_copack && (
+                            <div className="md:border-l md:pl-4 border-neutral-soft/60">
+                              <label className="flex items-center text-[11px] font-semibold text-neutral-medium uppercase tracking-wide">
+                                <Package className="h-4 w-4 mr-2 text-primary-medium" /> Qty
+                              </label>
+                              <div className="text-sm font-semibold text-neutral-dark">{Number(o.quantity ?? 0)}</div>
+                            </div>
+                          )}
+                          {!o.is_copack && (
+                            <div className="md:border-l md:pl-4 border-neutral-soft/60">
+                              <div className="text-[11px] font-semibold uppercase tracking-wide text-neutral-medium">Price</div>
+                              <div className="text-sm font-semibold text-neutral-dark">{o.price ? `$${Number(o.price).toFixed(2)}` : '—'}</div>
+                            </div>
+                          )}
+                          {!o.is_copack && (
+                            <div className="md:border-l md:pl-4 border-neutral-soft/60">
+                              <label className="flex items-center text-[11px] font-semibold text-neutral-medium uppercase tracking-wide">
+                                <Calendar className="h-4 w-4 mr-2 text-primary-medium" /> Ship Date
+                              </label>
+                              <div className="text-sm font-semibold text-neutral-dark">{o.requested_ship_date || '—'}</div>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* PO Meta Row */}
+                      <div className={`mt-3 grid grid-cols-1 ${o.is_copack ? 'md:grid-cols-3' : 'md:grid-cols-4'} gap-3 text-[11px] text-neutral-dark`}>
+                        <div className="flex items-center gap-2 bg-neutral-light/40 border border-neutral-soft/60 rounded-md px-3 py-2">
+                          <span className="font-semibold">Allocated</span>
+                          <span className="opacity-80">{Number(o.allocated_qty ?? 0)} / {Number(o.quantity ?? 0)}</span>
+                        </div>
+                        <div className="flex items-center gap-2 bg-neutral-light/40 border border-neutral-soft/60 rounded-md px-3 py-2">
+                          <span className="font-semibold">Backorder</span>
+                          <span className="opacity-80">{Number(o.backorder_qty ?? 0)}</span>
+                        </div>
+                        <div className="flex items-center gap-2 bg-neutral-light/40 border border-neutral-soft/60 rounded-md px-3 py-2">
+                          <span className="font-semibold">Location</span>
+                          <span className="opacity-80">{o.location || '—'}</span>
+                        </div>
+                        {!o.is_copack && (
+                          <div className="flex items-center gap-2 bg-neutral-light/40 border border-neutral-soft/60 rounded-md px-3 py-2">
+                            <span className="font-semibold">Payment Terms</span>
+                            <span className="opacity-80">{o.payment_terms || '—'}</span>
+                          </div>
+                        )}
+                      </div>
+
+                      {String(o.status) === 'partially_shipped' && Number(o.backorder_qty ?? 0) > 0 && !!o.backorder_eta && (
+                        <div className="mt-3 text-[11px] text-neutral-medium">Backorder ETA: {formatDate(o.backorder_eta as any)}</div>
+                      )}
+                      
+                      {/* Conflict Banner */}
+                      {(() => {
+                        const fg = finishedGoodsData[o.product_name] || { available_qty: 0 }
+                        const hasConflict = detectConflict(o, fg)
+                        if (!hasConflict) return null
+                        
+                        return (
+                          <div className="w-full p-3 rounded-lg bg-red-50 text-red-700 text-xs mt-3 border border-red-200">
+                            <div className="flex items-start gap-2">
+                              <AlertTriangle className="h-4 w-4 mt-0.5" />
+                              <div>
+                                <div className="font-semibold text-red-800">Allocation Conflict</div>
+                                <div className="mt-0.5">
+                                  Insufficient finished goods to fulfill this order after the priority rules were applied. Required: {o.quantity} — Allocated: {o.allocated_qty || 0}
+                                  {o.has_conflict && (
+                                    <span className="ml-2 text-red-600 font-bold">⚠ Planner Needed</span>
+                                  )}
+                                </div>
+                                <div className="text-xs text-red-700 mt-1">Shortfall: {o.quantity - (o.allocated_qty || 0)} units</div>
+                              </div>
+                            </div>
+                          </div>
+                        )
+                      })()}
+                      <div className="mt-6 pt-4 border-t border-neutral-soft/60 flex items-center justify-end">
+                        <div className="flex items-center gap-8">
+                          <div className="flex items-center gap-2">
+                            {!o.is_copack && (o.status === "Shipped" || String(o.status).toLowerCase() === 'submitted') && (
+                              <button
+                                className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-semibold bg-accent-success hover:bg-accent-success/90 text-white shadow-sm transition-all"
+                                onClick={() => { setOpenMenuId(null); setAsnPoStatus('shipped'); viewASN(o.id) }}
+                              >
+                                <Eye className="h-4 w-4" />
+                                View ASN
+                              </button>
+                            )}
+                            {(o.status === "Open" || !o.status) && (() => {
+                              const fg = finishedGoodsData[o.product_name] || { available_qty: 0 }
+                              const hasConflict = detectConflict(o, fg)
+                              const isDisabled = !!fefoWarning || hasConflict
+                              const disabledReason = fefoWarning ? 'FEFO warning active' : hasConflict ? 'Cannot auto-allocate. Escalation to Planner is required.' : ''
+                              
+                              return (
+                                <button
+                                  className={`inline-flex items-center px-3.5 py-2 rounded-lg text-xs font-semibold border shadow-sm ${isDisabled ? 'text-neutral-medium bg-neutral-light/40 cursor-not-allowed border-neutral-soft' : 'bg-white border-neutral-soft text-neutral-dark hover:border-primary-medium hover:text-primary-medium'}`}
+                                  onClick={() => { setOpenMenuId(null); handleApproveClick(o) }}
+                                  title={disabledReason || "Approve & Allocate"}
+                                  disabled={isDisabled}
+                                >
+                                  Approve
+                                </button>
+                              )
+                            })()}
+                          </div>
+                          <div className="flex items-center gap-3">
+                            {!o.is_copack && String(o.status) === 'allocated' && (
+                              <button
+                                className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-semibold bg-primary-light hover:bg-primary-medium text-white shadow-sm transition-all"
+                                onClick={() => handleReadyToShip(String(o.id))}
+                              >
+                                <Truck className="h-4 w-4" /> Ready to Ship
+                              </button>
+                            )}
+                            {!o.is_copack && String(o.status) === 'Ready to Ship' && (
+                              <button
+                                className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-semibold bg-primary-medium hover:bg-primary-dark text-white shadow-sm transition-all"
+                                onClick={() => shipPO(String(o.id))}
+                              >
+                                <PackageCheck className="h-4 w-4" /> Ship Order
+                              </button>
+                            )}
+                            {!o.is_copack && String(o.status) === 'partial' && (o as any).allow_partial_ship === true && (
+                              <button
+                                className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-semibold bg-accent-warning hover:bg-accent-warning/90 text-white shadow-sm transition-all"
+                                onClick={() => handleShipPartial(String(o.id))}
+                              >
+                                <Truck className="h-4 w-4" /> Partial Ship
+                              </button>
+                            )}
+                            {!o.is_copack && String(o.status) === 'partially_shipped' && (
+                              <button
+                                className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-semibold bg-accent-warning hover:bg-accent-warning/90 text-white shadow-sm transition-all"
+                                onClick={() => { setOpenMenuId(null); setAsnPoStatus('partially_shipped'); viewASN(o.id) }}
+                              >
+                                <Eye className="h-4 w-4" /> View ASN
+                              </button>
+                            )}
+                            {!o.is_copack && String(o.status) === 'partially_shipped' && (
+                              // Show Ship Remaining only if there's remaining quantity to ship
+                              (shippedSum === null ? Number(o.backorder_qty ?? 0) > 0 : shippedSum < orderedQty)
+                            ) && (
+                              <button
+                                className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-semibold bg-primary-medium hover:bg-primary-dark text-white shadow-sm transition-all focus:outline-none focus:ring-2 focus:ring-primary-medium/40"
+                                onClick={() => handleShipRemaining(String(o.id))}
+                              >
+                                <Truck className="h-4 w-4" />
+                                Ship Remaining
+                              </button>
+                            )}
+                            {!o.is_copack && String(o.status) === 'partially_shipped' && (
+                              shippedSum !== null ? shippedSum >= orderedQty : Number(o.backorder_qty ?? 0) === 0
+                            ) && (
+                              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-medium bg-accent-success/10 text-accent-success border border-accent-success/20">
+                                <CheckCircle2 className="h-3.5 w-3.5" /> Completed
+                              </span>
+                            )}
+                            {!o.is_copack && (() => {
+                              const fg = finishedGoodsData[o.product_name] || { available_qty: 0 }
+                              const hasConflict = detectConflict(o, fg)
+                              if (!hasConflict) return null
+                              
+                              return (
+                                <button
+                                  className="px-3.5 py-2 bg-yellow-600 text-white text-xs font-semibold rounded-lg shadow-sm hover:bg-yellow-700 transition-colors"
+                                  onClick={() => openPlannerOverride(o)}
+                                >
+                                  Planner Override
+                                </button>
+                              )
+                            })()}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )
+                })
+              })()}
             </div>
           )}
         </div>
@@ -2717,7 +3188,30 @@ const PurchaseOrders: React.FC = () => {
                   {/* Copack Material Settings */}
                   <CopackMaterialSettings form={form} setForm={setForm} />
 
+                  {/* Deposit Paid toggle */}
+                  {!form.is_copack && (
+                  <div className="flex items-center justify-between py-3">
+                    <label className="text-sm text-neutral-dark">Deposit Paid?</label>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setForm((prev: any) => ({ ...prev, deposit_paid: !prev.deposit_paid }))
+                      }
+                      className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                        form.deposit_paid ? 'bg-primary-medium' : 'bg-neutral-soft'
+                      }`}
+                    >
+                      <span
+                        className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${
+                          form.deposit_paid ? 'translate-x-5' : 'translate-x-1'
+                        }`}
+                      />
+                    </button>
+                  </div>
+                  )}
+
                   {/* Additional Products moved to full width below */}
+                  {!form.is_copack && (
                   <div className="space-y-2">
                     <div className="flex items-center justify-between mb-1">
                       <div className="text-sm font-medium text-neutral-dark">Additional Products</div>
@@ -2748,42 +3242,54 @@ const PurchaseOrders: React.FC = () => {
                       </div>
                     )}
                   </div>
+                  )}
 
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    <div className="space-y-2">
-                      <label className="flex items-center text-sm font-medium text-neutral-dark">
-                        <Calendar className="h-4 w-4 mr-2 text-primary-medium" />
-                        Requested Ship Date
-                      </label>
-                      <input type="date" className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light" value={form.requestedShipDate} onChange={(e)=>setForm({...form, requestedShipDate:e.target.value, ship_date: e.target.value})} />
-                    </div>
-                    <div className="space-y-2">
-                      <label className="flex items-center text-sm font-medium text-neutral-dark">Quantity</label>
-                      <input type="number" placeholder="Total quantity" className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light" value={form.quantity} onChange={(e)=>setForm({...form, quantity:e.target.value})} />
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    <div className="space-y-2">
-                      <label className="flex items-center text-sm font-medium text-neutral-dark">
-                        Price per Unit
-                      </label>
-                      <input 
-                        type="number" 
-                        step="0.01" 
-                        placeholder="0.00" 
-                        className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light" 
-                        value={form.price} 
-                        onChange={(e)=>setForm({...form, price:e.target.value})} 
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <label className="flex items-center text-sm font-medium text-neutral-dark">Total Amount</label>
-                      <div className="w-full px-4 py-3 border border-neutral-soft rounded-lg bg-neutral-light/30 text-neutral-medium">
-                        {form.quantity && form.price ? `$${(Number(form.quantity) * Number(form.price)).toFixed(2)}` : '$0.00'}
+                  {form.is_copack ? (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                      <div className="space-y-2 md:col-span-2">
+                        <label className="flex items-center text-sm font-medium text-neutral-dark">Quantity</label>
+                        <input type="number" placeholder="Total quantity" className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light" value={form.quantity} onChange={(e)=>setForm({...form, quantity:e.target.value})} />
                       </div>
                     </div>
-                  </div>
+                  ) : (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                      <div className="space-y-2">
+                        <label className="flex items-center text-sm font-medium text-neutral-dark">
+                          <Calendar className="h-4 w-4 mr-2 text-primary-medium" />
+                          Requested Ship Date
+                        </label>
+                        <input type="date" className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light" value={form.requestedShipDate} onChange={(e)=>setForm({...form, requestedShipDate:e.target.value, ship_date: e.target.value})} />
+                      </div>
+                      <div className="space-y-2">
+                        <label className="flex items-center text-sm font-medium text-neutral-dark">Quantity</label>
+                        <input type="number" placeholder="Total quantity" className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light" value={form.quantity} onChange={(e)=>setForm({...form, quantity:e.target.value})} />
+                      </div>
+                    </div>
+                  )}
+
+                  {!form.is_copack && (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                      <div className="space-y-2">
+                        <label className="flex items-center text-sm font-medium text-neutral-dark">
+                          Price per Unit
+                        </label>
+                        <input 
+                          type="number" 
+                          step="0.01" 
+                          placeholder="0.00" 
+                          className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light" 
+                          value={form.price} 
+                          onChange={(e)=>setForm({...form, price:e.target.value})} 
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <label className="flex items-center text-sm font-medium text-neutral-dark">Total Amount</label>
+                        <div className="w-full px-4 py-3 border border-neutral-soft rounded-lg bg-neutral-light/30 text-neutral-medium">
+                          {form.quantity && form.price ? `$${(Number(form.quantity) * Number(form.price)).toFixed(2)}` : '$0.00'}
+                        </div>
+                      </div>
+                    </div>
+                  )}
 
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -2820,42 +3326,50 @@ const PurchaseOrders: React.FC = () => {
                     <div />
                   </div>
 
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    <div className="space-y-2">
-                      <label className="flex items-center text-sm font-medium text-neutral-dark">Case Quantity</label>
-                      <input type="number" placeholder="Per case quantity" className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light" value={form.caseQty} onChange={(e)=>setForm({...form, caseQty:e.target.value})} />
+                  {!form.is_copack && (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                      <div className="space-y-2">
+                        <label className="flex items-center text-sm font-medium text-neutral-dark">Case Quantity</label>
+                        <input type="number" placeholder="Per case quantity" className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light" value={form.caseQty} onChange={(e)=>setForm({...form, caseQty:e.target.value})} />
+                      </div>
+                      <div className="space-y-2">
+                        <label className="flex items-center text-sm font-medium text-neutral-dark">
+                          <FileText className="h-4 w-4 mr-2 text-primary-medium" />
+                          PO Notes
+                        </label>
+                        <input type="text" placeholder="Reference or short notes" className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light" value={form.notes} onChange={(e)=>setForm({...form, notes:e.target.value})} />
+                      </div>
                     </div>
-                    <div className="space-y-2">
-                      <label className="flex items-center text-sm font-medium text-neutral-dark">
-                        <FileText className="h-4 w-4 mr-2 text-primary-medium" />
-                        PO Notes
-                      </label>
-                      <input type="text" placeholder="Reference or short notes" className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light" value={form.notes} onChange={(e)=>setForm({...form, notes:e.target.value})} />
-                    </div>
-                  </div>
+                  )}
 
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    <div className="space-y-2">
-                      <label className="flex items-center text-sm font-medium text-neutral-dark">Invoice</label>
-                      <input type="text" placeholder="Invoice number" className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light" value={form.invoice} onChange={(e)=>setForm({...form, invoice:e.target.value})} />
+                  {!form.is_copack && (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                      <div className="space-y-2">
+                        <label className="flex items-center text-sm font-medium text-neutral-dark">Invoice</label>
+                        <input type="text" placeholder="Invoice number" className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light" value={form.invoice} onChange={(e)=>setForm({...form, invoice:e.target.value})} />
+                      </div>
+                      <div className="space-y-2">
+                        <label className="flex items-center text-sm font-medium text-neutral-dark">Payment Terms</label>
+                        <input type="text" placeholder="e.g., 30 days" className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light" value={form.paymentTerms} onChange={(e)=>setForm({...form, paymentTerms:e.target.value})} />
+                      </div>
                     </div>
+                  )}
+
+                  {!form.is_copack && (
                     <div className="space-y-2">
-                      <label className="flex items-center text-sm font-medium text-neutral-dark">Payment Terms</label>
-                      <input type="text" placeholder="e.g., 30 days" className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light" value={form.paymentTerms} onChange={(e)=>setForm({...form, paymentTerms:e.target.value})} />
+                      <label className="flex items-center text-sm font-medium text-neutral-dark">Status</label>
+                      <select className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light" value={form.status} onChange={(e)=>setForm({...form, status:e.target.value})}>
+                        {[Status.Draft, Status.Submitted, Status.Approved, Status.Allocated, Status.Backordered, Status.OnHold, Status.Canceled].map(s=> <option key={s} value={s}>{s}</option>)}
+                      </select>
                     </div>
-                  </div>
+                  )}
 
-                  <div className="space-y-2">
-                    <label className="flex items-center text-sm font-medium text-neutral-dark">Status</label>
-                    <select className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light" value={form.status} onChange={(e)=>setForm({...form, status:e.target.value})}>
-                      {[Status.Draft, Status.Submitted, Status.Approved, Status.Allocated, Status.Backordered, Status.OnHold, Status.Canceled].map(s=> <option key={s} value={s}>{s}</option>)}
-                    </select>
-                  </div>
-
-                  <div className="space-y-2">
-                    <label className="flex items-center text-sm font-medium text-neutral-dark">Comments</label>
-                    <textarea placeholder="Additional comments about this purchase order..." className="w-full min-h-[80px] px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light resize-none" value={form.comments} onChange={(e)=>setForm({...form, comments:e.target.value})} />
-                  </div>
+                  {!form.is_copack && (
+                    <div className="space-y-2">
+                      <label className="flex items-center text-sm font-medium text-neutral-dark">Comments</label>
+                      <textarea placeholder="Additional comments about this purchase order..." className="w-full min-h-[80px] px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light resize-none" value={form.comments} onChange={(e)=>setForm({...form, comments:e.target.value})} />
+                    </div>
+                  )}
 
                   <div className="flex items-center justify-end gap-3 pt-2">
                     <button type="submit" className="px-5 py-2.5 rounded-lg bg-primary-dark hover:bg-primary-medium text-white font-semibold shadow-sm">
@@ -2880,11 +3394,11 @@ const PurchaseOrders: React.FC = () => {
                 {/* Left Section */}
                 <div className="flex flex-col">
                   <h2 className="text-2xl font-semibold text-neutral-800 tracking-tight leading-tight">
-                    Purchase Order Details
+                    {isViewOpen?.is_copack ? 'Copack Order Details' : 'Purchase Order Details'}
                   </h2>
 
                   <p className="text-sm text-neutral-500 leading-snug mt-1">
-                    Order Information • Line Items • Shipments • Materials
+                    {isViewOpen?.is_copack ? 'Order Information • Materials Allocation' : 'Order Information • Line Items • Shipments • Materials'}
                   </p>
                 </div>
 
@@ -2911,8 +3425,8 @@ const PurchaseOrders: React.FC = () => {
                           <FileText className="w-5 h-5 text-primary-600" />
                         </div>
                         <div>
-                          <h3 className="text-base font-semibold text-slate-900 tracking-tight">Order Information</h3>
-                          <p className="text-sm text-slate-500 mt-0.5">Purchase order details and status</p>
+                          <h3 className="text-base font-semibold text-slate-900 tracking-tight">{isViewOpen?.is_copack ? 'Copack Order Information' : 'Order Information'}</h3>
+                          <p className="text-sm text-slate-500 mt-0.5">{isViewOpen?.is_copack ? 'Materials allocation and status' : 'Purchase order details and status'}</p>
                         </div>
                       </div>
                     </div>
@@ -2938,26 +3452,42 @@ const PurchaseOrders: React.FC = () => {
                           </label>
                           <div className="text-neutral-dark font-medium">{isViewOpen.quantity || '—'}</div>
                         </div>
-                        <div className="space-y-1">
-                          <label className="flex items-center text-xs font-semibold text-neutral-medium uppercase tracking-wide">
-                            Price per Unit
-                          </label>
-                          <div className="text-neutral-dark font-medium">{isViewOpen.price ? `$${Number(isViewOpen.price).toFixed(2)}` : '—'}</div>
-                        </div>
-                        <div className="space-y-1">
-                          <label className="flex items-center text-xs font-semibold text-neutral-medium uppercase tracking-wide">
-                            <Calendar className="h-4 w-4 mr-2 text-primary-medium" /> Ship Date
-                          </label>
-                          <div className="text-neutral-dark">{isViewOpen.requested_ship_date || '—'}</div>
-                        </div>
-                        <div className="space-y-1">
-                          <label className="flex items-center text-xs font-semibold text-neutral-medium uppercase tracking-wide">
-                            Total Amount
-                          </label>
-                          <div className="text-neutral-dark font-semibold">
-                            {isViewOpen.quantity && isViewOpen.price ? `$${(Number(isViewOpen.quantity) * Number(isViewOpen.price)).toFixed(2)}` : '—'}
+                        {!isViewOpen?.is_copack && (
+                          <div className="space-y-1">
+                            <label className="flex items-center text-xs font-semibold text-neutral-medium uppercase tracking-wide">
+                              Price per Unit
+                            </label>
+                            <div className="text-neutral-dark font-medium">{isViewOpen.price ? `$${Number(isViewOpen.price).toFixed(2)}` : '—'}</div>
                           </div>
-                        </div>
+                        )}
+                        {!isViewOpen?.is_copack && (
+                          <div className="space-y-1">
+                            <label className="flex items-center text-xs font-semibold text-neutral-medium uppercase tracking-wide">
+                              <Calendar className="h-4 w-4 mr-2 text-primary-medium" /> Ship Date
+                            </label>
+                            <div className="text-neutral-dark">{isViewOpen.requested_ship_date || '—'}</div>
+                          </div>
+                        )}
+                        {!isViewOpen?.is_copack && (
+                          <div className="space-y-1">
+                            <label className="flex items-center text-xs font-semibold text-neutral-medium uppercase tracking-wide">
+                              Total Amount
+                            </label>
+                            <div className="text-neutral-dark font-semibold">
+                              {isViewOpen.quantity && isViewOpen.price ? `$${(Number(isViewOpen.quantity) * Number(isViewOpen.price)).toFixed(2)}` : '—'}
+                            </div>
+                          </div>
+                        )}
+                        {isViewOpen?.is_copack && (
+                          <div className="space-y-1">
+                            <label className="flex items-center text-xs font-semibold text-neutral-medium uppercase tracking-wide">
+                              Copack Material Source
+                            </label>
+                            <div className="text-neutral-dark font-medium">
+                              {isViewOpen.client_materials_required ? 'Client-supplied materials' : (isViewOpen.operation_supplies_materials ? 'Operations supplies materials' : '—')}
+                            </div>
+                          </div>
+                        )}
                         <div className="space-y-1">
                           <label className="flex items-center text-xs font-semibold text-neutral-medium uppercase tracking-wide">
                             <BadgeCheck className="h-4 w-4 mr-2 text-primary-medium" /> Status
@@ -2977,7 +3507,26 @@ const PurchaseOrders: React.FC = () => {
                                   <span className={`inline-flex items-center px-3 py-1.5 rounded-xl text-xs font-semibold border ${statusClass}`}>
                                     {isViewOpen.status || '—'} {isViewOpen.is_copack && (<span className="ml-2 inline-flex px-2 py-0.5 rounded-full text-[10px] font-semibold bg-indigo-100 text-indigo-700">COPACK</span>)}
                                   </span>
-                                  <div className="text-[11px] text-neutral-medium">{statusDescription(isViewOpen.status)}</div>
+                                  <div className="text-[11px] text-neutral-medium">
+                                    {isViewOpen?.is_copack
+                                      ? (String(isViewOpen.status).toLowerCase()==='allocated'
+                                          ? 'Allocated: materials reserved from inventory; ready for production.'
+                                          : statusDescription(isViewOpen.status))
+                                      : statusDescription(isViewOpen.status)}
+                                  </div>
+                                  
+                                  {/* Conflict Tag in Modal */}
+                                  {(() => {
+                                    const fg = finishedGoodsData[isViewOpen.product_name] || { available_qty: 0 }
+                                    const hasConflict = detectConflict(isViewOpen, fg)
+                                    if (!hasConflict) return null
+                                    
+                                    return (
+                                      <span className="px-2 py-1 bg-red-200 text-red-800 rounded text-xs">
+                                        Conflict — Planner Action Required
+                                      </span>
+                                    )
+                                  })()}
                                 </div>
                               )
                             })()}
@@ -2989,20 +3538,22 @@ const PurchaseOrders: React.FC = () => {
                           </label>
                           <div className="text-neutral-dark">{isViewOpen.location || '—'}</div>
                         </div>
-                        <div className="space-y-1">
-                          <label className="flex items-center text-xs font-semibold text-neutral-medium uppercase tracking-wide">
-                            Rush Order
-                          </label>
-                          <div>
-                            <span className={`inline-flex items-center px-3 py-1.5 rounded-xl text-xs font-semibold border ${
-                              isViewOpen.is_rush 
-                                ? 'bg-orange-50 text-orange-600 border-orange-200' 
-                                : 'bg-neutral-light/40 text-neutral-dark border-neutral-soft/60'
-                            }`}>
-                              {isViewOpen.is_rush ? 'Yes' : 'No'}
-                            </span>
+                        {!isViewOpen?.is_copack && (
+                          <div className="space-y-1">
+                            <label className="flex items-center text-xs font-semibold text-neutral-medium uppercase tracking-wide">
+                              Rush Order
+                            </label>
+                            <div>
+                              <span className={`inline-flex items-center px-3 py-1.5 rounded-xl text-xs font-semibold border ${
+                                isViewOpen.is_rush 
+                                  ? 'bg-orange-50 text-orange-600 border-orange-200' 
+                                  : 'bg-neutral-light/40 text-neutral-dark border-neutral-soft/60'
+                              }`}>
+                                {isViewOpen.is_rush ? 'Yes' : 'No'}
+                              </span>
+                            </div>
                           </div>
-                        </div>
+                        )}
                         <div className="space-y-1">
                           <label className="flex items-center text-xs font-semibold text-neutral-medium uppercase tracking-wide">
                             <Calendar className="h-4 w-4 mr-2 text-primary-medium" /> Order Date
@@ -3065,9 +3616,9 @@ const PurchaseOrders: React.FC = () => {
 
                   {/* Copack: Materials Allocation only */}
                 {isViewOpen?.is_copack && (
-                  <div className="space-y-3">
+                  <div className="space-y-3 mb-6">
                     <h3 className="text-base font-semibold text-neutral-dark">Materials Allocation</h3>
-                    <div className="overflow-x-auto border border-neutral-soft/40 rounded-lg">
+                    <div className="overflow-x-auto rounded-xl border border-neutral-soft/40 bg-white shadow-sm">
                       <table className="min-w-full">
                         <thead>
                           <tr className="bg-neutral-light/40 border-b border-neutral-soft/50">
@@ -3078,19 +3629,23 @@ const PurchaseOrders: React.FC = () => {
                             <th className="px-4 py-2 text-left text-xs font-semibold text-neutral-medium uppercase">Type</th>
                           </tr>
                         </thead>
-                        <tbody>
+                        <tbody className="divide-y divide-neutral-soft/30">
                           {viewLoading ? (
                             <tr><td className="px-4 py-4 text-sm text-neutral-medium" colSpan={5}>Loading…</td></tr>
                           ) : viewLines.length === 0 ? (
                             <tr><td className="px-4 py-4 text-sm text-neutral-medium" colSpan={5}>No materials</td></tr>
                           ) : (
                             viewLines.map((ln, i) => (
-                              <tr key={i} className="border-t border-neutral-soft/30">
+                              <tr key={i} className={i % 2 === 0 ? 'bg-white' : 'bg-neutral-light/20'}>
                                 <td className="px-4 py-2 text-sm text-neutral-dark">{ln.product_name}</td>
-                                <td className="px-4 py-2 text-sm text-right">{ln.quantity}</td>
-                                <td className="px-4 py-2 text-sm text-right">{ln.allocated_qty}</td>
-                                <td className={`px-4 py-2 text-sm text-right ${ln.shortfall_qty>0? 'text-amber-700 font-semibold':'text-neutral-dark'}`}>{ln.shortfall_qty}</td>
-                                <td className="px-4 py-2 text-sm text-neutral-dark">{isViewOpen?.operation_supplies_materials ? 'OPS Material' : (isViewOpen?.client_materials_required ? 'Client Material' : '—')}</td>
+                                <td className="px-4 py-2 text-sm text-right font-medium">{ln.quantity}</td>
+                                <td className="px-4 py-2 text-sm text-right font-medium">{ln.allocated_qty}</td>
+                                <td className={`px-4 py-2 text-sm text-right ${Number(ln.shortfall_qty)>0? 'text-amber-700 font-semibold':'text-accent-success font-semibold'}`}>{ln.shortfall_qty}</td>
+                                <td className="px-4 py-2 text-sm">
+                                  <span className={`inline-flex px-2 py-0.5 rounded-full text-[10px] font-semibold border ${isViewOpen?.operation_supplies_materials ? 'bg-blue-50 text-blue-700 border-blue-200' : 'bg-purple-50 text-purple-700 border-purple-200'}`}>
+                                    {isViewOpen?.operation_supplies_materials ? 'OPS Material' : (isViewOpen?.client_materials_required ? 'Client Material' : '—')}
+                                  </span>
+                                </td>
                               </tr>
                             ))
                           )}
@@ -3120,15 +3675,19 @@ const PurchaseOrders: React.FC = () => {
                   <>
                     {/* Show client allocation box only when client materials mode is ON */}
                     {!!isViewOpen.client_materials_required && !isViewOpen.operation_supplies_materials && (
-                      <CopackAllocatedMaterials data={viewCopackRes} />
+                      <div className="mt-6">
+                        <CopackAllocatedMaterials data={viewCopackRes} />
+                      </div>
                     )}
                     {Array.isArray(viewFormulaItems) && viewFormulaItems.length > 0 && (
-                      <CopackBOMMaterials
-                        data={viewFormulaItems}
-                        poQty={Number(isViewOpen.quantity || 0)}
-                        formulaName={viewFormula?.formula_name}
-                        opsMode={!!isViewOpen.operation_supplies_materials}
-                      />
+                      <div className="mt-6">
+                        <CopackBOMMaterials
+                          data={viewFormulaItems}
+                          poQty={Number(isViewOpen.quantity || 0)}
+                          formulaName={viewFormula?.formula_name}
+                          opsMode={!!isViewOpen.operation_supplies_materials}
+                        />
+                      </div>
                     )}
                   </>
                 )}
@@ -3165,6 +3724,57 @@ const PurchaseOrders: React.FC = () => {
                             </div>
                           )
                         })}
+                      </div>
+                    )}
+                  </div>
+                </div>
+                )}
+
+                {/* Purchase Requisitions for this Copack PO */}
+                {isViewOpen?.is_copack && (
+                <div className="space-y-3 mt-6">
+                  <h3 className="text-base font-semibold text-neutral-dark">Raw Material Purchase Requisitions for this Copack PO</h3>
+                  <div className="rounded-xl border border-neutral-soft/40 bg-white shadow-sm">
+                    <div className="px-4 py-3 border-b border-neutral-soft/40 flex items-center justify-between">
+                      <span className="text-xs font-medium text-neutral-medium uppercase tracking-wide">PRs created for copack materials</span>
+                      {viewPrLoading && <span className="text-[11px] text-neutral-medium">Loading…</span>}
+                    </div>
+                    {viewPrs.length === 0 && !viewPrLoading ? (
+                      <div className="px-4 py-4 text-xs text-neutral-medium">No open raw material purchase requisitions for this PO.</div>
+                    ) : (
+                      <div className="overflow-x-auto">
+                        <table className="min-w-full">
+                          <thead>
+                            <tr className="bg-neutral-light/40 border-b border-neutral-soft/50">
+                              <th className="px-4 py-2 text-left text-xs font-semibold text-neutral-medium uppercase">Material</th>
+                              <th className="px-4 py-2 text-right text-xs font-semibold text-neutral-medium uppercase">Required</th>
+                              <th className="px-4 py-2 text-left text-xs font-semibold text-neutral-medium uppercase">Needed By</th>
+                              <th className="px-4 py-2 text-left text-xs font-semibold text-neutral-medium uppercase">Status</th>
+                              <th className="px-4 py-2 text-left text-xs font-semibold text-neutral-medium uppercase">Notes</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-neutral-soft/30">
+                            {viewPrs.map((pr:any) => {
+                              const cleanNotes = (() => {
+                                const raw = pr.notes || ''
+                                try { return raw.trim() } catch { return raw }
+                              })()
+                              return (
+                                <tr key={pr.id} className="bg-white">
+                                  <td className="px-4 py-2 text-sm text-neutral-dark">{pr.item_name}</td>
+                                  <td className="px-4 py-2 text-sm text-right">{pr.required_qty}</td>
+                                  <td className="px-4 py-2 text-sm">{pr.needed_by || '—'}</td>
+                                  <td className="px-4 py-2 text-sm">
+                                    <span className={`inline-flex px-2 py-0.5 rounded-full text-[10px] font-semibold border ${String(pr.status||'').toLowerCase()==='open' ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-neutral-light/40 text-neutral-dark border-neutral-soft/60'}`}>
+                                      {pr.status || '—'}
+                                    </span>
+                                  </td>
+                                  <td className="px-4 py-2 text-sm text-neutral-dark">{cleanNotes || '—'}</td>
+                                </tr>
+                              )
+                            })}
+                          </tbody>
+                        </table>
                       </div>
                     )}
                   </div>
@@ -3251,6 +3861,141 @@ const PurchaseOrders: React.FC = () => {
                 </div>
                 <div className="flex justify-end">
                   <button className="px-4 py-2 rounded-lg border" onClick={()=>setShowManagePackaging(false)}>Close</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Priority Allocation Rules Modal */}
+        {showPriorityModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-black/50" onClick={() => setShowPriorityModal(false)}></div>
+            <div className="relative z-10 w-full max-w-2xl bg-white rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden">
+              <div className="px-8 py-6 bg-gradient-to-r from-amber-50 to-orange-50 border-b border-amber-200">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 bg-amber-100 rounded-full flex items-center justify-center">
+                    <AlertTriangle className="h-5 w-5 text-amber-600" />
+                  </div>
+                  <div>
+                    <h2 className="text-xl font-semibold text-amber-900">Priority Allocation Rules</h2>
+                    <p className="text-sm text-amber-700 mt-1">Cannot approve - PO priority validation failed</p>
+                  </div>
+                </div>
+              </div>
+              <div className="p-8">
+                <div className="space-y-4 text-sm text-neutral-dark">
+                  <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
+                    <h3 className="font-semibold text-amber-900 mb-2">System Priority Rules:</h3>
+                    <p className="text-amber-800">
+                      When multiple POs need the same inventory, the system must 
+                      <strong> ALWAYS follow priority scoring</strong>. Earlier requested ship dates 
+                      come first. Deposit-paid POs outrank non-deposit POs. If both 
+                      are equal, the older PO (earlier created_at) has priority.
+                    </p>
+                  </div>
+                  
+                  <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+                    <h3 className="font-semibold text-red-900 mb-2">Action Blocked:</h3>
+                    <p className="text-red-800">
+                      Manual Approve/Allocate actions cannot bypass this priority system. 
+                      This PO is not the highest priority and cannot be approved at this time.
+                    </p>
+                  </div>
+
+                  <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                    <h3 className="font-semibold text-blue-900 mb-2">Next Steps:</h3>
+                    <p className="text-blue-800">
+                      Please approve POs in the correct priority order, or update the 
+                      requested ship date and deposit status to change priority ranking.
+                    </p>
+                  </div>
+
+                  <div className="text-center mt-6 p-4 bg-neutral-50 rounded-lg">
+                    <p className="text-lg font-semibold text-neutral-700">
+                      <em>THEN allocate by priority score.</em>
+                    </p>
+                  </div>
+                </div>
+
+                <div className="mt-8 flex justify-end gap-3">
+                  <button
+                    className="px-6 py-3 rounded-xl border border-neutral-soft text-neutral-dark hover:bg-neutral-light/60 transition-all"
+                    onClick={() => setShowPriorityModal(false)}
+                  >
+                    I Understand
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Planner Override Modal */}
+        {showPlannerOverride && overridePo && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-black/50" onClick={closePlannerOverride}></div>
+            <div className="relative z-10 w-full max-w-2xl bg-white rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden">
+              <div className="bg-gradient-to-r from-yellow-500 to-yellow-600 px-6 py-4">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-lg font-bold text-white">Planner Override Required</h3>
+                  <button onClick={closePlannerOverride} className="text-white/80 hover:text-white">
+                    <X className="h-5 w-5" />
+                  </button>
+                </div>
+              </div>
+              
+              <div className="p-6 space-y-6">
+                <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+                  <div className="flex items-start gap-3">
+                    <AlertTriangle className="h-5 w-5 text-red-600 mt-0.5" />
+                    <div>
+                      <h4 className="font-semibold text-red-800">Allocation Conflict</h4>
+                      <p className="text-sm text-red-700 mt-1">
+                        Insufficient finished goods remain to fulfill this order after the priority rules were applied.
+                        <br />Product Name: {overridePo.product_name}
+                        <br />Required: {overridePo.quantity} • Allocated: {overridePo.allocated_qty || 0} • Available FG: {finishedGoodsData[overridePo.product_name]?.available_qty || 0}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-4">
+                  <h4 className="font-semibold text-neutral-dark">Select an action</h4>
+                  
+                  {/* Manual Allocation Override */}
+                  <div className="border border-neutral-soft rounded-lg p-4">
+                    <h5 className="font-medium text-neutral-dark mb-2">Manual Allocation Override</h5>
+                    <p className="text-xs text-neutral-medium mb-3">Enter the quantity to allocate manually for this order.</p>
+                    <div className="flex items-center gap-3">
+                      <input 
+                        type="number" 
+                        className="flex-1 px-3 py-2 border border-neutral-soft rounded-lg"
+                        value={overrideQty}
+                        onChange={(e) => setOverrideQty(Number(e.target.value))}
+                        placeholder="Enter quantity"
+                      />
+                      <button
+                        className="px-4 py-2 bg-primary-medium text-white rounded-lg hover:bg-primary-dark transition-colors"
+                        onClick={() => applyOverride(overridePo.id, overrideQty)}
+                      >
+                        Apply Override
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Client Communication */}
+                  <div className="border border-neutral-soft rounded-lg p-4">
+                    <h5 className="font-medium text-neutral-dark mb-2">Client Communication</h5>
+                    <p className="text-xs text-neutral-medium mb-3">Mark this order for client follow-up and customer approval of the shortfall.</p>
+                    <button
+                      className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                      onClick={() => markClientCommunication(overridePo.id)}
+                    >
+                      Notify Client / Mark for Follow‑up
+                    </button>
+                  </div>
+                  
                 </div>
               </div>
             </div>

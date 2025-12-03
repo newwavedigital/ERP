@@ -91,6 +91,7 @@ type ScheduleItem = {
   qaRequired?: boolean | null;
   qaApproved?: boolean | null;
   flags?: any;
+  batchType?: string | null; // Original or Rework
 };
 
 // ─────────────────────────────────────────────────────────────
@@ -108,6 +109,8 @@ const statusChip = (status: string) => {
       return "bg-yellow-100 text-yellow-800";
     case "Completed":
       return "bg-green-100 text-green-800";
+    case "COMPLETED_REWORK":
+      return "bg-green-100 text-green-800";
     case "QA_HOLD":
       return "bg-blue-100 text-blue-800 border border-blue-200";
     case "COA Failed":
@@ -116,6 +119,15 @@ const statusChip = (status: string) => {
       return "bg-red-100 text-red-800";
     default:
       return "bg-gray-100 text-gray-800";
+  }
+};
+
+const statusText = (status: string) => {
+  switch (status) {
+    case "COMPLETED_REWORK":
+      return "Rework Completed";
+    default:
+      return status;
   }
 };
 
@@ -162,6 +174,9 @@ const ProductionSchedule: React.FC = () => {
     { key: "Bnutty Room", label: "Bnutty Room", color: "bg-green-500" },
     { key: "Dilly's Room", label: "Dilly's Room", color: "bg-amber-500" },
   ];
+
+  // Batch type filter (Original vs Rework)
+  const [batchKind, setBatchKind] = useState<'original' | 'rework'>('original')
   const [activeTab, setActiveTab] = useState<string>("All");
   const [activeSection, setActiveSection] = useState<'schedule' | 'lines'>('schedule');
   // Signals to control embedded ProductionLines actions
@@ -445,7 +460,14 @@ const ProductionSchedule: React.FC = () => {
           sanitationEnd: r.sanitation_end || null,
           qaRequired: r.qa_required ?? null,
           qaApproved: r.qa_approved ?? null,
-        })) ?? [];
+          flags: r.flags,
+          batchType: (Array.isArray(r.flags)
+            ? r.flags.includes('REWORK')
+            : String(r.flags || '') === 'REWORK')
+            ? 'rework'
+            : 'original'
+        }))
+ ?? [];
 
       setItems(mapped);
 
@@ -593,11 +615,14 @@ const ProductionSchedule: React.FC = () => {
 
   // ───────── Filtered table items
   const filtered = useMemo(() => {
-    if (activeTab === "All") return items;
-    return items.filter(
-      (i) => (i.room || "").toLowerCase() === activeTab.toLowerCase()
+    const byRoom = activeTab === "All"
+      ? items
+      : items.filter((i) => (i.room || "").toLowerCase() === activeTab.toLowerCase());
+    const byKind = byRoom.filter((i) =>
+      batchKind === 'rework' ? i.batchType === 'rework' : i.batchType !== 'rework'
     );
-  }, [activeTab, items]);
+    return byKind;
+  }, [items, activeTab, batchKind]);
 
   // ───────── Row → full record (for edit)
   const fetchRowById = async (id: string) => {
@@ -1080,40 +1105,40 @@ const ProductionSchedule: React.FC = () => {
     setIsApplyingDisposition(false)
   }
 
-  const applyDisposition = async () => {
-    if (!dispositionModal.action || !dispositionModal.batchId) return
-    
-    setIsApplyingDisposition(true)
-    try {
-      const { error } = await supabase.rpc("fn_apply_disposition", {
-          p_action: dispositionModal.action.toUpperCase(),
-          p_lot_number: dispositionModal.lotNumber,
-          p_notes: dispositionNotes || null,
-      })
-      
-      if (error) throw error
-      
-      pushToast({ 
-        type: 'success', 
-        message: `Disposition ${dispositionModal.action} applied successfully.` 
-      })
-      
-      // Refresh batch and finished goods
-      await loadBatches()
-      
-      // Close modal
-      closeDispositionModal()
-      
-    } catch (e: any) {
-      console.warn('Apply disposition error:', e)
-      pushToast({ 
-        type: 'error', 
-        message: e?.message || 'Failed to apply disposition' 
-      })
-    } finally {
-      setIsApplyingDisposition(false)
-    }
+ const applyDisposition = async () => {
+  if (!dispositionModal.action || !dispositionModal.batchId) return;
+
+  setIsApplyingDisposition(true);
+
+  try {
+    const { error: rpcError } = await supabase.rpc("fn_apply_disposition", {
+      p_batch_id: dispositionModal.batchId,
+      p_lot_number: dispositionModal.lotNumber,
+      p_action: dispositionModal.action.toUpperCase(),
+      p_notes: dispositionNotes || null
+    });
+
+    if (rpcError) throw rpcError;
+
+    pushToast({
+      type: 'success',
+      message: `Disposition ${dispositionModal.action} applied successfully.`
+    });
+
+    await loadBatches();
+    closeDispositionModal();
+
+  } catch (e: any) {
+    console.warn('Apply disposition error:', e);
+    pushToast({
+      type: 'error',
+      message: e?.message || 'Failed to apply disposition'
+    });
+  } finally {
+    setIsApplyingDisposition(false);
   }
+};
+
 
   // Traceability section component
   const TraceabilitySection: React.FC<{ batchId: string }> = ({ batchId }) => {
@@ -1194,6 +1219,7 @@ const ProductionSchedule: React.FC = () => {
     const [capaHistory, setCapaHistory] = useState<any[]>([])
     const [qualityDeviations, setQualityDeviations] = useState<any[]>([])
     const [segregationData, setSegregationData] = useState<{ segregated_qty: number; segregated_location: string | null; disposition: string | null } | null>(null)
+    const [reworkData, setReworkData] = useState<{ id: string; original_lot: string; product_sku: string; rework_qty: number; status: string; notes: string; disposition_action: string; disposition_notes: string } | null>(null)
 
     // reference setter to satisfy TS unused check in some tooling
     useEffect(() => { /* no-op */ }, [setActiveTab])
@@ -1206,7 +1232,7 @@ const ProductionSchedule: React.FC = () => {
           const [{ data: b, error: bErr }, { data: r, error: rErr }] = await Promise.all([
             supabase
               .from('production_batches')
-              .select('id, product_sku, qty, room, start_date, status, formula_id, customer_id, source_po_id, source_po_line_id, completed_qty, samples_received, samples_sent, sanitation_required, qa_required, qa_approved')
+              .select('id, product_sku, qty, room, start_date, status, formula_id, customer_id, source_po_id, source_po_line_id, completed_qty, samples_received, samples_sent, sanitation_required, qa_required, qa_approved, flags, scheduled_batch_id, lot_number')
               .eq('id', batchId)
               .single(),
             supabase
@@ -1264,6 +1290,21 @@ const ProductionSchedule: React.FC = () => {
           } catch {
             if (mounted) setSegregationData(null)
           }
+          // Load rework data if this is a rework batch
+          try {
+            if (b?.flags === 'REWORK' && b?.scheduled_batch_id) {
+              const { data: reworkBatch } = await supabase
+                .from('rework_batches')
+                .select('id, original_lot, product_sku, rework_qty, status, notes, disposition_action, disposition_notes')
+                .eq('id', b.scheduled_batch_id)
+                .maybeSingle()
+              if (mounted && reworkBatch) {
+                setReworkData(reworkBatch)
+              }
+            }
+          } catch {
+            if (mounted) setReworkData(null)
+          }
         } catch (e) {
           console.warn('Load batch view error', e)
         } finally {
@@ -1278,6 +1319,33 @@ const ProductionSchedule: React.FC = () => {
     return (
       <div className="p-6 space-y-6" data-active-tab={activeTab}>
         {/* Details moved to the summary card above to avoid duplication */}
+
+        {/* Rework Source Section - Show if REWORK batch */}
+        {(row as any)?.flags === 'REWORK' && reworkData && (
+          <div className="space-y-2">
+            <div className="flex items-center gap-2 mb-4">
+              <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold bg-yellow-100 text-yellow-800 border border-yellow-200" title="This batch was generated from a QA rework request.">
+                REWORK BATCH
+              </span>
+            </div>
+            <div className="bg-yellow-50 border border-yellow-200 rounded-xl p-4">
+              <div className="text-sm font-semibold text-yellow-800 mb-3">Rework Source</div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+                <div>
+                  <div className="text-xs text-yellow-700 uppercase font-medium">Original Lot</div>
+                  <div className="text-yellow-900 font-semibold">{reworkData.original_lot}</div>
+                </div>
+                <div>
+                  <div className="text-xs text-yellow-700 uppercase font-medium">Rework Qty</div>
+                  <div className="text-yellow-900 font-semibold">{reworkData.rework_qty} units</div>
+                </div>
+              </div>
+              <button className="mt-3 text-xs text-yellow-700 hover:text-yellow-900 underline font-medium">
+                View Rework Record
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Requirements */}
         <div className="space-y-2">
@@ -2091,7 +2159,35 @@ const ProductionSchedule: React.FC = () => {
                   </button>
                 ))}
               </div>
-              <div className="mt-4 border-t border-neutral-soft"></div>
+              {/* Batch type toggle: Original vs Rework */}
+              <div className="mt-4 flex items-center justify-between">
+                <div className="border-t border-neutral-soft grow" />
+                <div className="ml-4 flex items-center gap-2">
+                  <span className="text-xs text-neutral-medium">Batch Type:</span>
+                  <button
+                    type="button"
+                    onClick={() => setBatchKind('original')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
+                      batchKind === 'original'
+                        ? 'bg-primary-medium text-white border-primary-medium'
+                        : 'bg-neutral-light text-neutral-dark border-neutral-soft hover:bg-neutral-soft'
+                    }`}
+                  >
+                    Original
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setBatchKind('rework')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
+                      batchKind === 'rework'
+                        ? 'bg-primary-medium text-white border-primary-medium'
+                        : 'bg-neutral-light text-neutral-dark border-neutral-soft hover:bg-neutral-soft'
+                    }`}
+                  >
+                    Rework
+                  </button>
+                </div>
+              </div>
             </div>
           )}
         </div>
@@ -2279,7 +2375,7 @@ const ProductionSchedule: React.FC = () => {
                               row.status
                             )}`}
                           >
-                            {row.status}
+                            {statusText(row.status)}
                           </span>
                           {/* Secondary badges */}
                           {isCoaFail(row) && (
@@ -2301,6 +2397,11 @@ const ProductionSchedule: React.FC = () => {
                             <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-red-100 text-red-700 border border-red-200">
                               CAPA
                               <span className="ml-1 h-2 w-2 rounded-full bg-yellow-400 inline-block"></span>
+                            </span>
+                          )}
+                          {(row as any)?.flags === 'REWORK' && (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-yellow-100 text-yellow-700 border border-yellow-200" title="This batch was generated from a QA rework request.">
+                              REWORK BATCH
                             </span>
                           )}
                         </div>

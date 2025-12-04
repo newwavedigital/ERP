@@ -107,13 +107,12 @@ const Inventory: React.FC = () => {
   const [highlightedRows, setHighlightedRows] = useState<Record<string, number>>({})
   const [recentlyAllocated, setRecentlyAllocated] = useState<Record<string, boolean>>({})
   const [fgBanner, setFgBanner] = useState<{ show: boolean; count: number; poNumber?: string | null }>({ show: false, count: 0, poNumber: null })
-  const [fgPoMap, setFgPoMap] = useState<Record<string, { po_id: string; customer_name: string }>>({})
   // FG purchase history modal state
   const [fgHistOpen, setFgHistOpen] = useState<boolean>(false)
   const [fgHistLoading, setFgHistLoading] = useState<boolean>(false)
   const [fgHistError, setFgHistError] = useState<string | null>(null)
   const [fgHistProduct, setFgHistProduct] = useState<string | null>(null)
-  const [fgHistRows, setFgHistRows] = useState<Array<{ id: string; created_at: string; customer_name: string | null; status: string; quantity: number | null; case_qty: number | null }>>([])
+  const [fgHistRows, setFgHistRows] = useState<Array<{ id: string; created_at: string; customer_name: string | null; status: string; quantity: number | null; case_qty: number | null; allocated_qty?: number | null; backorder_qty?: number | null }>>([])
   // Reservation history modal state
   const [isHistoryOpen, setIsHistoryOpen] = useState<boolean>(false)
   const [historyData, setHistoryData] = useState<Array<{ po_id: string; line_id: string; qty: number; created_at: string; line_name?: string | null }>>([])
@@ -245,41 +244,6 @@ const Inventory: React.FC = () => {
       }))
 
       setFg(items)
-      // Fetch latest PO and customer for these products
-      try {
-        const names = Array.from(new Set(items.map((i) => i.product_name).filter(Boolean)))
-        if (names.length) {
-          const { data: pol } = await supabase
-            .from('purchase_order_lines')
-            .select('purchase_order_id, product_name, created_at, update_at')
-            .in('product_name', names)
-          const poIds = Array.from(new Set((pol ?? []).map((l: any) => String(l.purchase_order_id)).filter(Boolean)))
-          let poRows: any[] = []
-          if (poIds.length) {
-            const { data: poData } = await supabase
-              .from('purchase_orders')
-              .select('id, customer_name, status, created_at')
-              .in('id', poIds)
-            poRows = poData ?? []
-          }
-          const poIndex = new Map(poRows.map((p: any) => [String(p.id), p]))
-          const map: Record<string, { po_id: string; customer_name: string }> = {}
-          ;(pol ?? []).sort((a: any, b: any) => new Date(b.update_at || b.created_at || 0).getTime() - new Date(a.update_at || a.created_at || 0).getTime())
-            .forEach((l: any) => {
-              const p = poIndex.get(String(l.purchase_order_id))
-              if (!p) return
-              const st = String(p.status || '').toLowerCase()
-              if (st === 'canceled' || st === 'closed') return
-              const key = String(l.product_name || '')
-              if (!map[key]) map[key] = { po_id: String(p.id), customer_name: String(p.customer_name || '') }
-            })
-          setFgPoMap(map)
-        } else {
-          setFgPoMap({})
-        }
-      } catch {
-        setFgPoMap({})
-      }
       setFgLoading(false)
       setFgRefreshing(false)
       setFgLastSynced(new Date().toLocaleString())
@@ -336,7 +300,7 @@ const Inventory: React.FC = () => {
     try {
       const { data, error } = await supabase
         .from('purchase_orders')
-        .select('id, created_at, customer_name, status, quantity, case_qty')
+        .select('id, created_at, customer_name, status, quantity, case_qty, allocated_qty, backorder_qty')
         .eq('product_name', productName)
         .order('created_at', { ascending: false })
         .limit(50)
@@ -351,6 +315,8 @@ const Inventory: React.FC = () => {
           status: String(r.status || ''),
           quantity: (r.quantity != null ? Number(r.quantity) : null),
           case_qty: (r.case_qty != null ? Number(r.case_qty) : null),
+          allocated_qty: (r.allocated_qty != null ? Number(r.allocated_qty) : null),
+          backorder_qty: (r.backorder_qty != null ? Number(r.backorder_qty) : null),
         }))
         setFgHistRows(rows)
       }
@@ -1141,7 +1107,7 @@ const Inventory: React.FC = () => {
             {fgHistOpen && (
               <div className="fixed inset-0 z-[75] flex items-center justify-center p-4">
                 <div className="absolute inset-0 bg-black/60" onClick={() => setFgHistOpen(false)}></div>
-                <div className="relative z-10 w-full max-w-3xl max-h-[80vh] bg-white rounded-2xl shadow-2xl border border-neutral-soft/30 overflow-hidden flex flex-col">
+                <div className="relative z-10 w-full max-w-3xl max-h-[88vh] bg-white rounded-2xl shadow-2xl border border-neutral-soft/30 overflow-hidden flex flex-col">
                   <div className="flex items-center justify-between px-6 py-4 border-b border-neutral-soft/40 bg-white">
                     <div>
                       <h4 className="text-lg font-semibold text-neutral-dark">PO History</h4>
@@ -1157,28 +1123,70 @@ const Inventory: React.FC = () => {
                     ) : fgHistRows.length === 0 ? (
                       <div className="p-8 text-center text-neutral-medium">No purchase orders found for this product.</div>
                     ) : (
-                      <div className="divide-y divide-neutral-soft/40">
-                        {fgHistRows.map((r) => {
-                          const created = new Date(r.created_at).toLocaleString()
-                          const nf = new Intl.NumberFormat('en-US')
-                          const qty = r.quantity != null ? nf.format(r.quantity) : '—'
-                          const statusTone = String(r.status || '').toLowerCase() === 'allocated' ? 'emerald' : 'neutral'
-                          return (
-                            <div key={r.id} className="px-6 py-4 hover:bg-neutral-light/20">
-                              <div className="flex items-center justify-between gap-4">
-                                <div className="min-w-0">
-                                  <div className="text-[15px] font-semibold text-neutral-900 truncate">{r.customer_name || '—'}</div>
-                                  <div className="mt-1 text-xs text-neutral-medium">Created • {created}</div>
-                                </div>
-                                <div className="flex items-center gap-3 flex-shrink-0">
-                                  <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] font-semibold border bg-${statusTone}-50 text-${statusTone}-700 border-${statusTone}-200`}>{r.status || '—'}</span>
-                                  <span className="text-sm text-neutral-900 font-mono tabular-nums">Qty: {qty}</span>
+                      (() => {
+                        const tone = (st: string) => {
+                          const s = st?.toLowerCase() || ''
+                          if (s.includes('alloc')) return 'emerald'
+                          if (s.includes('approved') || s.includes('ready')) return 'blue'
+                          if (s.includes('ship') || s.includes('shipped')) return 'indigo'
+                          if (s.includes('draft')) return 'slate'
+                          if (s.includes('cancel') || s.includes('closed')) return 'red'
+                          return 'neutral'
+                        }
+                        const nf = new Intl.NumberFormat('en-US')
+                        const df = new Intl.DateTimeFormat('en-US', { month: 'long', day: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
+                        const groups: Record<string, typeof fgHistRows> = {}
+                        fgHistRows.forEach((r) => {
+                          const d = new Date(r.created_at)
+                          const key = `${d.toLocaleString('en-US', { month: 'long' })} ${d.getFullYear()}`
+                          groups[key] = groups[key] || []
+                          groups[key].push(r)
+                        })
+                        const order = Object.keys(groups).sort((a,b)=>{
+                          const da = new Date(a)
+                          const db = new Date(b)
+                          return db.getTime()-da.getTime()
+                        })
+                        return (
+                          <div className="py-2">
+                            {order.map((g) => (
+                              <div key={g} className="mb-5">
+                                <div className="px-6 pb-2 text-[11px] font-bold tracking-wider uppercase text-neutral-medium">{g}</div>
+                                <div className="space-y-2">
+                                  {groups[g].map((r) => {
+                                    const created = new Date(r.created_at)
+                                    const qty = r.quantity != null ? nf.format(r.quantity) : '—'
+                                    const remainingRaw = (r.backorder_qty != null ? Number(r.backorder_qty) : ((r.quantity != null && r.allocated_qty != null) ? (Number(r.quantity) - Number(r.allocated_qty)) : null))
+                                    const remaining = (remainingRaw != null ? Math.max(0, remainingRaw) : null)
+                                    const t = tone(String(r.status||''))
+                                    const name = r.customer_name || '—'
+                                    const initials = name.trim().split(/\s+/).slice(0,2).map(s=>s[0]).join('').toUpperCase() || '—'
+                                    return (
+                                      <div key={r.id} className="mx-4 rounded-xl border border-neutral-soft/60 bg-white shadow-sm hover:shadow-md transition-shadow">
+                                        <div className="px-6 py-4 flex items-center justify-between gap-4">
+                                          <div className="flex items-center gap-3 min-w-0">
+                                            <div className="w-8 h-8 rounded-full bg-primary-light/20 text-primary-dark flex items-center justify-center text-xs font-bold flex-shrink-0">{initials}</div>
+                                            <div className="min-w-0">
+                                              <div className="text-[15px] font-semibold text-neutral-900 truncate">{name}</div>
+                                              <div className="mt-0.5 text-xs text-neutral-medium">{df.format(created)}</div>
+                                            </div>
+                                          </div>
+                                          <div className="flex items-center gap-3 flex-shrink-0">
+                                            <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] font-semibold border bg-${t}-50 text-${t}-700 border-${t}-200`}>{r.status || '—'}</span>
+                                            <span className="text-sm text-neutral-900 font-mono tabular-nums">Qty: {qty}</span>
+                                            <span className="text-sm text-neutral-900 font-mono tabular-nums">Remaining: {remaining != null ? nf.format(remaining) : '—'}</span>
+                                          </div>
+                                        </div>
+                                      </div>
+                                    )
+                                  })}
                                 </div>
                               </div>
-                            </div>
-                          )
-                        })}
-                      </div>
+                            ))}
+                            <div className="px-6 pt-2 pb-4 text-[11px] text-neutral-medium">Showing latest {fgHistRows.length} record(s).</div>
+                          </div>
+                        )
+                      })()
                     )}
                   </div>
                 </div>

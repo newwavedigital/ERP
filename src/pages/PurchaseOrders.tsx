@@ -100,8 +100,10 @@ const PurchaseOrders: React.FC = () => {
   const [poTab, setPoTab] = useState<'brand' | 'copack'>('brand')
 
   // Detect products with competing POs (same product across multiple open rows)
+  // Only count POs with deposit_paid=true AND rush dates for escalation threshold
   const competingCounts = useMemo(() => {
     const counts: Record<string, number> = {}
+    const escalationCounts: Record<string, number> = {}
     ;(orders || []).forEach((po: any) => {
       if (po?.is_copack) return // Copack POs do not compete for finished goods priority
       const st = String(po?.status || '').toLowerCase()
@@ -109,28 +111,74 @@ const PurchaseOrders: React.FC = () => {
       if (!isPending) return
       const key = String(po.product_id || po.product_name || '').trim().toLowerCase()
       if (!key) return
+      
+      // Count all competing POs
       counts[key] = (counts[key] || 0) + 1
+      
+      // Count only POs with deposit_paid=true AND rush dates for escalation
+      const hasDeposit = !!po.deposit_paid
+      const isRush = !!po.is_rush || (po.requested_ship_date && (() => {
+        const shipDate = new Date(po.requested_ship_date)
+        const days = Math.ceil((shipDate.getTime() - Date.now()) / 86400000)
+        return days <= 7 // Rush window days
+      })())
+      
+      if (hasDeposit && isRush) {
+        escalationCounts[key] = (escalationCounts[key] || 0) + 1
+      }
     })
-    return counts
+    return { counts, escalationCounts }
   }, [orders])
-
-  const isCompetingPO = (po: any) => {
+  
+  const needsEscalation = (po: any) => {
     const key = String(po.product_id || po.product_name || '').trim().toLowerCase()
-    return key ? (competingCounts[key] || 0) > 1 : false
+    return key ? (competingCounts.escalationCounts[key] || 0) >= 3 : false
+  }
+
+  // Check if priority scoring should be shown (when 2+ POs compete AND any has deposit paid OR rush date)
+  const showsPriorityScore = (po: any) => {
+    const key = String(po.product_id || po.product_name || '').trim().toLowerCase()
+    if (!key) return false
+    
+    // Find all POs for this product
+    const sameProdPOs = (orders || []).filter((otherPo: any) => {
+      if (otherPo?.is_copack) return false
+      const st = String(otherPo?.status || '').toLowerCase()
+      const isPending = st === 'open' || st === 'draft' || !st
+      if (!isPending) return false
+      const otherKey = String(otherPo.product_id || otherPo.product_name || '').trim().toLowerCase()
+      return otherKey === key
+    })
+    
+    // Must have 2+ POs competing for same product
+    if (sameProdPOs.length < 2) return false
+    
+    // Show priority score if ANY competing PO has deposit paid OR rush date
+    return sameProdPOs.some((otherPo: any) => {
+      const hasDeposit = !!otherPo.deposit_paid
+      const isRush = !!otherPo.is_rush || (otherPo.requested_ship_date && (() => {
+        const shipDate = new Date(otherPo.requested_ship_date)
+        const days = Math.ceil((shipDate.getTime() - Date.now()) / 86400000)
+        return days <= 7 // Rush window days
+      })())
+      return hasDeposit || isRush
+    })
   }
 
   // Derived shortage indicators for the View modal
   const hasViewShortfall = useMemo(() => (viewLines || []).some(l => Number(l.shortfall_qty || 0) > 0), [viewLines])
   const shortfallQty = useMemo(() => (viewLines || []).reduce((s, l) => s + Number(l.shortfall_qty || 0), 0), [viewLines])
 
-  // Conflict detection helper
+  // Conflict detection helper - now includes escalation threshold check
   function detectConflict(po: any, fg: any) {
     if (po?.is_copack) return false // No conflict escalation for Copack orders
-    return (
+    const hasAllocationIssue = (
       (po.allocated_qty || 0) < (po.quantity || 0) &&
       (fg.available_qty || 0) <= 0 &&
       (po.status === 'Open' || po.status === 'Draft' || !po.status)
-    );
+    )
+    // Only escalate if there are 3+ POs with deposit_paid=true AND rush dates
+    return hasAllocationIssue && needsEscalation(po)
   }
 
   // Show advisory if any risk detected
@@ -1567,6 +1615,13 @@ const PurchaseOrders: React.FC = () => {
 
     setLoading(true)
     try {
+      const resolveSub = (name?: string | null) => {
+        const n = String(name || '').trim()
+        if (!n) return n
+        const prod = products.find(p => p.name === n)
+        if (prod?.is_discontinued && prod?.substitute_sku) return String(prod.substitute_sku)
+        return n
+      }
       const mainProd = products.find(p => p.name === form.product) || null
       let po_id: string
       const today = new Date()
@@ -1582,7 +1637,7 @@ const PurchaseOrders: React.FC = () => {
             customer_id: draft.customer_id,
             customer_name: form.customer || (customers.find(c=>c.id===draft.customer_id)?.name || null),
             product_id: mainProd?.id || null,
-            product_name: form.product || null,
+            product_name: resolveSub(form.product) || null,
             requested_ship_date: shipDate,
             quantity: form.quantity ? Number(form.quantity) : null,
             price: form.price ? Number(form.price) : null,
@@ -1637,13 +1692,13 @@ const PurchaseOrders: React.FC = () => {
 
       let linesPayload = (draft.lines || []).map(l => ({
         purchase_order_id: po_id,
-        product_name: l.product_name,
+        product_name: resolveSub(l.product_name),
         quantity: l.qty,
       }))
 
       // For Copack orders, auto-create a single line from the selected product and quantity
       if (draft.is_copack) {
-        const baseName = form.product || mainProd?.name || ''
+        const baseName = resolveSub(form.product || mainProd?.name || '')
         const qty = Number(form.quantity || 0)
         linesPayload = [{ purchase_order_id: po_id, product_name: baseName, quantity: qty }]
       }
@@ -2801,7 +2856,7 @@ const PurchaseOrders: React.FC = () => {
                             <div className="text-[11px] uppercase tracking-wide text-neutral-medium">PO Date</div>
                             <div className="text-sm font-semibold text-neutral-dark">{o.date || '-'}</div>
                           </div>
-                          {isCompetingPO(o) && !o.is_copack && (
+                          {showsPriorityScore(o) && !o.is_copack && (
                             <div className="space-y-1">
                               <div className="text-[11px] uppercase tracking-wide text-neutral-medium">Priority Score</div>
                               <div className="flex items-center gap-2">
@@ -2860,7 +2915,7 @@ const PurchaseOrders: React.FC = () => {
                             {o.deposit_paid && (
                               <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-100 text-emerald-700">Deposit</span>
                             )}
-                            {isCompetingPO(o) && !o.is_copack && (
+                            {showsPriorityScore(o) && !o.is_copack && (
                               <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-100 text-amber-700">Competing</span>
                             )}
                             {o.is_copack && (
@@ -3158,7 +3213,20 @@ const PurchaseOrders: React.FC = () => {
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     <div className="space-y-2">
                       <label className="flex items-center text-sm font-medium text-neutral-dark">Product</label>
-                      <select className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light" value={form.product} onChange={(e)=>setForm({...form, product:e.target.value})}>
+                      <select
+                        className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light"
+                        value={form.product}
+                        onChange={(e)=>{
+                          const raw = (e.target.value || '').trim()
+                          const prod = products.find(p => p.name === raw)
+                          if (prod?.is_discontinued && prod?.substitute_sku) {
+                            setForm(prev => ({ ...prev, product: String(prod.substitute_sku) }))
+                            setToast({ show: true, message: `Using substitute for discontinued item: ${prod.substitute_sku}`, kind: 'warning' })
+                          } else {
+                            setForm(prev => ({ ...prev, product: raw }))
+                          }
+                        }}
+                      >
                         <option value="">Select Product</option>
                         {filteredProducts.map((p: any) => (
                           <option key={p.id} value={p.name}>
@@ -3166,6 +3234,17 @@ const PurchaseOrders: React.FC = () => {
                           </option>
                         ))}
                       </select>
+                      {(() => {
+                        const cur = products.find(p => p.name === form.product)
+                        if (cur?.is_discontinued && cur?.substitute_sku) {
+                          return <div className="text-xs text-neutral-medium mt-1">Substitution will be applied: <span className="font-semibold text-neutral-dark">{cur.substitute_sku}</span></div>
+                        }
+                        const chosen = products.find(p => p.is_discontinued && p.substitute_sku === form.product)
+                        if (chosen) {
+                          return <div className="text-xs text-neutral-medium mt-1">Using substitute for discontinued item: <span className="font-semibold text-neutral-dark">{form.product}</span></div>
+                        }
+                        return null
+                      })()}
                     </div>
                     {/* Packaging Type placed next to Product */}
                     <div className="space-y-2">
@@ -4007,4 +4086,3 @@ const PurchaseOrders: React.FC = () => {
 }
 
 export default PurchaseOrders
-

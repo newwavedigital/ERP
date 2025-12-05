@@ -1,5 +1,5 @@
-import React, { useState } from 'react'
-import { Link, useLocation, Outlet } from 'react-router-dom'
+import React, { useState, useEffect } from 'react'
+import { Link, useLocation, Outlet, useNavigate, Navigate } from 'react-router-dom'
 import { 
   LayoutDashboard, 
   Package, 
@@ -14,39 +14,103 @@ import {
   Brain,
   LogOut,
   Menu,
+  Shield,
   LucideIcon
 } from 'lucide-react'
-//james
+import { supabase } from '../lib/supabase'
+import { useAuth } from '../contexts/AuthContext'
+
 interface NavigationItem {
   name: string
   path: string
   icon: LucideIcon
 }
 
+interface Profile {
+  first_name: string
+  last_name: string
+  email: string
+  company?: string
+  role: string
+}
+
 const Layout: React.FC = () => {
   const location = useLocation()
+  const navigate = useNavigate()
+  const { user, initializing, signOut } = useAuth()
   const [collapsed, setCollapsed] = useState(false)
+  const [profile, setProfile] = useState<Profile | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [showSignOutModal, setShowSignOutModal] = useState(false)
+
+  // Bootstrap/fetch profile once user is known and stable
+  useEffect(() => {
+    let active = true
+    const run = async () => {
+      if (initializing) return
+      if (!user) {
+        setProfile(null)
+        setLoading(false)
+        return
+      }
+      setLoading(true)
+      const { data } = await supabase
+        .from('profiles')
+        .select('first_name,last_name,email,company,role')
+        .eq('id', user.id)
+        .single()
+      if (!active) return
+      setProfile(data || null)
+      setLoading(false)
+    }
+    run()
+    return () => { active = false }
+  }, [user, initializing])
+
+  const handleSignOut = () => {
+    setShowSignOutModal(true)
+  }
+
+  const confirmSignOut = async () => {
+    setShowSignOutModal(false)
+    await signOut()
+    navigate('/login')
+  }
+
+  const getInitials = (firstName?: string, lastName?: string) => {
+    if (!firstName && !lastName) return 'U'
+    return `${firstName?.[0] || ''}${lastName?.[0] || ''}`.toUpperCase()
+  }
 
   const navigationItems: NavigationItem[] = [
-    { name: 'Dashboard', path: '/dashboard', icon: LayoutDashboard },
-    { name: 'Products', path: '/products', icon: Package },
-    { name: 'Inventory', path: '/inventory', icon: Warehouse },
-    { name: 'Production Schedule', path: '/production-schedule', icon: Calendar },
-    { name: 'Purchase Orders', path: '/purchase-orders', icon: ShoppingCart },
-    { name: 'Completed Orders', path: '/completed-orders', icon: CheckCircle },
-    { name: 'Content Library', path: '/content-library', icon: Library },
-    { name: 'Customers', path: '/customers', icon: Users },
-    { name: 'Suppliers', path: '/suppliers', icon: Truck },
-    { name: 'Team Chat', path: '/team-chat', icon: MessageCircle },
-    { name: 'AI Insights', path: '/ai-insights', icon: Brain },
+    { name: 'Dashboard', path: '/admin/dashboard', icon: LayoutDashboard },
+    { name: 'Products', path: '/admin/products', icon: Package },
+    { name: 'Inventory', path: '/admin/inventory', icon: Warehouse },
+    { name: 'Production Schedule', path: '/admin/production-schedule', icon: Calendar },
+    { name: 'Purchase Orders', path: '/admin/purchase-orders', icon: ShoppingCart },
+    { name: 'Completed Orders', path: '/admin/completed-orders', icon: CheckCircle },
+    { name: 'Content Library', path: '/admin/content-library', icon: Library },
+    { name: 'Customers', path: '/admin/customers', icon: Users },
+    { name: 'Suppliers', path: '/admin/suppliers', icon: Truck },
+    { name: 'Team Chat', path: '/admin/team-chat', icon: MessageCircle },
+    { name: 'AI Insights', path: '/admin/ai-insights', icon: Brain },
+    { name: 'Management Account', path: '/admin/management/user-approvals', icon: Shield },
   ]
 
   const isActive = (path: string): boolean => {
-    return location.pathname === path || (path === '/dashboard' && location.pathname === '/')
+    const current = location.pathname || ''
+    // Active when exact match or when current path starts with the item's path (for nested pages)
+    return current === path || (path !== '/admin' && current.startsWith(path + '/'))
   }
 
   return (
     <div className="flex h-screen bg-neutral-light">
+      {initializing && (
+        <div className="absolute inset-0 flex items-center justify-center bg-white/70 z-50">
+          <div className="text-neutral-medium">Loading…</div>
+        </div>
+      )}
+      {!initializing && !user && <Navigate to="/login" replace />}
       {/* Sidebar */}
       <div className={`${collapsed ? 'w-16' : 'w-80'} bg-gradient-to-b from-white via-white to-neutral-light shadow-2xl border-r border-neutral-soft/50 transition-all duration-300 ease-in-out relative backdrop-blur-lg`}>
         {/* Header Section */}
@@ -136,20 +200,28 @@ const Layout: React.FC = () => {
           <div className={`group flex items-center ${collapsed ? 'justify-center' : 'space-x-4'} p-4 rounded-2xl hover:bg-gradient-to-r hover:from-white hover:to-neutral-light hover:shadow-xl transition-all duration-300 hover:scale-[1.02] cursor-pointer`}>
             <div className="flex-shrink-0 relative">
               <div className="w-12 h-12 bg-gradient-to-br from-primary-dark via-primary-medium to-primary-light rounded-2xl flex items-center justify-center shadow-xl ring-2 ring-white">
-                <span className="text-white text-sm font-bold drop-shadow-sm">JD</span>
+                <span className="text-white text-sm font-bold drop-shadow-sm">
+                  {loading ? 'U' : getInitials(profile?.first_name, profile?.last_name)}
+                </span>
               </div>
               <div className="absolute bottom-0 right-0 w-3.5 h-3.5 bg-accent-success border-3 border-white rounded-full shadow-lg animate-pulse"></div>
             </div>
             {!collapsed && (
               <>
                 <div className="flex-1 min-w-0">
-                  <p className="text-base font-bold text-neutral-dark truncate">Development User</p>
+                  <p className="text-base font-bold text-neutral-dark truncate">
+                    {loading ? 'Loading...' : profile ? `${profile.first_name} ${profile.last_name}` : 'Admin User'}
+                  </p>
                   <p className="text-sm text-neutral-medium truncate flex items-center">
                     <span className="w-2 h-2 bg-accent-success rounded-full mr-2 animate-pulse"></span>
-                    John • Online
+                    {loading ? 'Connecting...' : profile ? `${profile.role} • Online` : 'Admin • Online'}
                   </p>
                 </div>
-                <button className="group/btn p-3 text-neutral-medium hover:text-accent-danger hover:bg-accent-danger/10 rounded-xl transition-all duration-300 hover:scale-110 hover:shadow-lg">
+                <button 
+                  onClick={handleSignOut}
+                  className="group/btn p-3 text-neutral-medium hover:text-accent-danger hover:bg-accent-danger/10 rounded-xl transition-all duration-300 hover:scale-110 hover:shadow-lg"
+                  title="Sign Out"
+                >
                   <LogOut className="h-5 w-5 group-hover/btn:rotate-12 transition-transform duration-300" />
                 </button>
               </>
@@ -161,8 +233,39 @@ const Layout: React.FC = () => {
 
       {/* Main content */}
       <div className="flex-1 overflow-auto">
-        <Outlet />
+        <Outlet key={location.pathname} />
       </div>
+
+      {/* Sign Out Confirmation Modal */}
+      {showSignOutModal && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50">
+          <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-md w-full mx-4 transform animate-in fade-in zoom-in duration-200">
+            <div className="text-center">
+              <div className="w-16 h-16 bg-accent-danger/10 rounded-full flex items-center justify-center mx-auto mb-4">
+                <LogOut className="h-8 w-8 text-accent-danger" />
+              </div>
+              <h3 className="text-xl font-bold text-neutral-dark mb-2">Sign Out</h3>
+              <p className="text-neutral-medium mb-6">
+                Are you sure you want to sign out of your admin account? You'll need to log in again to access the dashboard.
+              </p>
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setShowSignOutModal(false)}
+                  className="flex-1 px-6 py-3 bg-neutral-light hover:bg-neutral-soft text-neutral-dark font-semibold rounded-full transition-colors duration-200"
+                >
+                  No, Stay
+                </button>
+                <button
+                  onClick={confirmSignOut}
+                  className="flex-1 px-6 py-3 bg-accent-danger hover:bg-accent-danger/90 text-white font-semibold rounded-full transition-colors duration-200"
+                >
+                  Yes, Sign Out
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

@@ -20,13 +20,25 @@ const getClient = () => {
   if (typeof window !== 'undefined') {
     if (!window.__erp_supabase) {
       window.__erp_supabase = createClient(supabaseUrl, supabaseAnonKey, {
-        auth: { storageKey: 'erp_auth' },
+        auth: {
+          storageKey: 'erp_auth',
+          autoRefreshToken: true,
+          persistSession: true,
+          detectSessionInUrl: false, // we handle it manually in AuthCallback
+        },
       })
     }
     return window.__erp_supabase
   }
   // SSR fallback (not typical in Vite SPA)
-  return createClient(supabaseUrl, supabaseAnonKey, { auth: { storageKey: 'erp_auth' } })
+  return createClient(supabaseUrl, supabaseAnonKey, {
+    auth: {
+      storageKey: 'erp_auth',
+      autoRefreshToken: true,
+      persistSession: true,
+      detectSessionInUrl: false,
+    },
+  })
 }
 
 export const supabase = getClient()

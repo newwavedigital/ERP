@@ -1,6 +1,8 @@
 import React from 'react'
 import { createHashRouter, RouterProvider } from 'react-router-dom'
+import { AuthProvider } from './contexts/AuthContext.tsx'
 import Layout from './components/Layout.tsx'
+import ApprovalGuard from './components/ApprovalGuard.tsx'
 import Dashboard from './pages/Dashboard.tsx'
 import Products from './pages/Products.tsx'
 import Inventory from './pages/Inventory.tsx'
@@ -13,11 +15,62 @@ import Customers from './pages/Customers.tsx'
 import Suppliers from './pages/Suppliers.tsx'
 import TeamChat from './pages/TeamChat.tsx'
 import AIInsights from './pages/AIInsights.tsx'
+import Login from './pages/Login.tsx'
+import LandingPage from './pages/LandingPage.tsx'
+import PublicHome from './pages/PublicHome.tsx'
+import PublicCatalog from './pages/PublicCatalog.tsx'
+import PublicPurchasing from './pages/PublicPurchasing.tsx'
+import PublicExplore from './pages/PublicExplore.tsx'
+import AuthCallback from './pages/AuthCallback.tsx'
+import WaitingApproval from './pages/WaitingApproval.tsx'
+import Rejected from './pages/Rejected.tsx'
+import UserApprovals from './pages/management/UserApprovals.tsx'
 
 const App: React.FC = () => {
   const router = createHashRouter([
+    // Public routes (no layout)
+    { index: true, element: (
+      <ApprovalGuard>
+        <LandingPage />
+      </ApprovalGuard>
+    ) },
+    { path: 'landing', element: (
+      <ApprovalGuard>
+        <LandingPage />
+      </ApprovalGuard>
+    ) },
+    { path: 'home', element: (
+      <ApprovalGuard>
+        <PublicHome />
+      </ApprovalGuard>
+    ) },
+    { path: 'home/catalog', element: (
+      <ApprovalGuard>
+        <PublicCatalog />
+      </ApprovalGuard>
+    ) },
+    { path: 'home/purchasing', element: (
+      <ApprovalGuard>
+        <PublicPurchasing />
+      </ApprovalGuard>
+    ) },
+    { path: 'home/explore', element: (
+      <ApprovalGuard>
+        <PublicExplore />
+      </ApprovalGuard>
+    ) },
+    { path: 'auth/callback', element: <AuthCallback /> },
+    { path: 'login', element: <Login /> },
+    { path: 'waiting-approval', element: <WaitingApproval /> },
+    { path: 'rejected', element: <Rejected /> },
+    // Admin/Dashboard routes (with layout)
     {
-      element: <Layout />,
+      path: 'admin',
+      element: (
+        <ApprovalGuard>
+          <Layout />
+        </ApprovalGuard>
+      ),
       children: [
         { index: true, element: <Dashboard /> },
         { path: 'dashboard', element: <Dashboard /> },
@@ -32,6 +85,7 @@ const App: React.FC = () => {
         { path: 'suppliers', element: <Suppliers /> },
         { path: 'team-chat', element: <TeamChat /> },
         { path: 'ai-insights', element: <AIInsights /> },
+        { path: 'management/user-approvals', element: <UserApprovals /> },
       ],
     },
   ], {
@@ -40,11 +94,13 @@ const App: React.FC = () => {
   })
 
   return (
-    <RouterProvider
-      router={router}
-      // Opt-in to wrapping updates with startTransition (v7 behavior)
-      future={{ v7_startTransition: true }}
-    />
+    <AuthProvider>
+      <RouterProvider
+        router={router}
+        // Opt-in to wrapping updates with startTransition (v7 behavior)
+        future={{ v7_startTransition: true }}
+      />
+    </AuthProvider>
   )
 }
 

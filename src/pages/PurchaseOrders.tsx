@@ -169,17 +169,73 @@ const PurchaseOrders: React.FC = () => {
   const hasViewShortfall = useMemo(() => (viewLines || []).some(l => Number(l.shortfall_qty || 0) > 0), [viewLines])
   const shortfallQty = useMemo(() => (viewLines || []).reduce((s, l) => s + Number(l.shortfall_qty || 0), 0), [viewLines])
 
-  // Conflict detection helper - now includes escalation threshold check
-  function detectConflict(po: any, fg: any) {
-    if (po?.is_copack) return false // No conflict escalation for Copack orders
-    const hasAllocationIssue = (
-      (po.allocated_qty || 0) < (po.quantity || 0) &&
-      (fg.available_qty || 0) <= 0 &&
-      (po.status === 'Open' || po.status === 'Draft' || !po.status)
-    )
-    // Only escalate if there are 3+ POs with deposit_paid=true AND rush dates
-    return hasAllocationIssue && needsEscalation(po)
+  // Predict allocated qty per PO after applying priority rules per product (brand only; deposit+rush cohort only)
+  const predictedAllocatedById = useMemo(() => {
+    const map: Record<string, number> = {}
+    try {
+      // group brand, pending POs by product key
+      const groups: Record<string, any[]> = {}
+      ;(orders || []).forEach((po:any) => {
+        const st = String(po?.status || '').toLowerCase()
+        const isPending = st === 'open' || st === 'draft' || !st
+        if (!isPending) return
+        if (po?.is_copack) return
+        const key = String(po.product_name || '').trim().toLowerCase()
+        if (!key) return
+        // only count deposit + rush cohort for allocation competition
+        const rushNow = !!po.is_rush || (po.requested_ship_date && (() => {
+          const shipDate = new Date(po.requested_ship_date)
+          const days = Math.ceil((shipDate.getTime() - Date.now()) / 86400000)
+          return days <= 7
+        })())
+        if (!(!!po.deposit_paid && rushNow)) return
+        if (!groups[key]) groups[key] = []
+        groups[key].push(po)
+      })
+
+      Object.entries(groups).forEach(([key, list]) => {
+        let remaining = Number(finishedGoodsData[key]?.available_qty || 0)
+        // priority sort: earliest ship date, deposit first, older created first
+        const sorted = [...list].sort((a:any,b:any)=>{
+          const ad = new Date(a.requested_ship_date || 0).getTime()
+          const bd = new Date(b.requested_ship_date || 0).getTime()
+          if (ad !== bd) return ad - bd
+          const adep = !!a.deposit_paid ? 1 : 0
+          const bdep = !!b.deposit_paid ? 1 : 0
+          if (adep !== bdep) return bdep - adep
+          const ac = new Date(a.created_at || 0).getTime()
+          const bc = new Date(b.created_at || 0).getTime()
+          return ac - bc
+        })
+        sorted.forEach((po:any)=>{
+          const need = Number(po.quantity || 0)
+          const alloc = Math.max(0, Math.min(remaining, need))
+          map[String(po.id)] = alloc
+          remaining = Math.max(0, remaining - alloc)
+        })
+      })
+    } catch {}
+    return map
+  }, [orders, finishedGoodsData])
+
+  // Use predicted allocation and escalation rules to decide if planner conflict should show
+  const hasPlannerConflict = (po:any) => {
+    if (po?.is_copack) return false
+    const st = String(po?.status || '').toLowerCase()
+    const isPending = st === 'open' || st === 'draft' || !st
+    if (!isPending) return false
+    const rushNow = !!po.is_rush || (po.requested_ship_date && (() => {
+      const shipDate = new Date(po.requested_ship_date)
+      const days = Math.ceil((shipDate.getTime() - Date.now()) / 86400000)
+      return days <= 7
+    })())
+    if (!(!!po.deposit_paid && rushNow)) return false
+    if (!needsEscalation(po)) return false
+    const alloc = predictedAllocatedById[String(po.id)]
+    return typeof alloc === 'number' ? alloc === 0 : false
   }
+
+  // detectConflict removed; using hasPlannerConflict instead for UI gating
 
   // Show advisory if any risk detected
   useEffect(() => {
@@ -320,21 +376,17 @@ const PurchaseOrders: React.FC = () => {
       })
       setShippedTotals(totals)
 
-      // Pull finished goods availability for conflict detection
-      const productNames = [...new Set(list.map((r: any) => r.product_name).filter(Boolean))]
-      if (productNames.length > 0) {
-        const { data: fgRows } = await supabase
-          .from('finished_goods')
-          .select('product_name, available_qty')
-          .in('product_name', productNames)
-        const fgData: Record<string, { available_qty: number }> = {}
-        ;(fgRows || []).forEach((r: any) => {
-          fgData[r.product_name] = { available_qty: Number(r.available_qty || 0) }
-        })
-        setFinishedGoodsData(fgData)
-      } else {
-        setFinishedGoodsData({})
-      }
+      // Pull finished goods availability for conflict detection (do not filter by exact names to avoid whitespace mismatches)
+      const { data: fgRows } = await supabase
+        .from('finished_goods')
+        .select('product_name, available_qty')
+      const fgData: Record<string, { available_qty: number }> = {}
+      ;(fgRows || []).forEach((r: any) => {
+        const key = String(r.product_name || '').trim().toLowerCase()
+        if (!key) return
+        fgData[key] = { available_qty: Number(r.available_qty || 0) }
+      })
+      setFinishedGoodsData(fgData)
     } else {
       setShippedTotals({})
       setFinishedGoodsData({})
@@ -1224,7 +1276,7 @@ const PurchaseOrders: React.FC = () => {
 
       if (discontinuedItems.length === 0) {
         await approveAndAllocate(po) // pass full PO
-        setToast({ show: true, message: 'PO approved successfully. THEN allocate by priority score.', kind: 'success' })
+        setToast({ show: true, message: po.is_copack ? 'PO approved successfully.' : 'PO approved successfully. THEN allocate by priority score.', kind: 'success' })
         return
       }
 
@@ -1267,7 +1319,7 @@ const PurchaseOrders: React.FC = () => {
       // find the full PO object so we can decide RPC by is_copack
       const poObj = (orders || []).find((o:any) => String(o.id) === String(id)) || { id }
       await approveAndAllocate(poObj)
-      setToast({ show: true, message: 'PO approved successfully. THEN allocate by priority score.', kind: 'success' })
+      setToast({ show: true, message: poObj.is_copack ? 'PO approved successfully.' : 'PO approved successfully. THEN allocate by priority score.', kind: 'success' })
     } catch (e: any) {
       setToast({ show: true, message: e?.message || 'Failed to apply substitutes', kind: 'error' })
     }
@@ -2981,8 +3033,7 @@ const PurchaseOrders: React.FC = () => {
                       
                       {/* Conflict Banner */}
                       {(() => {
-                        const fg = finishedGoodsData[o.product_name] || { available_qty: 0 }
-                        const hasConflict = detectConflict(o, fg)
+                        const hasConflict = hasPlannerConflict(o)
                         if (!hasConflict) return null
                         
                         return (
@@ -3016,8 +3067,7 @@ const PurchaseOrders: React.FC = () => {
                               </button>
                             )}
                             {(o.status === "Open" || !o.status) && (() => {
-                              const fg = finishedGoodsData[o.product_name] || { available_qty: 0 }
-                              const hasConflict = detectConflict(o, fg)
+                              const hasConflict = hasPlannerConflict(o)
                               const isDisabled = !!fefoWarning || hasConflict
                               const disabledReason = fefoWarning ? 'FEFO warning active' : hasConflict ? 'Cannot auto-allocate. Escalation to Planner is required.' : ''
                               
@@ -3086,8 +3136,7 @@ const PurchaseOrders: React.FC = () => {
                               </span>
                             )}
                             {!o.is_copack && (() => {
-                              const fg = finishedGoodsData[o.product_name] || { available_qty: 0 }
-                              const hasConflict = detectConflict(o, fg)
+                              const hasConflict = hasPlannerConflict(o)
                               if (!hasConflict) return null
                               
                               return (
@@ -3596,8 +3645,7 @@ const PurchaseOrders: React.FC = () => {
                                   
                                   {/* Conflict Tag in Modal */}
                                   {(() => {
-                                    const fg = finishedGoodsData[isViewOpen.product_name] || { available_qty: 0 }
-                                    const hasConflict = detectConflict(isViewOpen, fg)
+                                    const hasConflict = hasPlannerConflict(isViewOpen)
                                     if (!hasConflict) return null
                                     
                                     return (

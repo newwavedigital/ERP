@@ -1230,34 +1230,38 @@ const PurchaseOrders: React.FC = () => {
   const handleApproveClick = async (po: any) => {
     try {
       // Front-end priority validation
-      // Refetch latest POs (visible or all – using same base query as list)
-      const { data: allPos } = await supabase
-        .from('purchase_orders')
-        .select('id, requested_ship_date, deposit_paid, created_at, status')
-        .order('created_at', { ascending: false })
-      const list = Array.isArray(allPos) ? allPos : []
-      
-      // Filter out POs that are already processed (approved, allocated, shipped, etc.)
-      const pendingPOs = list.filter((p: any) => {
-        const status = String(p.status || '').toLowerCase()
-        return status === 'open' || status === 'draft' || !status
-      })
-      
-      const sorted = [...pendingPOs].sort((a: any, b: any) => {
-        const ad = new Date(a.requested_ship_date || 0).getTime()
-        const bd = new Date(b.requested_ship_date || 0).getTime()
-        if (ad !== bd) return ad - bd // earlier ship date first
-        const adep = !!a.deposit_paid ? 1 : 0
-        const bdep = !!b.deposit_paid ? 1 : 0
-        if (adep !== bdep) return bdep - adep // deposit first
-        const ac = new Date(a.created_at || 0).getTime()
-        const bc = new Date(b.created_at || 0).getTime()
-        return ac - bc // older first
-      })
-      const top = sorted[0]
-      if (top && String(top.id) !== String(po.id)) {
-        setShowPriorityModal(true)
-        return
+      // Rule applies ONLY to Brand POs (is_copack === false)
+      if (!po?.is_copack) {
+        // Refetch latest POs and evaluate only BRAND pending POs
+        const { data: allPos } = await supabase
+          .from('purchase_orders')
+          .select('id, requested_ship_date, deposit_paid, created_at, status, is_copack')
+          .order('created_at', { ascending: false })
+        const list = Array.isArray(allPos) ? allPos : []
+        
+        // Pending + brand-only
+        const pendingBrand = list.filter((p: any) => {
+          const status = String(p.status || '').toLowerCase()
+          const pending = status === 'open' || status === 'draft' || !status
+          return pending && !p.is_copack
+        })
+        
+        const sorted = [...pendingBrand].sort((a: any, b: any) => {
+          const ad = new Date(a.requested_ship_date || 0).getTime()
+          const bd = new Date(b.requested_ship_date || 0).getTime()
+          if (ad !== bd) return ad - bd // earlier ship date first
+          const adep = !!a.deposit_paid ? 1 : 0
+          const bdep = !!b.deposit_paid ? 1 : 0
+          if (adep !== bdep) return bdep - adep // deposit first
+          const ac = new Date(a.created_at || 0).getTime()
+          const bc = new Date(b.created_at || 0).getTime()
+          return ac - bc // older first
+        })
+        const top = sorted[0]
+        if (top && String(top.id) !== String(po.id)) {
+          setShowPriorityModal(true)
+          return
+        }
       }
 
       // Load PO lines
@@ -1671,10 +1675,25 @@ const PurchaseOrders: React.FC = () => {
         const n = String(name || '').trim()
         if (!n) return n
         const prod = products.find(p => p.name === n)
-        if (prod?.is_discontinued && prod?.substitute_sku) return String(prod.substitute_sku)
+        if (prod?.is_discontinued && prod?.substitute_sku) {
+          const sub = products.find(p => (p as any).sku === prod.substitute_sku)
+          return sub?.name || String(prod.substitute_sku)
+        }
         return n
       }
+
+      const resolveSubMeta = (name?: string | null) => {
+        const n = String(name || '').trim()
+        if (!n) return { name: n, id: null as string | null }
+        const prod = products.find(p => p.name === n) || null
+        if (prod?.is_discontinued && prod?.substitute_sku) {
+          const sub = products.find(p => (p as any).sku === prod.substitute_sku) || null
+          return { name: sub?.name || String(prod.substitute_sku), id: (sub as any)?.id || null }
+        }
+        return { name: n, id: (prod as any)?.id || null }
+      }
       const mainProd = products.find(p => p.name === form.product) || null
+      const resolved = resolveSubMeta(form.product)
       let po_id: string
       const today = new Date()
       const todayStr = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}`
@@ -1688,8 +1707,8 @@ const PurchaseOrders: React.FC = () => {
             date: form.date || null,
             customer_id: draft.customer_id,
             customer_name: form.customer || (customers.find(c=>c.id===draft.customer_id)?.name || null),
-            product_id: mainProd?.id || null,
-            product_name: resolveSub(form.product) || null,
+            product_id: resolved.id ?? mainProd?.id ?? null,
+            product_name: resolved.name || null,
             requested_ship_date: shipDate,
             quantity: form.quantity ? Number(form.quantity) : null,
             price: form.price ? Number(form.price) : null,
@@ -1716,8 +1735,8 @@ const PurchaseOrders: React.FC = () => {
             date: form.date || null,
             customer_id: draft.customer_id,
             customer_name: form.customer || (customers.find(c=>c.id===draft.customer_id)?.name || null),
-            product_id: mainProd?.id || null,
-            product_name: form.product || null,
+            product_id: resolved.id ?? mainProd?.id ?? null,
+            product_name: resolved.name || null,
             requested_ship_date: shipDate,
             quantity: form.quantity ? Number(form.quantity) : null,
             price: form.price ? Number(form.price) : null,
@@ -3266,13 +3285,13 @@ const PurchaseOrders: React.FC = () => {
                         className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light"
                         value={form.product}
                         onChange={(e)=>{
-                          const raw = (e.target.value || '').trim()
+                          const raw = (e.target.value || '')
                           const prod = products.find(p => p.name === raw)
+                          // Keep UI value as the selected product name so the dropdown reflects the choice.
+                          // Substitution is handled later by resolveSub() during save and line preparation.
+                          setForm(prev => ({ ...prev, product: raw }))
                           if (prod?.is_discontinued && prod?.substitute_sku) {
-                            setForm(prev => ({ ...prev, product: String(prod.substitute_sku) }))
-                            setToast({ show: true, message: `Using substitute for discontinued item: ${prod.substitute_sku}`, kind: 'warning' })
-                          } else {
-                            setForm(prev => ({ ...prev, product: raw }))
+                            setToast({ show: true, message: `Substitution will be applied: ${prod.substitute_sku}`, kind: 'warning' })
                           }
                         }}
                       >
@@ -3313,8 +3332,10 @@ const PurchaseOrders: React.FC = () => {
                     </div>
                   </div>
 
-                  {/* Copack Material Settings */}
-                  <CopackMaterialSettings form={form} setForm={setForm} />
+                  {/* Copack Material Settings (hidden for Brand POs) */}
+                  {form.is_copack && (
+                    <CopackMaterialSettings form={form} setForm={setForm} />
+                  )}
 
                   {/* Deposit Paid toggle */}
                   {!form.is_copack && (

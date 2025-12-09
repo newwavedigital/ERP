@@ -28,7 +28,7 @@ const WaitingApproval: React.FC = () => {
         const st = (data?.approval_status as any) || 'pending'
         setStatus(st)
         if (String(st).toLowerCase() === 'approved') {
-          navigate('/home', { replace: true })
+          navigate('/admin/dashboard', { replace: true })
         }
       }
     } finally {
@@ -60,7 +60,7 @@ const WaitingApproval: React.FC = () => {
           const newStatus = (payload.new?.approval_status as any) || 'pending'
           setStatus(newStatus)
           if (String(newStatus).toLowerCase() === 'approved') {
-            navigate('/home', { replace: true })
+            navigate('/admin/dashboard', { replace: true })
           }
         }).subscribe()
     }

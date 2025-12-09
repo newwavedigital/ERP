@@ -17,14 +17,11 @@ import TeamChat from './pages/TeamChat.tsx'
 import AIInsights from './pages/AIInsights.tsx'
 import Login from './pages/Login.tsx'
 import LandingPage from './pages/LandingPage.tsx'
-import PublicHome from './pages/PublicHome.tsx'
-import PublicCatalog from './pages/PublicCatalog.tsx'
-import PublicPurchasing from './pages/PublicPurchasing.tsx'
-import PublicExplore from './pages/PublicExplore.tsx'
 import AuthCallback from './pages/AuthCallback.tsx'
 import WaitingApproval from './pages/WaitingApproval.tsx'
 import Rejected from './pages/Rejected.tsx'
 import UserApprovals from './pages/management/UserApprovals.tsx'
+import ToolPermissions from './pages/ToolPermissions.tsx'
 
 const App: React.FC = () => {
   const router = createHashRouter([
@@ -37,26 +34,6 @@ const App: React.FC = () => {
     { path: 'landing', element: (
       <ApprovalGuard>
         <LandingPage />
-      </ApprovalGuard>
-    ) },
-    { path: 'home', element: (
-      <ApprovalGuard>
-        <PublicHome />
-      </ApprovalGuard>
-    ) },
-    { path: 'home/catalog', element: (
-      <ApprovalGuard>
-        <PublicCatalog />
-      </ApprovalGuard>
-    ) },
-    { path: 'home/purchasing', element: (
-      <ApprovalGuard>
-        <PublicPurchasing />
-      </ApprovalGuard>
-    ) },
-    { path: 'home/explore', element: (
-      <ApprovalGuard>
-        <PublicExplore />
       </ApprovalGuard>
     ) },
     { path: 'auth/callback', element: <AuthCallback /> },
@@ -85,6 +62,7 @@ const App: React.FC = () => {
         { path: 'suppliers', element: <Suppliers /> },
         { path: 'team-chat', element: <TeamChat /> },
         { path: 'ai-insights', element: <AIInsights /> },
+        { path: 'tool-permissions', element: <ToolPermissions /> },
         { path: 'management/user-approvals', element: <UserApprovals /> },
       ],
     },

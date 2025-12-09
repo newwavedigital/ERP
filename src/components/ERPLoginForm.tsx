@@ -34,8 +34,8 @@ const ERPLoginForm: React.FC<ERPLoginFormProps> = ({ onShowSignUp }) => {
         .eq('id', uid)
         .single()
       if (profErr) {
-        // If profile missing, default to client flow
-        navigate('/home')
+        // If profile missing, redirect to unified dashboard; ApprovalGuard will handle gating
+        navigate('/admin/dashboard')
         return
       }
       // Try to hydrate missing fields with metadata or pending local cache
@@ -50,11 +50,8 @@ const ERPLoginForm: React.FC<ERPLoginFormProps> = ({ onShowSignUp }) => {
         await supabase.from('profiles').update(patch).eq('id', uid)
         try { localStorage.removeItem('erp_pending_profile') } catch {}
       }
-      if ((prof?.role || 'client') === 'admin') {
-        navigate('/admin/dashboard')
-      } else {
-        navigate('/home')
-      }
+      // Redirect all roles to the unified dashboard; ApprovalGuard enforces client approval
+      navigate('/admin/dashboard')
     } catch (err: any) {
       setError(err?.message || 'Sign in failed')
     } finally {

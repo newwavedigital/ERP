@@ -328,7 +328,7 @@ const LandingPage: React.FC = () => {
               </p>
               <div className={`flex flex-col sm:flex-row gap-4 mb-8 animate-slide-in-bottom animate-delay-500 ${visibleElements.has('hero') ? 'visible' : ''}`}>
                 <button
-                  onClick={() => navigate('/home')}
+                  onClick={() => navigate('')}
                   className="bg-gradient-to-r from-primary-medium to-primary-dark hover:from-primary-dark hover:to-primary-medium text-white px-8 py-4 rounded-full font-semibold flex items-center justify-center gap-2 transition-all transform hover:scale-105 shadow-lg hover:shadow-xl"
                 >
                   Start Free Trial

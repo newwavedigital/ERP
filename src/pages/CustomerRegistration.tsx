@@ -201,6 +201,8 @@ const CustomerRegistration: React.FC = () => {
                       Company Name<span className="text-accent-danger ml-1">*</span>
                     </label>
                     <input
+                      id="company_name"
+                      name="company_name"
                       type="text"
                       required
                       value={formData.company_name}
@@ -216,6 +218,8 @@ const CustomerRegistration: React.FC = () => {
                       Contact Person
                     </label>
                     <input
+                      id="contact_person"
+                      name="contact_person"
                       type="text"
                       value={formData.contact_person}
                       onChange={(e) => setFormData({ ...formData, contact_person: e.target.value })}
@@ -232,6 +236,8 @@ const CustomerRegistration: React.FC = () => {
                       Email
                     </label>
                     <input
+                      id="email"
+                      name="email"
                       type="email"
                       value={formData.email}
                       onChange={(e) => setFormData({ ...formData, email: e.target.value })}
@@ -246,6 +252,8 @@ const CustomerRegistration: React.FC = () => {
                       Phone
                     </label>
                     <input
+                      id="phone"
+                      name="phone"
                       type="text"
                       value={formData.phone}
                       onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
@@ -262,6 +270,8 @@ const CustomerRegistration: React.FC = () => {
                       Website
                     </label>
                     <input
+                      id="website"
+                      name="website"
                       type="url"
                       value={formData.website}
                       onChange={(e) => setFormData({ ...formData, website: e.target.value })}
@@ -388,9 +398,9 @@ const CustomerRegistration: React.FC = () => {
               </div>
               <div className="p-6 space-y-4">
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <input type="text" value={newPackaging.packaging_type} onChange={(e) => setNewPackaging({ ...newPackaging, packaging_type: e.target.value })} placeholder="Packaging Type (Treat Bag, Jar, etc.)" className="px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light" />
-                  <input type="text" value={newPackaging.size} onChange={(e) => setNewPackaging({ ...newPackaging, size: e.target.value })} placeholder="Size (1oz, 2oz, etc.)" className="px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light" />
-                  <input type="number" value={newPackaging.case_pack_qty} onChange={(e) => setNewPackaging({ ...newPackaging, case_pack_qty: e.target.value })} placeholder="Case Pack Qty" className="px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light" />
+                  <input id="new_packaging_type" name="new_packaging_type" type="text" value={newPackaging.packaging_type} onChange={(e) => setNewPackaging({ ...newPackaging, packaging_type: e.target.value })} placeholder="Packaging Type (Treat Bag, Jar, etc.)" className="px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light" />
+                  <input id="new_packaging_size" name="new_packaging_size" type="text" value={newPackaging.size} onChange={(e) => setNewPackaging({ ...newPackaging, size: e.target.value })} placeholder="Size (1oz, 2oz, etc.)" className="px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light" />
+                  <input id="new_packaging_qty" name="new_packaging_qty" type="number" value={newPackaging.case_pack_qty} onChange={(e) => setNewPackaging({ ...newPackaging, case_pack_qty: e.target.value })} placeholder="Case Pack Qty" className="px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light" />
                 </div>
                 <select value={newPackaging.label_orientation} onChange={(e) => setNewPackaging({ ...newPackaging, label_orientation: e.target.value })} className="w-full px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light">
                   <option value="">Select label orientation</option>
@@ -431,8 +441,8 @@ const CustomerRegistration: React.FC = () => {
               </div>
               <div className="p-6 space-y-4">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <input type="text" value={newIngredient.ingredient_name} onChange={(e) => setNewIngredient({ ...newIngredient, ingredient_name: e.target.value })} placeholder="Ingredient Name (Peanut Butter, Sugar, etc.)" className="px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light" />
-                  <input type="text" value={newIngredient.vendor_name} onChange={(e) => setNewIngredient({ ...newIngredient, vendor_name: e.target.value })} placeholder="Vendor Name" className="px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light" />
+                  <input id="new_ingredient_name" name="new_ingredient_name" type="text" value={newIngredient.ingredient_name} onChange={(e) => setNewIngredient({ ...newIngredient, ingredient_name: e.target.value })} placeholder="Ingredient Name (Peanut Butter, Sugar, etc.)" className="px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light" />
+                  <input id="new_ingredient_vendor" name="new_ingredient_vendor" type="text" value={newIngredient.vendor_name} onChange={(e) => setNewIngredient({ ...newIngredient, vendor_name: e.target.value })} placeholder="Vendor Name" className="px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light" />
                 </div>
                 <label className="flex items-center gap-2">
                   <input type="checkbox" checked={newIngredient.provided_by_customer} onChange={(e) => setNewIngredient({ ...newIngredient, provided_by_customer: e.target.checked })} className="h-4 w-4" />

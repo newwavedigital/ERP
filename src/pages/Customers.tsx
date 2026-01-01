@@ -2,10 +2,416 @@ import React, { useEffect, useRef, useState } from 'react'
 import { Plus, Search, Filter, Users, User, Mail, Phone, Globe, BadgeCheck, Eye, Edit, Trash2, Building2, MapPin, FileText, CheckCircle2 } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 
+// Tab Components
+const ProductsTab: React.FC<{ onboardingId: string | null }> = ({ onboardingId }) => {
+  const [newProduct, setNewProduct] = useState({ product_name: '', formula_source: 'existing', specifications: '', trial_date: '' })
+
+  return (
+    <div className="space-y-6">
+      <div className="bg-white rounded-xl p-6 border border-neutral-soft/20">
+        <h3 className="text-lg font-semibold text-neutral-dark mb-4">Products & Specifications</h3>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+          <div>
+            <label className="block text-sm font-medium text-neutral-dark mb-2">Product Name</label>
+            <input
+              type="text"
+              value={newProduct.product_name}
+              onChange={(e) => setNewProduct({ ...newProduct, product_name: e.target.value })}
+              className="w-full px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light"
+              placeholder="Enter product name"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-neutral-dark mb-2">Formula Source</label>
+            <select
+              value={newProduct.formula_source}
+              onChange={(e) => setNewProduct({ ...newProduct, formula_source: e.target.value })}
+              className="w-full px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light"
+            >
+              <option value="existing">Existing Formula</option>
+              <option value="customer">Customer Formula</option>
+            </select>
+          </div>
+        </div>
+        <div className="mb-4">
+          <label className="block text-sm font-medium text-neutral-dark mb-2">Specifications</label>
+          <textarea
+            value={newProduct.specifications}
+            onChange={(e) => setNewProduct({ ...newProduct, specifications: e.target.value })}
+            className="w-full px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light"
+            rows={3}
+            placeholder="Product specifications"
+          />
+        </div>
+        <div className="mb-4">
+          <label className="block text-sm font-medium text-neutral-dark mb-2">Trial Date</label>
+          <input
+            type="date"
+            value={newProduct.trial_date}
+            onChange={(e) => setNewProduct({ ...newProduct, trial_date: e.target.value })}
+            className="w-full px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light"
+          />
+        </div>
+        <button
+          onClick={async () => {
+            if (!onboardingId || !newProduct.product_name) return
+            try {
+              await supabase.from('onboarding_products').insert({
+                onboarding_id: onboardingId,
+                ...newProduct
+              })
+              setNewProduct({ product_name: '', formula_source: 'existing', specifications: '', trial_date: '' })
+            } catch (e) {
+              console.error('Failed to add product:', e)
+            }
+          }}
+          className="px-4 py-2 bg-primary-medium text-white rounded-lg hover:bg-primary-dark transition-all"
+        >
+          Add Product
+        </button>
+      </div>
+    </div>
+  )
+}
+
+const PackagingTab: React.FC<{ onboardingId: string | null }> = ({ onboardingId }) => {
+  const [newPackaging, setNewPackaging] = useState({ packaging_type: '', size: '', case_pack_qty: '', label_orientation: '', artwork_required: false, provided_by_customer: false, notes: '' })
+
+  return (
+    <div className="space-y-6">
+      <div className="bg-white rounded-xl p-6 border border-neutral-soft/20">
+        <h3 className="text-lg font-semibold text-neutral-dark mb-4">Packaging Configuration</h3>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+          <div>
+            <label className="block text-sm font-medium text-neutral-dark mb-2">Packaging Type</label>
+            <input
+              type="text"
+              value={newPackaging.packaging_type}
+              onChange={(e) => setNewPackaging({ ...newPackaging, packaging_type: e.target.value })}
+              className="w-full px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light"
+              placeholder="Treat Bag, Jar, Box, etc."
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-neutral-dark mb-2">Size</label>
+            <input
+              type="text"
+              value={newPackaging.size}
+              onChange={(e) => setNewPackaging({ ...newPackaging, size: e.target.value })}
+              className="w-full px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light"
+              placeholder="1oz, 2oz, etc."
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-neutral-dark mb-2">Case Pack Qty</label>
+            <input
+              type="number"
+              value={newPackaging.case_pack_qty}
+              onChange={(e) => setNewPackaging({ ...newPackaging, case_pack_qty: e.target.value })}
+              className="w-full px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light"
+              placeholder="24"
+            />
+          </div>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+          <div>
+            <label className="block text-sm font-medium text-neutral-dark mb-2">Label Orientation</label>
+            <select
+              value={newPackaging.label_orientation}
+              onChange={(e) => setNewPackaging({ ...newPackaging, label_orientation: e.target.value })}
+              className="w-full px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light"
+            >
+              <option value="">Select orientation</option>
+              <option value="Right side up">Right side up</option>
+              <option value="Upside down">Upside down</option>
+            </select>
+          </div>
+          <div className="flex items-end">
+            <label className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={newPackaging.provided_by_customer}
+                onChange={(e) => setNewPackaging({ ...newPackaging, provided_by_customer: e.target.checked })}
+                className="h-4 w-4 text-primary-dark focus:ring-primary-light border-neutral-soft rounded"
+              />
+              <span className="text-sm font-medium text-neutral-dark">Packaging/Labels provided by customer</span>
+            </label>
+          </div>
+        </div>
+        <div className="flex items-center gap-4 mb-4">
+          <label className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              checked={newPackaging.artwork_required}
+              onChange={(e) => setNewPackaging({ ...newPackaging, artwork_required: e.target.checked })}
+              className="h-4 w-4 text-primary-dark focus:ring-primary-light border-neutral-soft rounded"
+            />
+            <span className="text-sm font-medium text-neutral-dark">Artwork Required</span>
+          </label>
+        </div>
+        <div className="mb-4">
+          <label className="block text-sm font-medium text-neutral-dark mb-2">Notes</label>
+          <textarea
+            value={newPackaging.notes}
+            onChange={(e) => setNewPackaging({ ...newPackaging, notes: e.target.value })}
+            className="w-full px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light"
+            rows={3}
+            placeholder="Other special packaging instructions"
+          />
+        </div>
+        <button
+          onClick={async () => {
+            if (!onboardingId || !newPackaging.packaging_type) return
+            try {
+              await supabase.from('onboarding_packaging').insert({
+                onboarding_id: onboardingId,
+                ...newPackaging,
+                case_pack_qty: parseInt(newPackaging.case_pack_qty) || null
+              })
+              setNewPackaging({ packaging_type: '', size: '', case_pack_qty: '', label_orientation: '', artwork_required: false, provided_by_customer: false, notes: '' })
+            } catch (e) {
+              console.error('Failed to add packaging:', e)
+            }
+          }}
+          className="px-4 py-2 bg-primary-medium text-white rounded-lg hover:bg-primary-dark transition-all"
+        >
+          Add Packaging
+        </button>
+      </div>
+    </div>
+  )
+}
+
+const IngredientsTab: React.FC<{ onboardingId: string | null }> = ({ onboardingId }) => {
+  const [newIngredient, setNewIngredient] = useState({ ingredient_name: '', vendor_name: '', provided_by_customer: false })
+
+  return (
+    <div className="space-y-6">
+      <div className="bg-white rounded-xl p-6 border border-neutral-soft/20">
+        <h3 className="text-lg font-semibold text-neutral-dark mb-4">Ingredients & Vendors</h3>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+          <div>
+            <label className="block text-sm font-medium text-neutral-dark mb-2">Ingredient Name</label>
+            <input
+              type="text"
+              value={newIngredient.ingredient_name}
+              onChange={(e) => setNewIngredient({ ...newIngredient, ingredient_name: e.target.value })}
+              className="w-full px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light"
+              placeholder="Peanut Butter, Sugar, etc."
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-neutral-dark mb-2">Vendor Name</label>
+            <input
+              type="text"
+              value={newIngredient.vendor_name}
+              onChange={(e) => setNewIngredient({ ...newIngredient, vendor_name: e.target.value })}
+              className="w-full px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light"
+              placeholder="Vendor company name"
+            />
+          </div>
+        </div>
+        <div className="flex items-center gap-4 mb-4">
+          <label className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              checked={newIngredient.provided_by_customer}
+              onChange={(e) => setNewIngredient({ ...newIngredient, provided_by_customer: e.target.checked })}
+              className="h-4 w-4 text-primary-dark focus:ring-primary-light border-neutral-soft rounded"
+            />
+            <span className="text-sm font-medium text-neutral-dark">Provided by Customer</span>
+          </label>
+        </div>
+        <button
+          onClick={async () => {
+            if (!onboardingId || !newIngredient.ingredient_name) return
+            try {
+              await supabase.from('onboarding_ingredients').insert({
+                onboarding_id: onboardingId,
+                ...newIngredient
+              })
+              setNewIngredient({ ingredient_name: '', vendor_name: '', provided_by_customer: false })
+            } catch (e) {
+              console.error('Failed to add ingredient:', e)
+            }
+          }}
+          className="px-4 py-2 bg-primary-medium text-white rounded-lg hover:bg-primary-dark transition-all"
+        >
+          Add Ingredient
+        </button>
+      </div>
+    </div>
+  )
+}
+
+const AllergensTab: React.FC<{ onboardingId: string | null }> = ({ onboardingId }) => {
+  const allergens = ['Eggs', 'Milk', 'Soy', 'Sesame', 'Seafood', 'Halal', 'Kosher', 'Tree Nuts', 'Coconut', 'Almonds', 'Pecans', 'Cashews', 'Walnuts', 'Mango', 'Hazelnut', 'Brazil Nut']
+  const [selectedAllergens, setSelectedAllergens] = useState<string[]>([])
+
+  return (
+    <div className="space-y-6">
+      <div className="bg-white rounded-xl p-6 border border-neutral-soft/20">
+        <h3 className="text-lg font-semibold text-neutral-dark mb-4">Allergens Matrix</h3>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          {allergens.map((allergen) => (
+            <label key={allergen} className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={selectedAllergens.includes(allergen)}
+                onChange={(e) => {
+                  if (e.target.checked) {
+                    setSelectedAllergens([...selectedAllergens, allergen])
+                  } else {
+                    setSelectedAllergens(selectedAllergens.filter(a => a !== allergen))
+                  }
+                }}
+                className="h-4 w-4 text-primary-dark focus:ring-primary-light border-neutral-soft rounded"
+              />
+              <span className="text-sm font-medium text-neutral-dark">{allergen}</span>
+            </label>
+          ))}
+        </div>
+        <button
+          onClick={async () => {
+            if (!onboardingId) return
+            try {
+              const allergenRecords = selectedAllergens.map(allergen => ({
+                onboarding_id: onboardingId,
+                allergen,
+                is_present: true
+              }))
+              await supabase.from('onboarding_allergens').insert(allergenRecords)
+              setSelectedAllergens([])
+            } catch (e) {
+              console.error('Failed to save allergens:', e)
+            }
+          }}
+          className="px-4 py-2 bg-primary-medium text-white rounded-lg hover:bg-primary-dark transition-all mt-4"
+        >
+          Save Allergens
+        </button>
+      </div>
+    </div>
+  )
+}
+
+const LabQATab: React.FC<{ onboardingId: string | null }> = ({ onboardingId }) => {
+  const tests = ['Crude Analysis', 'Salmonella', 'Mold', 'Free Fatty Acids', 'PH', 'Coliform', 'Peroxide Value', 'Yeast']
+  const [selectedTests, setSelectedTests] = useState<string[]>([])
+
+  return (
+    <div className="space-y-6">
+      <div className="bg-white rounded-xl p-6 border border-neutral-soft/20">
+        <h3 className="text-lg font-semibold text-neutral-dark mb-4">Lab / QA Requirements</h3>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          {tests.map((test) => (
+            <label key={test} className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={selectedTests.includes(test)}
+                onChange={(e) => {
+                  if (e.target.checked) {
+                    setSelectedTests([...selectedTests, test])
+                  } else {
+                    setSelectedTests(selectedTests.filter(t => t !== test))
+                  }
+                }}
+                className="h-4 w-4 text-primary-dark focus:ring-primary-light border-neutral-soft rounded"
+              />
+              <span className="text-sm font-medium text-neutral-dark">{test}</span>
+            </label>
+          ))}
+        </div>
+        <button
+          onClick={async () => {
+            if (!onboardingId) return
+            try {
+              const testRecords = selectedTests.map(test => ({
+                onboarding_id: onboardingId,
+                test_name: test,
+                required: true
+              }))
+              await supabase.from('onboarding_lab_requirements').insert(testRecords)
+              setSelectedTests([])
+            } catch (e) {
+              console.error('Failed to save lab requirements:', e)
+            }
+          }}
+          className="px-4 py-2 bg-primary-medium text-white rounded-lg hover:bg-primary-dark transition-all mt-4"
+        >
+          Save Requirements
+        </button>
+      </div>
+    </div>
+  )
+}
+
+const DocumentsTab: React.FC<{ onboardingId: string | null }> = ({ onboardingId }) => {
+  const [docType, setDocType] = useState<'specs' | 'artwork' | 'label' | 'tds'>('specs')
+  const [fileUrl, setFileUrl] = useState('')
+
+  return (
+    <div className="space-y-6">
+      <div className="bg-white rounded-xl p-6 border border-neutral-soft/20">
+        <h3 className="text-lg font-semibold text-neutral-dark mb-4">Documents</h3>
+        <div className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-neutral-dark mb-2">Document Type</label>
+            <select
+              value={docType}
+              onChange={(e) => setDocType(e.target.value as any)}
+              className="w-full px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light"
+            >
+              <option value="specs">Specs</option>
+              <option value="artwork">Artwork</option>
+              <option value="label">Label</option>
+              <option value="tds">TDS</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-neutral-dark mb-2">File URL</label>
+            <input
+              type="url"
+              value={fileUrl}
+              onChange={(e) => setFileUrl(e.target.value)}
+              className="w-full px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light"
+              placeholder="https://..."
+            />
+            <p className="text-xs text-neutral-medium mt-2">(For now: paste the Supabase Storage public URL or any hosted file URL.)</p>
+          </div>
+          <button
+            disabled={!onboardingId || !fileUrl.trim()}
+            onClick={async () => {
+              if (!onboardingId || !fileUrl.trim()) return
+              try {
+                await supabase.from('onboarding_documents').insert({
+                  onboarding_id: onboardingId,
+                  document_type: docType,
+                  file_url: fileUrl.trim(),
+                })
+                setFileUrl('')
+              } catch (e) {
+                console.error('Failed to add document:', e)
+              }
+            }}
+            className="px-4 py-2 bg-primary-medium text-white rounded-lg hover:bg-primary-dark transition-all disabled:opacity-60"
+          >
+            Add Document
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 const Customers: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState<string>('')
   const [isAddOpen, setIsAddOpen] = useState<boolean>(false)
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false)
+  const [customerId, setCustomerId] = useState<string | null>(null)
+  const [onboardingId, setOnboardingId] = useState<string | null>(null)
+  const [onboardingType, setOnboardingType] = useState<'DILLYS' | 'BNUTTY'>('DILLYS')
+  const [onboardingNotes, setOnboardingNotes] = useState<string>('')
   const [isViewOpen, setIsViewOpen] = useState<boolean>(false)
   const [viewData, setViewData] = useState<Customer | null>(null)
   const [isDeleteOpen, setIsDeleteOpen] = useState<boolean>(false)
@@ -549,44 +955,45 @@ const Customers: React.FC = () => {
             <div className="relative z-10 w-full max-w-5xl h-[80vh] bg-white rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden flex flex-col">
               <div className="flex items-center justify-between px-8 py-6 bg-gradient-to-r from-neutral-light to-neutral-light/80 border-b border-neutral-soft/50">
                 <div>
-                  <h2 className="text-2xl font-semibold text-neutral-dark">Add New Customer</h2>
-                  <p className="text-sm text-neutral-medium mt-1">Create a new customer profile</p>
+                  <h2 className="text-2xl font-semibold text-neutral-dark">New Customer Onboarding Form</h2>
+                  <p className="text-sm text-neutral-medium mt-1">Customer information and manufacturing onboarding (single form)</p>
                 </div>
-                <button onClick={() => !isSubmitting && setIsAddOpen(false)} className="p-3 text-neutral-medium hover:text-neutral-dark hover:bg-white/60 rounded-xl transition-all duration-200 hover:shadow-sm">
+                <button onClick={() => {
+                  setIsAddOpen(false)
+                  setCustomerId(null)
+                  setOnboardingId(null)
+                  setOnboardingNotes('')
+                  setAddForm({ company_name: '', contact_person: '', email: '', phone: '', website: '', address: '', comments: '', status: 'Active' })
+                }} className="p-3 text-neutral-medium hover:text-neutral-dark hover:bg-white/60 rounded-xl transition-all duration-200 hover:shadow-sm">
                   ✕
                 </button>
               </div>
               <div className="flex-1 overflow-y-auto">
-                <form
-                  onSubmit={async (e) => {
-                    e.preventDefault()
-                    if (isSubmitting) return
-                    setIsSubmitting(true)
-                    try {
-                      const payload: any = {
-                        company_name: addForm.company_name,
-                        contact_person: addForm.contact_person || null,
-                        email: addForm.email || null,
-                        phone: addForm.phone || null,
-                        website: addForm.website || null,
-                        address: addForm.address || null,
-                        comments: addForm.comments || null,
-                        status: addForm.status || 'Active',
-                      }
-                      const { error } = await supabase.from('customers').insert(payload)
-                      if (error) throw error
-                      await refresh()
-                      setIsAddOpen(false)
-                      setToast({ show: true, message: 'Customer added successfully' })
-                      setAddForm({ company_name: '', contact_person: '', email: '', phone: '', website: '', address: '', comments: '', status: 'Active' })
-                    } catch (e: any) {
-                      setError(e?.message || 'Failed to save customer')
-                    } finally {
-                      setIsSubmitting(false)
-                    }
-                  }}
-                  className="p-8 space-y-6"
-                >
+                <div className="p-8 space-y-8">
+                  <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+                    <div className="inline-flex items-center gap-3">
+                      <span className="text-sm font-semibold text-neutral-dark">Onboarding Type</span>
+                      <select
+                        value={onboardingType}
+                        onChange={(e) => setOnboardingType(e.target.value as 'DILLYS' | 'BNUTTY')}
+                        className="px-3 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light bg-white text-neutral-dark"
+                      >
+                        <option value="DILLYS">Dilly's</option>
+                        <option value="BNUTTY">BNutty</option>
+                      </select>
+                      <span className="text-xs text-neutral-medium">(BNutty enables Allergens section)</span>
+                    </div>
+                    <div className="text-xs text-neutral-medium">
+                      {customerId ? `Customer: ${addForm.company_name}` : 'Customer not yet saved'}
+                    </div>
+                  </div>
+
+                  {/* Customer Information */}
+                  <div className="bg-white rounded-2xl shadow-sm border border-neutral-soft/20 overflow-hidden">
+                    <div className="px-6 py-4 bg-gradient-to-r from-primary-dark/5 via-primary-medium/5 to-primary-light/5 border-b border-neutral-soft/30">
+                      <h3 className="text-base font-semibold text-neutral-dark">Customer Information</h3>
+                    </div>
+                    <div className="p-6 space-y-6">
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     <div className="space-y-2">
                       <label className="flex items-center text-sm font-semibold text-neutral-dark">
@@ -701,17 +1108,144 @@ const Customers: React.FC = () => {
                       className="w-full min-h-[80px] px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium resize-none hover:border-neutral-medium"
                     />
                   </div>
-
-                  <div className="flex items-center justify-end gap-3 pt-2">
-                    <button
-                      type="submit"
-                      className="px-6 py-3 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold shadow-md disabled:opacity-60"
-                      disabled={isSubmitting}
-                    >
-                      {isSubmitting ? 'Adding...' : 'Add Customer'}
-                    </button>
+                    </div>
                   </div>
-                </form>
+
+                  {/* Onboarding Sections (same modal, same page) */}
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    <ProductsTab onboardingId={onboardingId} />
+                    <PackagingTab onboardingId={onboardingId} />
+                    <IngredientsTab onboardingId={onboardingId} />
+                    {onboardingType === 'BNUTTY' ? <AllergensTab onboardingId={onboardingId} /> : <div className="bg-white rounded-xl p-6 border border-neutral-soft/20"><h3 className="text-lg font-semibold text-neutral-dark mb-2">Allergens</h3><p className="text-sm text-neutral-medium">Available for BNutty onboarding type only.</p></div>}
+                    <LabQATab onboardingId={onboardingId} />
+                    <DocumentsTab onboardingId={onboardingId} />
+                  </div>
+
+                  <div className="bg-white rounded-2xl shadow-sm border border-neutral-soft/20 overflow-hidden">
+                    <div className="px-6 py-4 bg-gradient-to-r from-primary-dark/5 via-primary-medium/5 to-primary-light/5 border-b border-neutral-soft/30">
+                      <h3 className="text-base font-semibold text-neutral-dark">Notes / Special Instructions</h3>
+                    </div>
+                    <div className="p-6">
+                      <textarea
+                        value={onboardingNotes}
+                        onChange={(e) => setOnboardingNotes(e.target.value)}
+                        className="w-full min-h-[100px] px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium resize-none hover:border-neutral-medium"
+                        placeholder="Any special instructions for production, labeling, packaging, etc."
+                      />
+                    </div>
+                  </div>
+
+                  {/* Footer Actions (Save Draft / Submit) */}
+                  <div className="flex items-center justify-between pt-2">
+                    <div className="text-xs text-neutral-medium">
+                      {onboardingId ? `Onboarding ID: ${onboardingId}` : 'Click Save Draft to create onboarding and enable saving rows.'}
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <button
+                        onClick={async () => {
+                          if (isSubmitting) return
+                          setIsSubmitting(true)
+                          try {
+                            let ensuredCustomerId = customerId
+                            if (!ensuredCustomerId) {
+                              const payload: any = {
+                                company_name: addForm.company_name,
+                                contact_person: addForm.contact_person || null,
+                                email: addForm.email || null,
+                                phone: addForm.phone || null,
+                                website: addForm.website || null,
+                                address: addForm.address || null,
+                                comments: addForm.comments || null,
+                                status: addForm.status || 'Active',
+                              }
+                              const { data, error } = await supabase.from('customers').insert(payload).select('id').single()
+                              if (error) throw error
+                              ensuredCustomerId = data.id
+                              setCustomerId(ensuredCustomerId)
+                            }
+                            let ensuredOnboardingId = onboardingId
+                            if (!ensuredOnboardingId) {
+                              const { data: onboardingData, error: onboardingError } = await supabase
+                                .from('customer_onboardings')
+                                .insert({ customer_id: ensuredCustomerId, onboarding_type: onboardingType, status: 'Draft', notes: onboardingNotes || null })
+                                .select('id')
+                                .single()
+                              if (onboardingError) throw onboardingError
+                              ensuredOnboardingId = onboardingData.id
+                              setOnboardingId(ensuredOnboardingId)
+                            } else {
+                              const { error: updErr } = await supabase.from('customer_onboardings').update({ status: 'Draft', onboarding_type: onboardingType, notes: onboardingNotes || null }).eq('id', ensuredOnboardingId)
+                              if (updErr) throw updErr
+                            }
+                            setToast({ show: true, message: 'Draft saved successfully' })
+                          } catch (e: any) {
+                            setError(e?.message || 'Failed to save draft')
+                          } finally {
+                            setIsSubmitting(false)
+                          }
+                        }}
+                        className="px-4 py-2 rounded-lg border border-neutral-soft text-neutral-dark hover:bg-neutral-light/60 transition-all disabled:opacity-60"
+                        disabled={isSubmitting}
+                      >
+                        Save Draft
+                      </button>
+                      <button
+                        onClick={async () => {
+                          if (isSubmitting) return
+                          setIsSubmitting(true)
+                          try {
+                            let ensuredCustomerId = customerId
+                            if (!ensuredCustomerId) {
+                              const payload: any = {
+                                company_name: addForm.company_name,
+                                contact_person: addForm.contact_person || null,
+                                email: addForm.email || null,
+                                phone: addForm.phone || null,
+                                website: addForm.website || null,
+                                address: addForm.address || null,
+                                comments: addForm.comments || null,
+                                status: addForm.status || 'Active',
+                              }
+                              const { data, error } = await supabase.from('customers').insert(payload).select('id').single()
+                              if (error) throw error
+                              ensuredCustomerId = data.id
+                              setCustomerId(ensuredCustomerId)
+                            }
+                            let ensuredOnboardingId = onboardingId
+                            if (!ensuredOnboardingId) {
+                              const { data: onboardingData, error: onboardingError } = await supabase
+                                .from('customer_onboardings')
+                                .insert({ customer_id: ensuredCustomerId, onboarding_type: onboardingType, status: 'Submitted', notes: onboardingNotes || null })
+                                .select('id')
+                                .single()
+                              if (onboardingError) throw onboardingError
+                              ensuredOnboardingId = onboardingData.id
+                              setOnboardingId(ensuredOnboardingId)
+                            } else {
+                              const { error: updErr } = await supabase.from('customer_onboardings').update({ status: 'Submitted', onboarding_type: onboardingType, notes: onboardingNotes || null }).eq('id', ensuredOnboardingId)
+                              if (updErr) throw updErr
+                            }
+                            await refresh()
+                            setToast({ show: true, message: 'Onboarding submitted successfully' })
+                            setIsAddOpen(false)
+                            setCustomerId(null)
+                            setOnboardingId(null)
+                            setOnboardingNotes('')
+                            setAddForm({ company_name: '', contact_person: '', email: '', phone: '', website: '', address: '', comments: '', status: 'Active' })
+                          } catch (e: any) {
+                            setError(e?.message || 'Failed to submit onboarding')
+                          } finally {
+                            setIsSubmitting(false)
+                          }
+                        }}
+                        className="px-6 py-2 rounded-lg bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold shadow-md disabled:opacity-60"
+                        disabled={isSubmitting}
+                      >
+                        Submit Form
+                      </button>
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
           </div>

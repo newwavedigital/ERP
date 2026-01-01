@@ -22,6 +22,10 @@ import WaitingApproval from './pages/WaitingApproval.tsx'
 import Rejected from './pages/Rejected.tsx'
 import UserApprovals from './pages/management/UserApprovals.tsx'
 import ToolPermissions from './pages/ToolPermissions.tsx'
+import CustomerRegistration from './pages/CustomerRegistration.tsx'
+import CustomerRegistrationDillys from './pages/CustomerRegistrationDillys.tsx'
+import CustomerRegistrationBNutty from './pages/CustomerRegistrationBNutty.tsx'
+import SupplierRegistration from './pages/SupplierRegistration.tsx'
 
 const App: React.FC = () => {
   const router = createHashRouter([
@@ -40,6 +44,10 @@ const App: React.FC = () => {
     { path: 'login', element: <Login /> },
     { path: 'waiting-approval', element: <WaitingApproval /> },
     { path: 'rejected', element: <Rejected /> },
+    { path: 'customers/registration', element: <CustomerRegistration /> },
+    { path: 'customers/registration/dillys', element: <CustomerRegistrationDillys /> },
+    { path: 'customers/registration/bnutty', element: <CustomerRegistrationBNutty /> },
+    { path: 'suppliers/registration', element: <SupplierRegistration /> },
     // Admin/Dashboard routes (with layout)
     {
       path: 'admin',

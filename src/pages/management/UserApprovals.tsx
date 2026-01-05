@@ -15,7 +15,11 @@ interface UserProfile {
   updated_at?: string
 }
 
-const UserApprovals: React.FC = () => {
+type UserApprovalsProps = {
+  embedded?: boolean
+}
+
+const UserApprovals: React.FC<UserApprovalsProps> = ({ embedded }) => {
   const [users, setUsers] = useState<UserProfile[]>([])
   const [loading, setLoading] = useState(true)
   const [searchTerm, setSearchTerm] = useState('')
@@ -116,19 +120,20 @@ const UserApprovals: React.FC = () => {
   }
 
   return (
-    <div className="p-6 max-w-7xl mx-auto">
+    <div className={embedded ? '' : 'p-6 max-w-7xl mx-auto'}>
       {/* Header */}
-      <div className="mb-8">
-        <div className="flex items-center gap-3 mb-2">
-          <div className="w-10 h-10 bg-primary-medium rounded-lg flex items-center justify-center">
-            <Users className="w-6 h-6 text-white" />
-          </div>
-          <div>
-            <h1 className="text-2xl font-bold text-neutral-dark">User Approvals</h1>
-            <p className="text-neutral-medium">Manage user registration approvals for ERP System access</p>
+      {!embedded && (
+        <div className="mb-8">
+          <div className="flex items-center gap-3 mb-2">
+            <div className="w-10 h-10 bg-primary-medium rounded-lg flex items-center justify-center">
+              <Users className="w-6 h-6 text-white" />
+            </div>
+            <div>
+              <h1 className="text-2xl font-bold text-neutral-dark">User Approvals</h1>
+            </div>
           </div>
         </div>
-      </div>
+      )}
 
       {/* Stats Cards */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">

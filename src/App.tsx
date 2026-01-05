@@ -1,5 +1,5 @@
 import React from 'react'
-import { createHashRouter, RouterProvider } from 'react-router-dom'
+import { createHashRouter, RouterProvider, Navigate } from 'react-router-dom'
 import { AuthProvider } from './contexts/AuthContext.tsx'
 import Layout from './components/Layout.tsx'
 import ApprovalGuard from './components/ApprovalGuard.tsx'
@@ -20,12 +20,12 @@ import LandingPage from './pages/LandingPage.tsx'
 import AuthCallback from './pages/AuthCallback.tsx'
 import WaitingApproval from './pages/WaitingApproval.tsx'
 import Rejected from './pages/Rejected.tsx'
-import UserApprovals from './pages/management/UserApprovals.tsx'
-import ToolPermissions from './pages/ToolPermissions.tsx'
+import AccountManagement from './pages/management/AccountManagement.tsx'
 import CustomerRegistration from './pages/CustomerRegistration.tsx'
 import CustomerRegistrationDillys from './pages/CustomerRegistrationDillys.tsx'
 import CustomerRegistrationBNutty from './pages/CustomerRegistrationBNutty.tsx'
 import SupplierRegistration from './pages/SupplierRegistration.tsx'
+import SupplyChainProcurement from './pages/SupplyChainProcurement.tsx'
 
 const App: React.FC = () => {
   const router = createHashRouter([
@@ -48,6 +48,8 @@ const App: React.FC = () => {
     { path: 'customers/registration/dillys', element: <CustomerRegistrationDillys /> },
     { path: 'customers/registration/bnutty', element: <CustomerRegistrationBNutty /> },
     { path: 'suppliers/registration', element: <SupplierRegistration /> },
+    // Backwards-compatible aliases (some links navigate without /admin prefix)
+    { path: 'production-schedule', element: <Navigate to="/admin/production-schedule" replace /> },
     // Admin/Dashboard routes (with layout)
     {
       path: 'admin',
@@ -70,8 +72,12 @@ const App: React.FC = () => {
         { path: 'suppliers', element: <Suppliers /> },
         { path: 'team-chat', element: <TeamChat /> },
         { path: 'ai-insights', element: <AIInsights /> },
-        { path: 'tool-permissions', element: <ToolPermissions /> },
-        { path: 'management/user-approvals', element: <UserApprovals /> },
+        { path: 'supply-chain-procurement', element: <SupplyChainProcurement /> },
+        { path: 'management', element: <Navigate to="/admin/management/users" replace /> },
+        { path: 'management/users', element: <AccountManagement /> },
+        { path: 'management/permissions', element: <AccountManagement /> },
+        { path: 'tool-permissions', element: <Navigate to="/admin/management/permissions" replace /> },
+        { path: 'management/user-approvals', element: <Navigate to="/admin/management/users" replace /> },
       ],
     },
   ], {

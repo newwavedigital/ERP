@@ -11,32 +11,18 @@ const ContentLibrary: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-neutral-light/30 to-neutral-soft/20">
-      <div className="p-8">
+      <div className="p-2 sm:p-4 lg:p-6">
         {/* Header */}
-        <div className="bg-white rounded-2xl shadow-md border border-neutral-soft/20 p-8 mb-8">
+        <div className="bg-white rounded-xl shadow-md border border-neutral-soft/20 p-3 sm:p-4 lg:p-6 mb-3 lg:mb-4">
           <div className="flex items-start">
             <div>
-              <h1 className="text-3xl font-bold text-neutral-dark mb-2">Content Library</h1>
-              <p className="text-neutral-medium text-lg">Manage your documents, images, and media files</p>
-            </div>
-          </div>
-        </div>
-
-        {/* Stats */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
-          <div className="bg-white rounded-2xl shadow-md border border-neutral-soft/20 p-6">
-            <div className="flex items-center">
-              <Library className="h-8 w-8 text-primary-medium" />
-              <div className="ml-4">
-                <p className="text-sm font-medium text-neutral-medium">Total Files</p>
-                <p className="text-2xl font-bold text-neutral-dark">6</p>
-              </div>
+              <h1 className="text-xl sm:text-2xl font-bold text-neutral-dark mb-1">Content Library</h1>
             </div>
           </div>
         </div>
 
         {/* Upload Card */}
-        <div className="bg-white rounded-2xl shadow-md border border-neutral-soft/20 p-8 mb-8">
+        <div className="bg-white rounded-xl shadow-md border border-neutral-soft/20 p-3 sm:p-4 lg:p-6 mb-3 lg:mb-4">
           <div className="mb-6">
             <h2 className="text-xl font-semibold text-neutral-dark">Upload File</h2>
             <p className="text-sm text-neutral-medium mt-1">PDF, JPEG, PNG (Max size: 50MB)</p>

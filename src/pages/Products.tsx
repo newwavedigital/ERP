@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react'
-import { Plus, Search, Filter, X, Package, Calendar, FileText, CheckCircle2, FlaskConical, List, Grid3X3, User, Box, Scale, Upload } from 'lucide-react'
+import { Plus, Search, Filter, X, Package, Calendar, FileText, CheckCircle2, FlaskConical, List, Grid3X3, User, Box, Scale, Upload, Trash2 } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 import Formulas from './Formulas'
 
@@ -99,6 +99,7 @@ const Products: React.FC = () => {
     name: '',
     customer: '',
     customerId: '' as string,
+    productSize: '',
     productType: '',
     packagingType: '',
     uom: '',
@@ -114,14 +115,19 @@ const Products: React.FC = () => {
   })
   type Customer = { id: string; name: string }
   const [customers, setCustomers] = useState<Customer[]>([])
-  const [productTypes, setProductTypes] = useState<string[]>([])
+  const baseProductTypes = ['Peanut Butter', 'Nut Butter', 'Spreadable', 'Pet Treat']
+  const [productTypes, setProductTypes] = useState<string[]>(baseProductTypes)
   const [packagingTypes, setPackagingTypes] = useState<string[]>(['Jars', 'Squeeze Packs', 'Sachets', 'Bottles', 'Boxes'])
-  const uoms = ['Grams (g)', 'Pieces', 'Bottles', 'Jars', 'Boxes']
+  const uoms = ['Grams (g)', 'Ounces (oz)', 'Pounds (lb)', 'Kilograms (kg)']
   const commonAllergens = ['Peanuts', 'Tree Nuts', 'Milk', 'Eggs', 'Soy', 'Wheat', 'Fish', 'Shellfish', 'Sesame']
 
   const [showAddProductType, setShowAddProductType] = useState(false)
   const [showAddPackagingType, setShowAddPackagingType] = useState(false)
+  const [showAddUom, setShowAddUom] = useState(false)
+  const [showAddCustomer, setShowAddCustomer] = useState(false)
   const [newValue, setNewValue] = useState('')
+  const [newCustomerName, setNewCustomerName] = useState('')
+  const [isCreatingCustomer, setIsCreatingCustomer] = useState(false)
 
   const [isCustomerOpen, setIsCustomerOpen] = useState(false)
   const [isProductTypeOpen, setIsProductTypeOpen] = useState(false)
@@ -161,14 +167,75 @@ const Products: React.FC = () => {
   const editFormulaRef = useRef<HTMLDivElement>(null)
   const [editSelectedFormula, setEditSelectedFormula] = useState<FormulaItem | null>(null)
 
+  // Handler functions for Add New modals
+  const handleAddCustomer = async () => {
+    if (!newCustomerName.trim() || !supabase) return
+    
+    setIsCreatingCustomer(true)
+    try {
+      const { data, error } = await supabase
+        .from('customers')
+        .insert({ company_name: newCustomerName.trim() })
+        .select('id, company_name')
+        .single()
+      
+      if (error) {
+        setToast({ show: true, message: 'Cannot create customer. Check permissions.' })
+        return
+      }
+      
+      // Add to customers list and select it
+      const newCustomer = { id: data.id, name: data.company_name }
+      setCustomers(prev => [...prev, newCustomer])
+      setProductForm(prev => ({ ...prev, customer: newCustomer.name, customerId: newCustomer.id }))
+      
+      // Close modal and reset
+      setShowAddCustomer(false)
+      setNewCustomerName('')
+      setToast({ show: true, message: 'Customer added successfully' })
+    } catch (err) {
+      setToast({ show: true, message: 'Cannot create customer. Check permissions.' })
+    } finally {
+      setIsCreatingCustomer(false)
+    }
+  }
+
+  const handleAddUom = () => {
+    if (!newValue.trim()) return
+    
+    // Select the new UOM
+    setProductForm(prev => ({ ...prev, uom: newValue.trim() }))
+    
+    // Close modal and reset
+    setShowAddUom(false)
+    setNewValue('')
+    setToast({ show: true, message: 'UOM added successfully' })
+  }
+
+  const handleAddProductType = () => {
+    const v = newValue.trim()
+    if (!v) return
+
+    setProductTypes((prev) => {
+      const base = baseProductTypes
+      const custom = prev.filter((t) => !base.includes(t))
+      const nextCustom = Array.from(new Set([...custom, v]))
+      return [...base, ...nextCustom]
+    })
+
+    setProductForm((prev) => ({ ...prev, productType: v }))
+    setShowAddProductType(false)
+    setNewValue('')
+    setToast({ show: true, message: 'Product type added successfully' })
+  }
+
   // Silence TS noUnusedLocals for states/refs kept for future features (add/edit flows)
   useEffect(() => {
     void setImageModalOpen; void imageModalUrls; void setImageModalUrls; void setImageModalDescription; void imageModalFiles; void setImageModalFiles
     void setProductForm
-    void productTypes; void packagingTypes; void setPackagingTypes; void uoms
+    void productTypes; void packagingTypes; void setPackagingTypes
     void showAddProductType; void setShowAddProductType
     void showAddPackagingType; void setShowAddPackagingType
-    void newValue; void setNewValue
     void isCustomerOpen; void isProductTypeOpen; void isPackagingTypeOpen; void isUomOpen
     void isSubmitting; void setIsSubmitting
     void customersLoading; void customersError
@@ -457,37 +524,6 @@ const Products: React.FC = () => {
     loadCustomers()
   }, [])
 
-  // Load Product Types from inventory_materials (distinct product_name) and subscribe to realtime updates
-  useEffect(() => {
-    const loadProductTypes = async () => {
-      if (!supabase) return
-      const { data, error } = await supabase
-        .from('inventory_materials')
-        .select('product_name')
-      if (error) {
-        console.error('Failed to fetch product types from inventory_materials', error)
-        return
-      }
-      const names = (data ?? [])
-        .map((r: any) => String(r.product_name ?? '').trim())
-        .filter((n: string) => n.length > 0)
-      const uniqueSorted = Array.from(new Set(names)).sort((a, b) => a.localeCompare(b))
-      setProductTypes(uniqueSorted)
-    }
-    loadProductTypes()
-
-    const channel = supabase
-      ?.channel('realtime-inventory-materials-types')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'inventory_materials' }, () => {
-        loadProductTypes()
-      })
-      .subscribe()
-
-    return () => {
-      if (channel) supabase?.removeChannel(channel)
-    }
-  }, [])
-
   const filteredProducts = products.filter(product =>
     product.product_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
     product.id.toLowerCase().includes(searchTerm.toLowerCase())
@@ -501,7 +537,7 @@ const Products: React.FC = () => {
           <div className="flex justify-between items-center">
             <div>
               <h1 className="text-3xl font-bold text-neutral-dark mb-2">{activeTab === 'products' ? 'Products' : 'Formula Manager'}</h1>
-              <p className="text-neutral-medium text-lg">{activeTab === 'products' ? 'Manage your product catalog with ease' : 'Manage product recipes and bills of materials'}</p>
+
             </div>
             {activeTab === 'products' ? (
               <button 
@@ -835,68 +871,50 @@ const Products: React.FC = () => {
                               {c.name}
                             </button>
                           ))}
+                          <div className="my-1 border-t border-neutral-soft"></div>
+                          <button
+                            type="button"
+                            className="w-full text-left px-4 py-2 text-primary-medium hover:text-primary-dark hover:bg-neutral-light"
+                            onClick={() => { setIsCustomerOpen(false); setShowAddCustomer(true); }}
+                          >
+                            + Add New Customer
+                          </button>
                         </div>
                       )}
                     </div>
                   </div>
                 </div>
 
-                {/* Row 2: Cost and Case Details */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  <div className="space-y-2">
-                    <label className="flex items-center text-sm font-medium text-neutral-dark">
-                      Cost
-                    </label>
-                    <input
-                      type="number"
-                      step="0.01"
-                      placeholder="e.g., 100.00"
-                      className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all duration-200 bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium"
-                      value={productForm.cost}
-                      onChange={(e) => setProductForm({ ...productForm, cost: e.target.value })}
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <label className="flex items-center text-sm font-medium text-neutral-dark">Case Qty</label>
-                    <input
-                      type="number"
-                      step="1"
-                      placeholder="e.g., 12"
-                      className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all duration-200 bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium"
-                      value={productForm.caseQty}
-                      onChange={(e) => setProductForm({ ...productForm, caseQty: e.target.value })}
-                    />
-                  </div>
-                </div>
-
-                {/* Row 3: Case Dimension */}
-                <div className="space-y-2">
-                  <label className="flex items-center text-sm font-medium text-neutral-dark">Case Dimension</label>
+                {/* Row 2: Product Size */}
+                <div className="space-y-3">
+                  <label className="flex items-center text-sm font-semibold text-neutral-dark">
+                    <Box className="h-5 w-5 mr-3 text-primary-medium" />
+                    Product Size
+                  </label>
                   <input
                     type="text"
-                    placeholder="e.g., 40 x 30 x 25 cm"
-                    className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all duration-200 bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium"
-                    value={productForm.caseDimension}
-                    onChange={(e) => setProductForm({ ...productForm, caseDimension: e.target.value })}
+                    placeholder="e.g., 8oz, 12oz, 16oz"
+                    className="w-full px-4 py-4 border border-neutral-soft rounded-xl focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all duration-200 bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium shadow-sm hover:shadow-md"
+                    value={productForm.productSize}
+                    onChange={(e) => setProductForm({ ...productForm, productSize: e.target.value })}
                   />
                 </div>
 
-                {/* Row 4: Product Type and Packaging Type */}
+                {/* Row 3: Product Type and Unit of Measure */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   <div className="space-y-2">
                     <label className="flex items-center text-sm font-medium text-neutral-dark">
-                      <Box className="h-4 w-4 mr-2 text-primary-medium" />
+                      <Package className="h-4 w-4 mr-2 text-primary-medium" />
                       Product Type
                     </label>
                     <div className="relative" ref={productTypeRef}>
                       <button
                         type="button"
-                        onClick={() => { if (!productForm.customer) return; setIsProductTypeOpen((v) => !v) }}
-                        disabled={!productForm.customer}
-                        className={`w-full flex items-center justify-between px-4 py-3 border border-neutral-soft rounded-lg text-left bg-white transition-all ${!productForm.customer ? 'opacity-60 cursor-not-allowed' : 'hover:border-neutral-medium focus:ring-2 focus:ring-primary-light focus:border-primary-light'}`}
+                        onClick={() => setIsProductTypeOpen((v) => !v)}
+                        className="w-full flex items-center justify-between px-4 py-3 border border-neutral-soft rounded-lg text-left bg-white transition-all hover:border-neutral-medium focus:ring-2 focus:ring-primary-light focus:border-primary-light"
                       >
                         <span className={productForm.productType ? 'text-neutral-dark' : 'text-neutral-medium'}>
-                          {productForm.productType || 'Select Type'}
+                          {productForm.productType || 'Select Product Type'}
                         </span>
                         <span className="ml-2 text-neutral-medium">▼</span>
                       </button>
@@ -919,7 +937,7 @@ const Products: React.FC = () => {
                             className="w-full text-left px-4 py-2 text-primary-medium hover:text-primary-dark hover:bg-neutral-light"
                             onClick={() => { setNewValue(''); setShowAddProductType(true); setIsProductTypeOpen(false) }}
                           >
-                            + Add New Type
+                            + Add New Product Type
                           </button>
                         </div>
                       )}
@@ -927,41 +945,40 @@ const Products: React.FC = () => {
                   </div>
                   <div className="space-y-2">
                     <label className="flex items-center text-sm font-medium text-neutral-dark">
-                      <Package className="h-4 w-4 mr-2 text-primary-medium" />
-                      Packaging Type
+                      <Scale className="h-4 w-4 mr-2 text-primary-medium" />
+                      Unit of Measure
                     </label>
-                    <div className="relative" ref={packagingTypeRef}>
+                    <div className="relative" ref={uomRef}>
                       <button
                         type="button"
-                        onClick={() => { if (!productForm.customer) return; setIsPackagingTypeOpen((v) => !v) }}
-                        disabled={!productForm.customer}
-                        className={`w-full flex items-center justify-between px-4 py-3 border border-neutral-soft rounded-lg text-left bg-white transition-all ${!productForm.customer ? 'opacity-60 cursor-not-allowed' : 'hover:border-neutral-medium focus:ring-2 focus:ring-primary-light focus:border-primary-light'}`}
+                        onClick={() => setIsUomOpen((v) => !v)}
+                        className="w-full flex items-center justify-between px-4 py-3 border border-neutral-soft rounded-lg text-left bg-white transition-all hover:border-neutral-medium focus:ring-2 focus:ring-primary-light focus:border-primary-light"
                       >
-                        <span className={productForm.packagingType ? 'text-neutral-dark' : 'text-neutral-medium'}>
-                          {productForm.packagingType || 'Select Packaging'}
+                        <span className={productForm.uom ? 'text-neutral-dark' : 'text-neutral-medium'}>
+                          {productForm.uom || 'Select UOM'}
                         </span>
                         <span className="ml-2 text-neutral-medium">▼</span>
                       </button>
-                      {isPackagingTypeOpen && (
+                      {isUomOpen && (
                         <div className="absolute z-[100] mt-2 w-full bg-white border border-neutral-soft rounded-xl shadow-xl max-h-56 overflow-auto">
-                          <div className="px-3 py-2 text-xs text-neutral-medium">Select Packaging</div>
-                          {packagingTypes.map((p) => (
+                          <div className="px-3 py-2 text-xs text-neutral-medium">Select Unit</div>
+                          {uoms.map((u) => (
                             <button
-                              key={p}
+                              key={u}
                               type="button"
-                              className={`block w-full text-left px-4 py-2 hover:bg-neutral-light ${productForm.packagingType===p ? 'bg-neutral-light' : ''}`}
-                              onClick={() => { setProductForm({ ...productForm, packagingType: p }); setIsPackagingTypeOpen(false) }}
+                              className={`block w-full text-left px-4 py-2 hover:bg-neutral-light ${productForm.uom===u ? 'bg-neutral-light' : ''}`}
+                              onClick={() => { setProductForm({ ...productForm, uom: u }); setIsUomOpen(false) }}
                             >
-                              {p}
+                              {u}
                             </button>
                           ))}
                           <div className="my-1 border-t border-neutral-soft"></div>
                           <button
                             type="button"
                             className="w-full text-left px-4 py-2 text-primary-medium hover:text-primary-dark hover:bg-neutral-light"
-                            onClick={() => { setNewValue(''); setShowAddPackagingType(true); setIsPackagingTypeOpen(false) }}
+                            onClick={() => { setIsUomOpen(false); setShowAddUom(true); }}
                           >
-                            + Add New Packaging Type
+                            + Add New UOM
                           </button>
                         </div>
                       )}
@@ -969,13 +986,57 @@ const Products: React.FC = () => {
                   </div>
                 </div>
 
-                {/* Row 5: Formula (optional) */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  <div className="space-y-2 relative" ref={formulaRef}>
-                    <label className="flex items-center text-sm font-medium text-neutral-dark">
-                      <FlaskConical className="h-4 w-4 mr-2 text-primary-medium" />
-                      Formula (Optional)
-                    </label>
+                {/* Row 4: Packaging Type */}
+                <div className="space-y-2">
+                  <label className="flex items-center text-sm font-medium text-neutral-dark">
+                    <Box className="h-4 w-4 mr-2 text-primary-medium" />
+                    Packaging Type
+                  </label>
+                  <div className="relative" ref={packagingTypeRef}>
+                    <button
+                      type="button"
+                      onClick={() => setIsPackagingTypeOpen((v) => !v)}
+                      className="w-full flex items-center justify-between px-4 py-3 border border-neutral-soft rounded-lg text-left bg-white transition-all hover:border-neutral-medium focus:ring-2 focus:ring-primary-light focus:border-primary-light"
+                    >
+                      <span className={productForm.packagingType ? 'text-neutral-dark' : 'text-neutral-medium'}>
+                        {productForm.packagingType || 'Select Packaging Type'}
+                      </span>
+                      <span className="ml-2 text-neutral-medium">▼</span>
+                    </button>
+                    {isPackagingTypeOpen && (
+                      <div className="absolute z-[100] mt-2 w-full bg-white border border-neutral-soft rounded-xl shadow-xl max-h-56 overflow-auto">
+                        <div className="px-3 py-2 text-xs text-neutral-medium">Select Packaging</div>
+                        {packagingTypes.map((p) => (
+                          <button
+                            key={p}
+                            type="button"
+                            className={`block w-full text-left px-4 py-2 hover:bg-neutral-light ${productForm.packagingType===p ? 'bg-neutral-light' : ''}`}
+                            onClick={() => { setProductForm({ ...productForm, packagingType: p }); setIsPackagingTypeOpen(false) }}
+                          >
+                            {p}
+                          </button>
+                        ))}
+                        <div className="my-1 border-t border-neutral-soft"></div>
+                        <button
+                          type="button"
+                          className="w-full text-left px-4 py-2 text-primary-medium hover:text-primary-dark hover:bg-neutral-light"
+                          onClick={() => { setNewValue(''); setShowAddPackagingType(true); setIsPackagingTypeOpen(false) }}
+                        >
+                          + Add New Packaging Type
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Row 5: Formula (Required) */}
+                <div className="space-y-2">
+                  <label className="flex items-center text-sm font-medium text-neutral-dark">
+                    <FlaskConical className="h-4 w-4 mr-2 text-primary-medium" />
+                    Formula
+                    <span className="text-red-500 ml-1">*</span>
+                  </label>
+                  <div className="relative" ref={formulaRef}>
                     <button
                       type="button"
                       onClick={() => { if (!formulasLoading) setIsFormulaOpen((v)=>!v) }}
@@ -1002,60 +1063,32 @@ const Products: React.FC = () => {
                         {(!formulasLoading && formulas.length === 0) && (
                           <div className="px-4 py-3 text-sm text-neutral-medium">No formulas found</div>
                         )}
+                        <div className="my-1 border-t border-neutral-soft"></div>
+                        <button
+                          type="button"
+                          className="w-full text-left px-4 py-2 text-primary-medium hover:text-primary-dark hover:bg-neutral-light"
+                          onClick={() => { setIsFormulaOpen(false); setActiveTab('formulas'); }}
+                        >
+                          + Add New Formula
+                        </button>
                       </div>
                     )}
                   </div>
                 </div>
 
-                {/* Row 6: Unit of Measure and Shelf Life */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  <div className="space-y-2">
-                    <label className="flex items-center text-sm font-medium text-neutral-dark">
-                      <Scale className="h-4 w-4 mr-2 text-primary-medium" />
-                      Unit of Measure
-                    </label>
-                    <div className="relative" ref={uomRef}>
-                      <button
-                        type="button"
-                        onClick={() => { if (!productForm.customer) return; setIsUomOpen((v) => !v) }}
-                        disabled={!productForm.customer}
-                        className={`w-full flex items-center justify-between px-4 py-3 border border-neutral-soft rounded-lg text-left bg-white transition-all ${!productForm.customer ? 'opacity-60 cursor-not-allowed' : 'hover:border-neutral-medium focus:ring-2 focus:ring-primary-light focus:border-primary-light'}`}
-                      >
-                        <span className={productForm.uom ? 'text-neutral-dark' : 'text-neutral-medium'}>
-                          {productForm.uom || 'Select UOM'}
-                        </span>
-                        <span className="ml-2 text-neutral-medium">▼</span>
-                      </button>
-                      {isUomOpen && (
-                        <div className="absolute z-[100] mt-2 w-full bg-white border border-neutral-soft rounded-xl shadow-xl max-h-56 overflow-auto">
-                          <div className="px-3 py-2 text-xs text-neutral-medium">Select Unit</div>
-                          {uoms.map((u) => (
-                            <button
-                              key={u}
-                              type="button"
-                              className={`block w-full text-left px-4 py-2 hover:bg-neutral-light ${productForm.uom===u ? 'bg-neutral-light' : ''}`}
-                              onClick={() => { setProductForm({ ...productForm, uom: u }); setIsUomOpen(false) }}
-                            >
-                              {u}
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                  <div className="space-y-2">
-                    <label className="flex items-center text-sm font-medium text-neutral-dark">
-                      <Calendar className="h-4 w-4 mr-2 text-primary-medium" />
-                      Shelf Life (Days)
-                    </label>
-                    <input
-                      type="number"
-                      placeholder="e.g., 365"
-                      className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all duration-200 bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium"
-                      value={productForm.shelfLife}
-                      onChange={(e) => setProductForm({ ...productForm, shelfLife: e.target.value })}
-                    />
-                  </div>
+                {/* Row 6: Shelf Life */}
+                <div className="space-y-2">
+                  <label className="flex items-center text-sm font-medium text-neutral-dark">
+                    <Calendar className="h-4 w-4 mr-2 text-primary-medium" />
+                    Shelf Life (Days)
+                  </label>
+                  <input
+                    type="number"
+                    placeholder="e.g., 365"
+                    className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all duration-200 bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium"
+                    value={productForm.shelfLife}
+                    onChange={(e) => setProductForm({ ...productForm, shelfLife: e.target.value })}
+                  />
                 </div>
 
                 {/* Row 6.5: Discontinued and Substitute SKU */}
@@ -1073,13 +1106,52 @@ const Products: React.FC = () => {
                     </label>
                   </div>
                   <div className="space-y-2">
-                    <label className="flex items-center text-sm font-medium text-neutral-dark">Substitute SKU</label>
+                    <label className="flex items-center text-sm font-medium text-neutral-dark">UPC/SKU</label>
                     <input
                       type="text"
                       placeholder="e.g., SKU-ALT-1234"
                       className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all duration-200 bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium"
                       value={productForm.substituteSku}
                       onChange={(e) => setProductForm({ ...productForm, substituteSku: e.target.value })}
+                    />
+                  </div>
+                </div>
+
+                {/* Row 7: Price */}
+                <div className="space-y-2">
+                  <label className="flex items-center text-sm font-medium text-neutral-dark">
+                    <span className="text-neutral-dark">Price</span>
+                  </label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    placeholder="e.g., 12.99"
+                    className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all duration-200 bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium"
+                    value={productForm.cost}
+                    onChange={(e) => setProductForm({ ...productForm, cost: e.target.value })}
+                  />
+                </div>
+
+                {/* Row 8: Case Qty and Case Dimensions (One Line) */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div className="space-y-2">
+                    <label className="flex items-center text-sm font-medium text-neutral-dark">Case Qty</label>
+                    <input
+                      type="number"
+                      placeholder="e.g., 12"
+                      className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all duration-200 bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium"
+                      value={productForm.caseQty}
+                      onChange={(e) => setProductForm({ ...productForm, caseQty: e.target.value })}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="flex items-center text-sm font-medium text-neutral-dark">Case Dimensions</label>
+                    <input
+                      type="text"
+                      placeholder="e.g., 12x8x6 inches"
+                      className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all duration-200 bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium"
+                      value={productForm.caseDimension}
+                      onChange={(e) => setProductForm({ ...productForm, caseDimension: e.target.value })}
                     />
                   </div>
                 </div>
@@ -1139,7 +1211,7 @@ const Products: React.FC = () => {
                 <div className="space-y-2">
                   <label className="flex items-center text-sm font-medium text-neutral-dark">
                     <FileText className="h-4 w-4 mr-2 text-primary-medium" />
-                    Product File
+                    Spec Sheet
                   </label>
                   <input
                     ref={docFileInputRef}
@@ -1281,6 +1353,135 @@ const Products: React.FC = () => {
         </div>
         )}
 
+        {/* Add New Customer Modal */}
+        {showAddCustomer && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+            <div className="bg-white rounded-xl p-6 w-full max-w-md mx-4">
+              <h3 className="text-lg font-semibold text-neutral-dark mb-4">Add New Customer</h3>
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-neutral-dark mb-2">Customer Name</label>
+                  <input
+                    type="text"
+                    placeholder="Enter customer name"
+                    className="w-full px-3 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light"
+                    value={newCustomerName}
+                    onChange={(e) => setNewCustomerName(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && newCustomerName.trim()) {
+                        handleAddCustomer();
+                      }
+                    }}
+                  />
+                </div>
+                <div className="flex gap-3">
+                  <button
+                    type="button"
+                    onClick={() => { setShowAddCustomer(false); setNewCustomerName(''); }}
+                    className="flex-1 px-4 py-2 border border-neutral-soft rounded-lg text-neutral-dark hover:bg-neutral-light"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleAddCustomer}
+                    disabled={!newCustomerName.trim() || isCreatingCustomer}
+                    className="flex-1 px-4 py-2 bg-primary-medium text-white rounded-lg hover:bg-primary-dark disabled:opacity-50"
+                  >
+                    {isCreatingCustomer ? 'Adding...' : 'Add Customer'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Add New Product Type Modal */}
+        {showAddProductType && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+            <div className="bg-white rounded-xl p-6 w-full max-w-md mx-4">
+              <h3 className="text-lg font-semibold text-neutral-dark mb-4">Add New Product Type</h3>
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-neutral-dark mb-2">Product Type</label>
+                  <input
+                    type="text"
+                    placeholder="Enter product type"
+                    className="w-full px-3 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light"
+                    value={newValue}
+                    onChange={(e) => setNewValue(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && newValue.trim()) {
+                        handleAddProductType()
+                      }
+                    }}
+                  />
+                </div>
+                <div className="flex gap-3">
+                  <button
+                    type="button"
+                    onClick={() => { setShowAddProductType(false); setNewValue(''); }}
+                    className="flex-1 px-4 py-2 border border-neutral-soft rounded-lg text-neutral-dark hover:bg-neutral-light"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleAddProductType}
+                    disabled={!newValue.trim()}
+                    className="flex-1 px-4 py-2 bg-primary-medium text-white rounded-lg hover:bg-primary-dark disabled:opacity-50"
+                  >
+                    Add Product Type
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Add New UOM Modal */}
+        {showAddUom && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+            <div className="bg-white rounded-xl p-6 w-full max-w-md mx-4">
+              <h3 className="text-lg font-semibold text-neutral-dark mb-4">Add New Unit of Measure</h3>
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-neutral-dark mb-2">Unit Name</label>
+                  <input
+                    type="text"
+                    placeholder="e.g., Milliliters (ml)"
+                    className="w-full px-3 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light"
+                    value={newValue}
+                    onChange={(e) => setNewValue(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && newValue.trim()) {
+                        handleAddUom();
+                      }
+                    }}
+                  />
+                </div>
+                <div className="flex gap-3">
+                  <button
+                    type="button"
+                    onClick={() => { setShowAddUom(false); setNewValue(''); }}
+                    className="flex-1 px-4 py-2 border border-neutral-soft rounded-lg text-neutral-dark hover:bg-neutral-light"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleAddUom}
+                    disabled={!newValue.trim()}
+                    className="flex-1 px-4 py-2 bg-primary-medium text-white rounded-lg hover:bg-primary-dark disabled:opacity-50"
+                  >
+                    Add UOM
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Simple Products List */}
         {filteredProducts.length === 0 ? (
           <div className="bg-white rounded-2xl shadow-xl border border-neutral-soft/20 p-16 flex flex-col items-center justify-center">
@@ -1326,6 +1527,9 @@ const Products: React.FC = () => {
                         <span>Created</span>
                       </div>
                     </th>
+                    <th className="px-8 py-4 text-center text-sm font-bold text-neutral-dark uppercase tracking-wider">
+                      Actions
+                    </th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-neutral-soft/20">
@@ -1363,6 +1567,20 @@ const Products: React.FC = () => {
                       <td className="px-8 py-6">
                         <div className="text-sm text-neutral-medium">
                           {product.created_at ? new Date(product.created_at).toLocaleDateString() : '—'}
+                        </div>
+                      </td>
+                      <td className="px-8 py-6">
+                        <div className="flex items-center justify-center">
+                          <button 
+                            type="button" 
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              setConfirmDelete({ open: true, product, loading: false, error: null })
+                            }}
+                            className="group/btn p-3 text-accent-danger hover:text-white hover:bg-accent-danger rounded-xl transition-all duration-300 hover:shadow-lg hover:scale-105 border border-accent-danger/30 hover:border-accent-danger"
+                          >
+                            <Trash2 className="h-5 w-5" />
+                          </button>
                         </div>
                       </td>
                     </tr>
@@ -1778,8 +1996,11 @@ const Products: React.FC = () => {
                       .delete()
                       .eq('id', id)
                       .select('id')
-                    if (error || !delRows || delRows.length === 0) {
-                      setConfirmDelete((s) => ({ ...s, loading: false, error: 'Delete failed on the database. Please check permissions and try again.' }))
+                    if (error) {
+                      console.error('Delete error:', error)
+                      setConfirmDelete((s) => ({ ...s, loading: false, error: `Delete failed: ${error.message}` }))
+                    } else if (!delRows || delRows.length === 0) {
+                      setConfirmDelete((s) => ({ ...s, loading: false, error: 'No rows were deleted. The product may not exist or you may not have permission.' }))
                     } else {
                       setProducts((p) => p.filter((x) => x.id !== id))
                       setConfirmDelete({ open: false, product: null, loading: false, error: null })

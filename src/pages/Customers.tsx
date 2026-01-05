@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react'
-import { Plus, Search, Filter, Users, User, Mail, Phone, Globe, BadgeCheck, Eye, Edit, Trash2, Building2, MapPin, FileText, CheckCircle2 } from 'lucide-react'
+import { Plus, Search, Filter, Users, User, Mail, Phone, Globe, BadgeCheck, Eye, Edit, Trash2, Building2, MapPin, FileText, CheckCircle2, Package } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 
 // Tab Components
@@ -455,6 +455,9 @@ const Customers: React.FC = () => {
   const [loading, setLoading] = useState<boolean>(true)
   const [error, setError] = useState<string | null>(null)
   const [toast, setToast] = useState<{ show: boolean; message: string }>(() => ({ show: false, message: '' }))
+  // Products for UI-only multi-select in Add Customer modal
+  const [allProducts, setAllProducts] = useState<Array<{ id: string; name: string }>>([])
+  const [selectedProductIds, setSelectedProductIds] = useState<string[]>([])
 
   const refresh = async () => {
     try {
@@ -487,6 +490,20 @@ const Customers: React.FC = () => {
 
   useEffect(() => {
     refresh()
+    // Load products for UI-only multi-select
+    ;(async () => {
+      try {
+        const { data, error } = await supabase
+          .from('products')
+          .select('id, product_name')
+          .order('product_name', { ascending: true })
+        if (error) throw error
+        const list = (data ?? []).map((p: any) => ({ id: String(p.id), name: String(p.product_name || '') }))
+        setAllProducts(list)
+      } catch (e) {
+        // UI-only; ignore silently
+      }
+    })()
   }, [])
 
   useEffect(() => {
@@ -553,20 +570,19 @@ const Customers: React.FC = () => {
   })
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-neutral-light/30 to-neutral-soft/20">
-      <div className="p-8">
+    <div className="min-h-screen bg-gradient-to-br from-neutral-light/30 to-neutral-soft/20 overflow-x-hidden">
+      <div className="p-2 sm:p-4 lg:p-6 max-w-full">
         {/* Header */}
-        <div className="bg-white rounded-2xl shadow-md border border-neutral-soft/20 p-8 mb-8">
-          <div className="flex justify-between items-center">
+        <div className="bg-white rounded-xl shadow-md border border-neutral-soft/20 p-3 sm:p-4 lg:p-6 mb-3 lg:mb-4">
+          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
             <div>
-              <h1 className="text-3xl font-bold text-neutral-dark mb-2">Customers</h1>
-              <p className="text-neutral-medium text-lg">Manage your customer relationships and data</p>
+              <h1 className="text-xl sm:text-2xl font-bold text-neutral-dark mb-1">Customers</h1>
             </div>
             <button 
-              onClick={() => setIsAddOpen(true)}
-              className="px-6 py-3 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold transition-all duration-300 shadow-lg hover:shadow-xl transform hover:-translate-y-0.5 flex items-center"
+              onClick={() => { setIsAddOpen(true); setSelectedProductIds([]) }}
+              className="w-full sm:w-auto px-4 sm:px-6 py-2.5 sm:py-3 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold transition-all duration-300 shadow-lg hover:shadow-xl transform hover:-translate-y-0.5 flex items-center justify-center"
             >
-              <Plus className="h-5 w-5 mr-3" />
+              <Plus className="h-4 w-4 sm:h-5 sm:w-5 mr-2 sm:mr-3" />
               Add Customer
             </button>
           </div>
@@ -582,23 +598,23 @@ const Customers: React.FC = () => {
         {isDeleteOpen && deleteTarget && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
             <div className="absolute inset-0 bg-black/50" onClick={() => !deleting && setIsDeleteOpen(false)}></div>
-            <div className="relative z-10 w-full max-w-lg bg-white rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden">
-              <div className="px-8 py-6 bg-gradient-to-r from-neutral-light to-neutral-light/80 border-b border-neutral-soft/50">
-                <h2 className="text-2xl font-semibold text-neutral-dark">Delete Customer</h2>
-                <p className="text-sm text-neutral-medium mt-1">This action cannot be undone.</p>
+            <div className="relative z-10 w-full max-w-sm sm:max-w-lg bg-white rounded-xl sm:rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden">
+              <div className="px-4 sm:px-6 lg:px-8 py-4 sm:py-6 bg-gradient-to-r from-neutral-light to-neutral-light/80 border-b border-neutral-soft/50">
+                <h2 className="text-lg sm:text-xl lg:text-2xl font-semibold text-neutral-dark">Delete Customer</h2>
+                <p className="text-xs sm:text-sm text-neutral-medium mt-1">This action cannot be undone.</p>
               </div>
-              <div className="p-8">
-                <p className="text-neutral-dark">Are you sure you want to delete "<span className="font-semibold">{deleteTarget.name}</span>"?</p>
-                <div className="mt-8 flex justify-end gap-3">
+              <div className="p-4 sm:p-6 lg:p-8">
+                <p className="text-sm sm:text-base text-neutral-dark">Are you sure you want to delete "<span className="font-semibold">{deleteTarget.name}</span>"?</p>
+                <div className="mt-6 sm:mt-8 flex flex-col sm:flex-row justify-end gap-3">
                   <button
-                    className="px-5 py-2.5 rounded-xl border border-neutral-soft text-neutral-dark hover:bg-neutral-light/60 transition-all disabled:opacity-60"
+                    className="w-full sm:w-auto px-4 sm:px-5 py-2.5 rounded-xl border border-neutral-soft text-neutral-dark hover:bg-neutral-light/60 transition-all disabled:opacity-60 text-sm sm:text-base"
                     onClick={() => !deleting && setIsDeleteOpen(false)}
                     disabled={deleting}
                   >
                     Cancel
                   </button>
                   <button
-                    className="px-5 py-2.5 rounded-xl bg-accent-danger text-white font-semibold hover:opacity-90 shadow-md disabled:opacity-60"
+                    className="w-full sm:w-auto px-4 sm:px-5 py-2.5 rounded-xl bg-accent-danger text-white font-semibold hover:opacity-90 shadow-md disabled:opacity-60 text-sm sm:text-base"
                     onClick={async () => {
                       if (!deleteTarget?.id || deleting) return
                       setDeleting(true)
@@ -625,46 +641,35 @@ const Customers: React.FC = () => {
           </div>
         )}
 
-        {/* Stats */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
-          <div className="bg-white rounded-2xl shadow-md border border-neutral-soft/20 p-6">
-            <div className="flex items-center">
-              <Users className="h-8 w-8 text-primary-medium" />
-              <div className="ml-4">
-                <p className="text-sm font-medium text-neutral-medium">Total Customers</p>
-                <p className="text-2xl font-bold text-neutral-dark">{customers.length}</p>
-              </div>
-            </div>
-          </div>
-        </div>
+        
 
         {/* Search and Filter */}
-        <div className="bg-white rounded-2xl shadow-md border border-neutral-soft/20 p-8 mb-8">
-          <div className="flex flex-col md:flex-row gap-6">
+        <div className="bg-white rounded-xl shadow-md border border-neutral-soft/20 p-3 sm:p-4 lg:p-6 mb-3 lg:mb-4">
+          <div className="flex flex-col lg:flex-row gap-3 lg:gap-4">
             <div className="flex-1">
-              <label className="flex items-center text-sm font-semibold text-neutral-dark mb-3">
+              <label className="flex items-center text-sm font-semibold text-neutral-dark mb-2">
                 Search Customers
               </label>
               <div className="relative">
-                <Search className="absolute left-4 top-1/2 transform -translate-y-1/2 h-5 w-5 text-neutral-medium" />
+                <Search className="absolute left-3 sm:left-4 top-1/2 transform -translate-y-1/2 h-4 w-4 sm:h-5 sm:w-5 text-neutral-medium" />
                 <input
                   type="text"
                   placeholder="Search customers..."
-                  className="w-full pl-12 pr-4 py-4 border border-neutral-soft rounded-xl focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all duration-200 bg-white text-neutral-dark placeholder-neutral-medium shadow-sm hover:shadow-md hover:border-neutral-medium"
+                  className="w-full pl-10 sm:pl-12 pr-3 sm:pr-4 py-2 sm:py-3 border border-neutral-soft rounded-xl focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all duration-200 bg-white text-neutral-dark placeholder-neutral-medium shadow-sm hover:shadow-md hover:border-neutral-medium text-sm sm:text-base"
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
                 />
               </div>
             </div>
-            <div className="md:w-64 relative" ref={statusRef}>
-              <label className="flex items-center text-sm font-semibold text-neutral-dark mb-3">
-                <Filter className="h-5 w-5 mr-3 text-primary-medium" />
+            <div className="lg:w-64 relative" ref={statusRef}>
+              <label className="flex items-center text-sm font-semibold text-neutral-dark mb-2">
+                <Filter className="h-4 w-4 sm:h-5 sm:w-5 mr-2 sm:mr-3 text-primary-medium" />
                 Filter & Sort
               </label>
               <button
                 type="button"
                 onClick={() => setIsStatusOpen((v) => !v)}
-                className="w-full flex items-center justify-between px-4 py-4 border border-neutral-soft rounded-xl text-left bg-white transition-all shadow-sm hover:border-neutral-medium focus:ring-2 focus:ring-primary-light focus:border-primary-light hover:shadow-md"
+                className="w-full flex items-center justify-between px-3 sm:px-4 py-2 sm:py-3 border border-neutral-soft rounded-xl text-left bg-white transition-all shadow-sm hover:border-neutral-medium focus:ring-2 focus:ring-primary-light focus:border-primary-light hover:shadow-md text-sm sm:text-base"
               >
                 <span className={statusFilter === 'All' ? 'text-neutral-medium' : 'text-neutral-dark'}>
                   {statusFilter === 'All' ? 'All Segments' : statusFilter}
@@ -704,18 +709,18 @@ const Customers: React.FC = () => {
 
         {/* View Details Modal */}
         {isViewOpen && viewData && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4">
             <div className="absolute inset-0 bg-black/50" onClick={() => setIsViewOpen(false)}></div>
-            <div className="relative z-10 w-full max-w-3xl bg-white rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden flex flex-col">
-              <div className="flex items-center justify-between px-8 py-6 bg-gradient-to-r from-neutral-light to-neutral-light/80 border-b border-neutral-soft/50">
+            <div className="relative z-10 w-full max-w-sm sm:max-w-2xl lg:max-w-3xl bg-white rounded-xl sm:rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden flex flex-col max-h-[95vh] sm:max-h-[90vh]">
+              <div className="flex items-center justify-between px-4 sm:px-6 lg:px-8 py-4 sm:py-6 bg-gradient-to-r from-neutral-light to-neutral-light/80 border-b border-neutral-soft/50">
                 <div>
-                  <h2 className="text-2xl font-semibold text-neutral-dark">View Details</h2>
-                  <p className="text-sm text-neutral-medium mt-1">Customer information overview</p>
+                  <h2 className="text-lg sm:text-xl lg:text-2xl font-semibold text-neutral-dark">View Details</h2>
+                  <p className="text-xs sm:text-sm text-neutral-medium mt-1">Customer information overview</p>
                 </div>
-                <button onClick={() => setIsViewOpen(false)} className="p-3 text-neutral-medium hover:text-neutral-dark hover:bg-white/60 rounded-xl transition-all duration-200 hover:shadow-sm">✕</button>
+                <button onClick={() => setIsViewOpen(false)} className="p-2 sm:p-3 text-neutral-medium hover:text-neutral-dark hover:bg-white/60 rounded-xl transition-all duration-200 hover:shadow-sm">✕</button>
               </div>
-              <div className="p-8 space-y-6">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="p-4 sm:p-6 lg:p-8 space-y-4 sm:space-y-6 overflow-y-auto">
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
                   <div className="space-y-1">
                     <label className="flex items-center text-xs font-semibold text-neutral-medium uppercase tracking-wide">
                       <Users className="h-4 w-4 mr-2 text-primary-medium" /> Name
@@ -765,7 +770,7 @@ const Customers: React.FC = () => {
                   </div>
                 </div>
                 <div className="flex justify-end">
-                  <button onClick={() => setIsViewOpen(false)} className="px-5 py-2.5 rounded-xl border border-neutral-soft text-neutral-dark hover:bg-neutral-light/60 transition-all">
+                  <button onClick={() => setIsViewOpen(false)} className="w-full sm:w-auto px-4 sm:px-5 py-2.5 rounded-xl border border-neutral-soft text-neutral-dark hover:bg-neutral-light/60 transition-all text-sm sm:text-base">
                     Close
                   </button>
                 </div>
@@ -776,17 +781,15 @@ const Customers: React.FC = () => {
 
         {/* Edit Customer Modal */}
         {isEditOpen && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4">
             <div className="absolute inset-0 bg-black/50" onClick={() => !isEditing && setIsEditOpen(false)}></div>
-            <div className="relative z-10 w-full max-w-5xl h-[80vh] bg-white rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden flex flex-col">
-              <div className="flex items-center justify-between px-8 py-6 bg-gradient-to-r from-neutral-light to-neutral-light/80 border-b border-neutral-soft/50">
+            <div className="relative z-10 w-full max-w-sm sm:max-w-2xl lg:max-w-5xl h-[95vh] sm:h-[90vh] lg:h-[80vh] bg-white rounded-xl sm:rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden flex flex-col">
+              <div className="flex items-center justify-between px-4 sm:px-6 py-4 sm:py-6 bg-gradient-to-r from-neutral-light to-neutral-light/80 border-b border-neutral-soft/50">
                 <div>
-                  <h2 className="text-2xl font-semibold text-neutral-dark">Edit Customer</h2>
-                  <p className="text-sm text-neutral-medium mt-1">Update customer information</p>
+                  <h2 className="text-lg sm:text-xl font-semibold text-neutral-dark">Edit Customer</h2>
+                  <p className="text-xs sm:text-sm text-neutral-medium mt-1">Update customer information</p>
                 </div>
-                <button onClick={() => !isEditing && setIsEditOpen(false)} className="p-3 text-neutral-medium hover:text-neutral-dark hover:bg-white/60 rounded-xl transition-all duration-200 hover:shadow-sm">
-                  ✕
-                </button>
+                <button onClick={() => !isEditing && setIsEditOpen(false)} className="p-2 sm:p-3 text-neutral-medium hover:text-neutral-dark hover:bg-white/60 rounded-xl transition-all duration-200 hover:shadow-sm">✕</button>
               </div>
               <div className="flex-1 overflow-y-auto">
                 <form
@@ -816,9 +819,9 @@ const Customers: React.FC = () => {
                       setIsEditing(false)
                     }
                   }}
-                  className="p-8 space-y-6"
+                  className="p-4 sm:p-6 space-y-6"
                 >
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 sm:gap-6">
                     <div className="space-y-2">
                       <label className="flex items-center text-sm font-semibold text-neutral-dark">
                         <Building2 className="h-4 w-4 mr-2 text-primary-medium" />
@@ -830,7 +833,7 @@ const Customers: React.FC = () => {
                         value={editForm.company_name}
                         onChange={(e) => setEditForm({ ...editForm, company_name: e.target.value })}
                         placeholder="e.g., ABC Foods Inc."
-                        className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium"
+                        className="w-full px-3 sm:px-4 py-2.5 sm:py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium text-sm sm:text-base"
                       />
                     </div>
                     <div className="space-y-2">
@@ -843,12 +846,12 @@ const Customers: React.FC = () => {
                         value={editForm.contact_person}
                         onChange={(e) => setEditForm({ ...editForm, contact_person: e.target.value })}
                         placeholder="e.g., John Dela Cruz"
-                        className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium"
+                        className="w-full px-3 sm:px-4 py-2.5 sm:py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium text-sm sm:text-base"
                       />
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 sm:gap-6">
                     <div className="space-y-2">
                       <label className="flex items-center text-sm font-semibold text-neutral-dark">
                         <Mail className="h-4 w-4 mr-2 text-primary-medium" />
@@ -859,7 +862,7 @@ const Customers: React.FC = () => {
                         value={editForm.email}
                         onChange={(e) => setEditForm({ ...editForm, email: e.target.value })}
                         placeholder="john@company.com"
-                        className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium"
+                        className="w-full px-3 sm:px-4 py-2.5 sm:py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium text-sm sm:text-base"
                       />
                     </div>
                     <div className="space-y-2">
@@ -871,13 +874,13 @@ const Customers: React.FC = () => {
                         type="text"
                         value={editForm.phone}
                         onChange={(e) => setEditForm({ ...editForm, phone: e.target.value })}
-                        placeholder="+63 900 000 0000"
-                        className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium"
+                        placeholder="+1 900 000 0000"
+                        className="w-full px-3 sm:px-4 py-2.5 sm:py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium text-sm sm:text-base"
                       />
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 sm:gap-6">
                     <div className="space-y-2">
                       <label className="flex items-center text-sm font-semibold text-neutral-dark">
                         <Globe className="h-4 w-4 mr-2 text-primary-medium" />
@@ -888,7 +891,7 @@ const Customers: React.FC = () => {
                         value={editForm.website}
                         onChange={(e) => setEditForm({ ...editForm, website: e.target.value })}
                         placeholder="https://example.com"
-                        className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium"
+                        className="w-full px-3 sm:px-4 py-2.5 sm:py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium text-sm sm:text-base"
                       />
                     </div>
                     <div className="space-y-2">
@@ -899,7 +902,7 @@ const Customers: React.FC = () => {
                       <select
                         value={editForm.status}
                         onChange={(e) => setEditForm({ ...editForm, status: e.target.value })}
-                        className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark hover:border-neutral-medium"
+                        className="w-full px-3 sm:px-4 py-2.5 sm:py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark hover:border-neutral-medium text-sm sm:text-base"
                       >
                         <option>Active</option>
                         <option>Inactive</option>
@@ -916,7 +919,7 @@ const Customers: React.FC = () => {
                       value={editForm.address}
                       onChange={(e) => setEditForm({ ...editForm, address: e.target.value })}
                       placeholder="Street, City, Country"
-                      className="w-full min-h-[80px] px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium resize-none hover:border-neutral-medium"
+                      className="w-full min-h-[60px] sm:min-h-[80px] px-3 sm:px-4 py-2.5 sm:py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium resize-none hover:border-neutral-medium text-sm sm:text-base"
                     />
                   </div>
 
@@ -929,14 +932,14 @@ const Customers: React.FC = () => {
                       value={editForm.comments}
                       onChange={(e) => setEditForm({ ...editForm, comments: e.target.value })}
                       placeholder="Additional notes about this customer"
-                      className="w-full min-h-[80px] px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium resize-none hover:border-neutral-medium"
+                      className="w-full min-h-[60px] sm:min-h-[80px] px-3 sm:px-4 py-2.5 sm:py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium resize-none hover:border-neutral-medium text-sm sm:text-base"
                     />
                   </div>
 
                   <div className="flex items-center justify-end gap-3 pt-2">
                     <button
                       type="submit"
-                      className="px-6 py-3 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold shadow-md disabled:opacity-60"
+                      className="px-4 sm:px-6 py-2.5 sm:py-3 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold shadow-md disabled:opacity-60"
                       disabled={isEditing}
                     >
                       {isEditing ? 'Updating...' : 'Update'}
@@ -950,13 +953,13 @@ const Customers: React.FC = () => {
 
         {/* Add Customer Modal */}
         {isAddOpen && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4">
             <div className="absolute inset-0 bg-black/50" onClick={() => !isSubmitting && setIsAddOpen(false)}></div>
-            <div className="relative z-10 w-full max-w-5xl h-[80vh] bg-white rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden flex flex-col">
-              <div className="flex items-center justify-between px-8 py-6 bg-gradient-to-r from-neutral-light to-neutral-light/80 border-b border-neutral-soft/50">
+            <div className="relative z-10 w-full max-w-sm sm:max-w-2xl lg:max-w-5xl h-[95vh] sm:h-[90vh] lg:h-[80vh] bg-white rounded-xl sm:rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden flex flex-col">
+              <div className="flex items-center justify-between px-4 sm:px-6 py-4 sm:py-6 bg-gradient-to-r from-neutral-light to-neutral-light/80 border-b border-neutral-soft/50">
                 <div>
-                  <h2 className="text-2xl font-semibold text-neutral-dark">New Customer Onboarding Form</h2>
-                  <p className="text-sm text-neutral-medium mt-1">Customer information and manufacturing onboarding (single form)</p>
+                  <h2 className="text-lg sm:text-xl font-semibold text-neutral-dark">New Customer Onboarding Form</h2>
+                  <p className="text-xs sm:text-sm text-neutral-medium mt-1">Customer information and manufacturing onboarding (single form)</p>
                 </div>
                 <button onClick={() => {
                   setIsAddOpen(false)
@@ -964,19 +967,17 @@ const Customers: React.FC = () => {
                   setOnboardingId(null)
                   setOnboardingNotes('')
                   setAddForm({ company_name: '', contact_person: '', email: '', phone: '', website: '', address: '', comments: '', status: 'Active' })
-                }} className="p-3 text-neutral-medium hover:text-neutral-dark hover:bg-white/60 rounded-xl transition-all duration-200 hover:shadow-sm">
-                  ✕
-                </button>
+                }} className="p-2 sm:p-3 text-neutral-medium hover:text-neutral-dark hover:bg-white/60 rounded-xl transition-all duration-200 hover:shadow-sm">✕</button>
               </div>
               <div className="flex-1 overflow-y-auto">
-                <div className="p-8 space-y-8">
-                  <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+                <div className="p-4 sm:p-6 space-y-8">
+                  <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
                     <div className="inline-flex items-center gap-3">
                       <span className="text-sm font-semibold text-neutral-dark">Onboarding Type</span>
                       <select
                         value={onboardingType}
                         onChange={(e) => setOnboardingType(e.target.value as 'DILLYS' | 'BNUTTY')}
-                        className="px-3 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light bg-white text-neutral-dark"
+                        className="px-3 sm:px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light bg-white text-neutral-dark"
                       >
                         <option value="DILLYS">Dilly's</option>
                         <option value="BNUTTY">BNutty</option>
@@ -989,12 +990,12 @@ const Customers: React.FC = () => {
                   </div>
 
                   {/* Customer Information */}
-                  <div className="bg-white rounded-2xl shadow-sm border border-neutral-soft/20 overflow-hidden">
-                    <div className="px-6 py-4 bg-gradient-to-r from-primary-dark/5 via-primary-medium/5 to-primary-light/5 border-b border-neutral-soft/30">
-                      <h3 className="text-base font-semibold text-neutral-dark">Customer Information</h3>
+                  <div className="bg-white rounded-xl sm:rounded-2xl shadow-sm border border-neutral-soft/20 overflow-hidden">
+                    <div className="px-4 sm:px-6 py-3 sm:py-4 bg-gradient-to-r from-primary-dark/5 via-primary-medium/5 to-primary-light/5 border-b border-neutral-soft/30">
+                      <h3 className="text-sm sm:text-base font-semibold text-neutral-dark">Customer Information</h3>
                     </div>
-                    <div className="p-6 space-y-6">
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div className="p-4 sm:p-6 space-y-4 sm:space-y-6">
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
                     <div className="space-y-2">
                       <label className="flex items-center text-sm font-semibold text-neutral-dark">
                         <Building2 className="h-4 w-4 mr-2 text-primary-medium" />
@@ -1006,7 +1007,7 @@ const Customers: React.FC = () => {
                         value={addForm.company_name}
                         onChange={(e) => setAddForm({ ...addForm, company_name: e.target.value })}
                         placeholder="e.g., ABC Foods Inc."
-                        className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium"
+                        className="w-full px-3 sm:px-4 py-2.5 sm:py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium text-sm sm:text-base"
                       />
                     </div>
                     <div className="space-y-2">
@@ -1019,7 +1020,7 @@ const Customers: React.FC = () => {
                         value={addForm.contact_person}
                         onChange={(e) => setAddForm({ ...addForm, contact_person: e.target.value })}
                         placeholder="e.g., John Dela Cruz"
-                        className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium"
+                        className="w-full px-3 sm:px-4 py-2.5 sm:py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium text-sm sm:text-base"
                       />
                     </div>
                   </div>
@@ -1035,7 +1036,7 @@ const Customers: React.FC = () => {
                         value={addForm.email}
                         onChange={(e) => setAddForm({ ...addForm, email: e.target.value })}
                         placeholder="john@company.com"
-                        className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium"
+                        className="w-full px-3 sm:px-4 py-2.5 sm:py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium text-sm sm:text-base"
                       />
                     </div>
                     <div className="space-y-2">
@@ -1047,8 +1048,8 @@ const Customers: React.FC = () => {
                         type="text"
                         value={addForm.phone}
                         onChange={(e) => setAddForm({ ...addForm, phone: e.target.value })}
-                        placeholder="+63 900 000 0000"
-                        className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium"
+                        placeholder="+1 900 000 0000"
+                        className="w-full px-3 sm:px-4 py-2.5 sm:py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium text-sm sm:text-base"
                       />
                     </div>
                   </div>
@@ -1064,7 +1065,7 @@ const Customers: React.FC = () => {
                         value={addForm.website}
                         onChange={(e) => setAddForm({ ...addForm, website: e.target.value })}
                         placeholder="https://example.com"
-                        className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium"
+                        className="w-full px-3 sm:px-4 py-2.5 sm:py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium text-sm sm:text-base"
                       />
                     </div>
                     <div className="space-y-2">
@@ -1075,7 +1076,7 @@ const Customers: React.FC = () => {
                       <select
                         value={addForm.status}
                         onChange={(e) => setAddForm({ ...addForm, status: e.target.value })}
-                        className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark hover:border-neutral-medium"
+                        className="w-full px-3 sm:px-4 py-2.5 sm:py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark hover:border-neutral-medium text-sm sm:text-base"
                       >
                         <option>Active</option>
                         <option>Inactive</option>
@@ -1092,7 +1093,7 @@ const Customers: React.FC = () => {
                       value={addForm.address}
                       onChange={(e) => setAddForm({ ...addForm, address: e.target.value })}
                       placeholder="Street, City, Country"
-                      className="w-full min-h-[80px] px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium resize-none hover:border-neutral-medium"
+                      className="w-full min-h-[60px] sm:min-h-[80px] px-3 sm:px-4 py-2.5 sm:py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium resize-none hover:border-neutral-medium text-sm sm:text-base"
                     />
                   </div>
 
@@ -1105,8 +1106,36 @@ const Customers: React.FC = () => {
                       value={addForm.comments}
                       onChange={(e) => setAddForm({ ...addForm, comments: e.target.value })}
                       placeholder="Additional notes about this customer"
-                      className="w-full min-h-[80px] px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium resize-none hover:border-neutral-medium"
+                      className="w-full min-h-[60px] sm:min-h-[80px] px-3 sm:px-4 py-2.5 sm:py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium resize-none hover:border-neutral-medium text-sm sm:text-base"
                     />
+                  </div>
+
+                  {/* Products multi-select (UI-only) */}
+                  <div className="space-y-2">
+                    <label className="flex items-center text-sm font-semibold text-neutral-dark">
+                      <Package className="h-4 w-4 mr-2 text-primary-medium" />
+                      Products
+                    </label>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 sm:gap-3 max-h-32 sm:max-h-48 overflow-auto border border-neutral-soft rounded-lg p-2 sm:p-3 bg-white">
+                      {allProducts.length === 0 ? (
+                        <div className="text-xs text-neutral-medium">No products found.</div>
+                      ) : (
+                        allProducts.map(p => (
+                          <label key={p.id} className="flex items-center gap-2">
+                            <input
+                              type="checkbox"
+                              className="h-4 w-4 text-primary-dark focus:ring-primary-light border-neutral-soft rounded"
+                              checked={selectedProductIds.includes(p.id)}
+                              onChange={(e) => {
+                                setSelectedProductIds(prev => e.target.checked ? [...prev, p.id] : prev.filter(id => id !== p.id))
+                              }}
+                            />
+                            <span className="text-xs sm:text-sm text-neutral-dark">{p.name}</span>
+                          </label>
+                        ))
+                      )}
+                    </div>
+                    <p className="text-xs text-neutral-medium">UI-only: selections are kept in this form but are not saved to the server.</p>
                   </div>
                     </div>
                   </div>
@@ -1252,16 +1281,14 @@ const Customers: React.FC = () => {
         )}
 
         {/* Table + Empty State (Products-style header) */}
-        <div className="bg-white rounded-3xl shadow-md border border-neutral-soft/30 overflow-hidden">
+        <div className="bg-white rounded-xl shadow-md border border-neutral-soft/30 overflow-hidden">
           {/* Gradient header section */}
-          <div className="px-10 py-8 bg-gradient-to-r from-primary-dark/5 via-primary-medium/5 to-primary-light/5 border-b border-neutral-soft/40">
+          <div className="px-3 sm:px-4 lg:px-6 py-2 sm:py-3 lg:py-4 bg-gradient-to-r from-primary-dark/5 via-primary-medium/5 to-primary-light/5 border-b border-neutral-soft/40">
             <div className="flex items-center justify-between">
               <div>
-                <h3 className="text-2xl font-bold text-neutral-dark mb-2">Customer Directory</h3>
+                <h3 className="text-base sm:text-lg lg:text-xl font-bold text-neutral-dark mb-1">Customer Directory</h3>
               </div>
-              <div className="px-4 py-2 bg-primary-light/10 rounded-xl border border-primary-light/20">
-                <span className="text-sm font-semibold text-primary-dark">{filtered.length} Total</span>
-              </div>
+              
             </div>
           </div>
           {/* Column headers */}
@@ -1269,85 +1296,86 @@ const Customers: React.FC = () => {
             <table className="min-w-full">
               <thead>
                 <tr className="bg-gradient-to-r from-neutral-light/60 via-neutral-light/40 to-neutral-soft/30 border-b-2 border-neutral-soft/50">
-                  <th className="px-8 py-6 text-left text-sm font-bold text-neutral-dark uppercase tracking-wider">
-                    <div className="flex items-center space-x-2">
-                      <Users className="h-4 w-4 text-primary-medium" />
+                  <th className="px-3 sm:px-6 lg:px-8 py-3 sm:py-4 lg:py-6 text-left text-xs sm:text-sm font-bold text-neutral-dark uppercase tracking-wider">
+                    <div className="flex items-center space-x-1 sm:space-x-2">
+                      <Users className="h-3 w-3 sm:h-4 sm:w-4 text-primary-medium" />
                       <span>Name</span>
                     </div>
                   </th>
-                  <th className="px-8 py-6 text-left text-sm font-bold text-neutral-dark uppercase tracking-wider">
-                    <div className="flex items-center space-x-2">
-                      <User className="h-4 w-4 text-primary-medium" />
+                  <th className="hidden sm:table-cell px-2 sm:px-3 lg:px-4 py-2 sm:py-3 text-left text-xs sm:text-sm font-bold text-neutral-dark uppercase tracking-wider">
+                    <div className="flex items-center space-x-1 sm:space-x-2">
+                      <User className="h-3 w-3 sm:h-4 sm:w-4 text-primary-medium" />
                       <span>Contact</span>
                     </div>
                   </th>
-                  <th className="px-8 py-6 text-left text-sm font-bold text-neutral-dark uppercase tracking-wider">
-                    <div className="flex items-center space-x-2">
-                      <Mail className="h-4 w-4 text-primary-medium" />
+                  <th className="hidden md:table-cell px-2 sm:px-3 lg:px-4 py-2 sm:py-3 text-left text-xs sm:text-sm font-bold text-neutral-dark uppercase tracking-wider">
+                    <div className="flex items-center space-x-1 sm:space-x-2">
+                      <Mail className="h-3 w-3 sm:h-4 sm:w-4 text-primary-medium" />
                       <span>Email</span>
                     </div>
                   </th>
-                  <th className="px-8 py-6 text-left text-sm font-bold text-neutral-dark uppercase tracking-wider">
-                    <div className="flex items-center space-x-2">
-                      <Phone className="h-4 w-4 text-primary-medium" />
+                  <th className="hidden lg:table-cell px-2 sm:px-3 lg:px-4 py-2 sm:py-3 text-left text-xs sm:text-sm font-bold text-neutral-dark uppercase tracking-wider">
+                    <div className="flex items-center space-x-1 sm:space-x-2">
+                      <Phone className="h-3 w-3 sm:h-4 sm:w-4 text-primary-medium" />
                       <span>Phone</span>
                     </div>
                   </th>
-                  <th className="px-8 py-6 text-left text-sm font-bold text-neutral-dark uppercase tracking-wider">
-                    <div className="flex items-center space-x-2">
-                      <Globe className="h-4 w-4 text-primary-medium" />
+                  <th className="hidden xl:table-cell px-2 sm:px-3 lg:px-4 py-2 sm:py-3 text-left text-xs sm:text-sm font-bold text-neutral-dark uppercase tracking-wider">
+                    <div className="flex items-center space-x-1 sm:space-x-2">
+                      <Globe className="h-3 w-3 sm:h-4 sm:w-4 text-primary-medium" />
                       <span>Website</span>
                     </div>
                   </th>
-                  <th className="px-8 py-6 text-left text-sm font-bold text-neutral-dark uppercase tracking-wider">
-                    <div className="flex items-center space-x-2">
-                      <BadgeCheck className="h-4 w-4 text-primary-medium" />
+                  <th className="px-3 sm:px-6 lg:px-8 py-3 sm:py-4 lg:py-6 text-left text-xs sm:text-sm font-bold text-neutral-dark uppercase tracking-wider">
+                    <div className="flex items-center space-x-1 sm:space-x-2">
+                      <BadgeCheck className="h-3 w-3 sm:h-4 sm:w-4 text-primary-medium" />
                       <span>Status</span>
                     </div>
                   </th>
-                  <th className="px-8 py-6 text-center text-sm font-bold text-neutral-dark uppercase tracking-wider">Actions</th>
+                  <th className="px-2 sm:px-3 lg:px-4 py-2 sm:py-3 text-center text-xs sm:text-sm font-bold text-neutral-dark uppercase tracking-wider">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-neutral-soft/20">
                 {loading && (
                   <tr>
-                    <td colSpan={7} className="px-8 py-10 text-center text-neutral-medium">Loading customers…</td>
+                    <td colSpan={7} className="px-3 sm:px-4 py-3 sm:py-4 text-center text-neutral-medium text-sm sm:text-base">Loading customers…</td>
                   </tr>
                 )}
                 {!loading && filtered.length === 0 && (
                   <tr>
-                    <td colSpan={7} className="px-8 py-10 text-center text-neutral-medium">No customers found</td>
+                    <td colSpan={7} className="px-3 sm:px-4 py-3 sm:py-4 text-center text-neutral-medium text-sm sm:text-base">No customers found</td>
                   </tr>
                 )}
                 {filtered.map((c) => (
                   <tr key={c.id} className="group hover:bg-gradient-to-r hover:from-primary-light/5 hover:to-primary-medium/5 transition-all duration-300 hover:shadow-sm">
-                    <td className="px-8 py-6">
-                      <div className="flex items-center space-x-4">
-                        <div className="w-12 h-12 bg-neutral-light/60 rounded-xl flex items-center justify-center shadow-sm">
-                          <Users className="h-6 w-6 text-primary-dark" />
+                    <td className="px-2 sm:px-3 lg:px-4 py-2 sm:py-3">
+                      <div className="flex items-center space-x-1 sm:space-x-2">
+                        <div className="w-6 h-6 sm:w-8 sm:h-8 lg:w-10 lg:h-10 bg-neutral-light/60 rounded-lg flex items-center justify-center shadow-sm">
+                          <Users className="h-3 w-3 sm:h-4 sm:w-4 lg:h-5 lg:w-5 text-primary-dark" />
                         </div>
-                        <div className="min-w-0">
-                          <div className="text-sm font-semibold text-neutral-dark truncate max-w-[260px]">{c.name || '—'}</div>
-                          {c.website && <div className="text-xs text-neutral-medium truncate max-w-[260px]">{c.website}</div>}
+                        <div className="min-w-0 flex-1">
+                          <div className="text-xs sm:text-sm font-semibold text-neutral-dark truncate">{c.name || '—'}</div>
+                          <div className="sm:hidden text-xs text-neutral-medium truncate">{c.contact || c.email || '—'}</div>
+                          {c.website && <div className="hidden sm:block text-xs text-neutral-medium truncate">{c.website}</div>}
                         </div>
                       </div>
                     </td>
-                    <td className="px-8 py-6">
-                      <div className="text-sm font-medium text-neutral-dark">{c.contact || '—'}</div>
+                    <td className="hidden sm:table-cell px-2 sm:px-3 lg:px-4 py-2 sm:py-3">
+                      <div className="text-xs sm:text-sm font-medium text-neutral-dark">{c.contact || '—'}</div>
                     </td>
-                    <td className="px-8 py-6">
-                      <div className="text-sm text-neutral-dark">{c.email || '—'}</div>
+                    <td className="hidden md:table-cell px-2 sm:px-3 lg:px-4 py-2 sm:py-3">
+                      <div className="text-xs sm:text-sm text-neutral-dark truncate">{c.email || '—'}</div>
                     </td>
-                    <td className="px-8 py-6">
-                      <div className="text-sm text-neutral-dark">{c.phone || '—'}</div>
+                    <td className="hidden lg:table-cell px-2 sm:px-3 lg:px-4 py-2 sm:py-3">
+                      <div className="text-xs sm:text-sm text-neutral-dark">{c.phone || '—'}</div>
                     </td>
-                    <td className="px-8 py-6">
-                      <div className="text-sm text-neutral-dark truncate max-w-[220px]">{c.website || '—'}</div>
+                    <td className="hidden xl:table-cell px-2 sm:px-3 lg:px-4 py-2 sm:py-3">
+                      <div className="text-xs sm:text-sm text-neutral-dark truncate max-w-[180px]">{c.website || '—'}</div>
                     </td>
-                    <td className="px-8 py-6">
+                    <td className="px-3 sm:px-6 lg:px-8 py-4 sm:py-6">
                       <span
                         className={
-                          `inline-flex items-center px-3 py-1.5 rounded-xl text-xs font-semibold border ` +
+                          `inline-flex items-center px-2 sm:px-3 py-1 sm:py-1.5 rounded-lg sm:rounded-xl text-xs font-semibold border ` +
                           ((c.status || 'Active').toLowerCase() === 'inactive'
                             ? 'bg-accent-danger/10 text-accent-danger border-accent-danger/30'
                             : 'bg-accent-success/10 text-accent-success border-accent-success/30')
@@ -1356,16 +1384,16 @@ const Customers: React.FC = () => {
                         {c.status || 'Active'}
                       </span>
                     </td>
-                    <td className="px-8 py-6">
-                      <div className="flex items-center justify-center space-x-2">
-                        <button type="button" onClick={() => handleView(c)} className="group/btn p-3 text-primary-medium hover:text-white hover:bg-primary-medium rounded-xl transition-all duration-300 hover:shadow-lg hover:scale-105 border border-primary-light/30 hover:border-primary-medium">
-                          <Eye className="h-5 w-5" />
+                    <td className="px-3 sm:px-6 lg:px-8 py-4 sm:py-6">
+                      <div className="flex items-center justify-center space-x-1">
+                        <button type="button" onClick={() => handleView(c)} className="group/btn p-1.5 sm:p-2 text-primary-medium hover:text-white hover:bg-primary-medium rounded-lg transition-all duration-300 hover:shadow-lg hover:scale-105 border border-primary-light/30 hover:border-primary-medium">
+                          <Eye className="h-3 w-3 sm:h-4 sm:w-4" />
                         </button>
-                        <button type="button" onClick={() => handleEdit(c)} className="group/btn p-3 text-neutral-medium hover:text-white hover:bg-neutral-medium rounded-xl transition-all duration-300 hover:shadow-lg hover:scale-105 border border-neutral-soft hover:border-neutral-medium">
-                          <Edit className="h-5 w-5" />
+                        <button type="button" onClick={() => handleEdit(c)} className="group/btn p-1.5 sm:p-2 text-neutral-medium hover:text-white hover:bg-neutral-medium rounded-lg transition-all duration-300 hover:shadow-lg hover:scale-105 border border-neutral-soft hover:border-neutral-medium">
+                          <Edit className="h-3 w-3 sm:h-4 sm:w-4" />
                         </button>
-                        <button type="button" onClick={() => handleDelete(c)} className="group/btn p-3 text-accent-danger hover:text-white hover:bg-accent-danger rounded-xl transition-all duration-300 hover:shadow-lg hover:scale-105 border border-accent-danger/30 hover:border-accent-danger">
-                          <Trash2 className="h-5 w-5" />
+                        <button type="button" onClick={() => handleDelete(c)} className="group/btn p-1.5 sm:p-2 text-accent-danger hover:text-white hover:bg-accent-danger rounded-lg transition-all duration-300 hover:shadow-lg hover:scale-105 border border-accent-danger/30 hover:border-accent-danger">
+                          <Trash2 className="h-3 w-3 sm:h-4 sm:w-4" />
                         </button>
                       </div>
                     </td>
@@ -1375,9 +1403,12 @@ const Customers: React.FC = () => {
             </table>
           </div>
           {!loading && filtered.length === 0 && (
-            <div className="p-16 text-center">
+            <div className="p-8 sm:p-12 lg:p-16 text-center">
               <p className="text-neutral-medium mb-4">No customers found</p>
-              <button className="px-6 py-3 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold shadow-md">
+              <button 
+                onClick={() => { setIsAddOpen(true); setSelectedProductIds([]) }}
+                className="px-6 py-3 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold shadow-md"
+              >
                 Add Your First Customer
               </button>
             </div>

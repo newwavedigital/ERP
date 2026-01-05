@@ -34,7 +34,7 @@ const CompletedOrders: React.FC = () => {
           <div className="flex justify-between items-center">
             <div>
               <h1 className="text-3xl font-bold text-neutral-dark mb-2">Completed Orders</h1>
-              <p className="text-neutral-medium text-lg">View and manage your completed orders</p>
+              
             </div>
             <button className="px-6 py-3 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold transition-all duration-300 shadow-lg hover:shadow-xl transform hover:-translate-y-0.5 flex items-center">
               <Download className="h-5 w-5 mr-3" />

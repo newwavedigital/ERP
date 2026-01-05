@@ -48,19 +48,18 @@ const Dashboard: React.FC = () => {
   ]
 
   return (
-    <div className="p-6">
+    <div className="p-2 sm:p-4 lg:p-6">
       {/* Header */}
-      <div className="mb-6">
-        <h1 className="text-2xl font-semibold text-neutral-dark">Dashboard</h1>
-        <p className="text-neutral-medium">Manufacturing ERP Overview</p>
+      <div className="mb-3 lg:mb-4">
+        <h1 className="text-xl sm:text-2xl font-semibold text-neutral-dark">Dashboard</h1>
       </div>
 
       {/* Metrics Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 lg:gap-6 mb-4 lg:mb-6">
         {metrics.map((metric, index) => {
           const Icon = metric.icon
           return (
-            <div key={index} className="bg-white rounded-lg shadow-sm border border-neutral-soft p-6">
+            <div key={index} className="bg-white rounded-lg shadow-sm border border-neutral-soft p-3 sm:p-4 lg:p-6">
               <div className="flex items-center justify-between">
                 <div className="flex-1">
                   <p className="text-sm font-medium text-neutral-medium mb-1">{metric.title}</p>
@@ -78,8 +77,8 @@ const Dashboard: React.FC = () => {
 
       {/* Upcoming Production Section */}
       <div className="bg-white rounded-lg shadow-sm border border-neutral-soft">
-        <div className="p-6">
-          <div className="flex flex-col items-center justify-center py-12">
+        <div className="p-3 sm:p-4 lg:p-6">
+          <div className="flex flex-col items-center justify-center py-6 sm:py-8 lg:py-12">
             <div className="w-16 h-16 bg-neutral-light rounded-full flex items-center justify-center mb-4">
               <Package className="h-8 w-8 text-neutral-medium" />
             </div>
@@ -95,8 +94,8 @@ const Dashboard: React.FC = () => {
       </div>
 
       {/* Additional Stats Row */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mt-8">
-        <div className="bg-white rounded-lg shadow-sm border border-neutral-soft p-6">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3 sm:gap-4 lg:gap-6 mt-4 lg:mt-6">
+        <div className="bg-white rounded-lg shadow-sm border border-neutral-soft p-3 sm:p-4 lg:p-6">
           <h3 className="text-lg font-semibold text-neutral-dark mb-4">Recent Activity</h3>
           <div className="space-y-3">
             <div className="flex items-center text-sm">
@@ -114,7 +113,7 @@ const Dashboard: React.FC = () => {
           </div>
         </div>
 
-        <div className="bg-white rounded-lg shadow-sm border border-neutral-soft p-6">
+        <div className="bg-white rounded-lg shadow-sm border border-neutral-soft p-3 sm:p-4 lg:p-6">
           <h3 className="text-lg font-semibold text-neutral-dark mb-4">Production Summary</h3>
           <div className="space-y-3">
             <div className="flex justify-between text-sm">
@@ -132,7 +131,7 @@ const Dashboard: React.FC = () => {
           </div>
         </div>
 
-        <div className="bg-white rounded-lg shadow-sm border border-neutral-soft p-6">
+        <div className="bg-white rounded-lg shadow-sm border border-neutral-soft p-3 sm:p-4 lg:p-6">
           <h3 className="text-lg font-semibold text-neutral-dark mb-4">Quick Actions</h3>
           <div className="space-y-2">
             <button className="w-full text-left px-3 py-2 text-sm text-primary-dark hover:bg-neutral-light rounded-md transition-colors duration-200">

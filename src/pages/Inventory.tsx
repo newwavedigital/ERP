@@ -216,7 +216,7 @@ const Inventory: React.FC = () => {
     try {
       const { data, error } = await supabase
         .from('finished_goods')
-        .select('id, product_name, available_qty, reserved_qty, location, updated_at, qa_hold, qa_hold_reason, segregated_qty, segregated_location, disposition, manufacture_date, expiry_date')
+        .select('id, product_name, available_qty, reserved_qty, location, updated_at, qa_hold, qa_hold_reason, segregated_qty, segregated_location, disposition, manufacture_date, expiry_date, lot_number')
         .order('product_name', { ascending: true, nullsFirst: true })
 
       if (error) {
@@ -241,6 +241,7 @@ const Inventory: React.FC = () => {
         disposition: r.disposition ?? null,
         manufacture_date: r.manufacture_date ?? null,
         expiry_date: r.expiry_date ?? null,
+        lot_number: r.lot_number ?? null,
       }))
 
       setFg(items)
@@ -696,11 +697,10 @@ const Inventory: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-neutral-light/30 to-neutral-soft/20">
-      <div className="p-8">
-        <div className="bg-white rounded-2xl shadow-md border border-neutral-soft/20 p-8 mb-8">
+      <div className="p-2 sm:p-4 lg:p-6">
+        <div className="bg-white rounded-xl shadow-md border border-neutral-soft/20 p-3 sm:p-4 lg:p-6 mb-3 lg:mb-4">
           <div>
-            <h1 className="text-3xl font-bold text-neutral-dark mb-2">Inventory Management</h1>
-            <p className="text-neutral-medium text-lg">Manage raw materials, packaging, and finished goods inventory</p>
+            <h1 className="text-xl sm:text-2xl font-bold text-neutral-dark mb-1">Inventory Management</h1>
           </div>
         </div>
 
@@ -730,12 +730,11 @@ const Inventory: React.FC = () => {
         <div className="flex items-center justify-between mb-2 px-1">
           <div>
             <h2 className="text-xl font-semibold text-neutral-dark">{titleByTab[mainTab]}</h2>
-            <p className="text-neutral-medium">{mainTab === 'raw' ? 'Manage ingredients and forecast consumption' : mainTab === 'packaging' ? 'Track packaging materials and forecast needs' : 'Track your completed products ready for shipment'}</p>
           </div>
           <div className="flex items-center gap-2">
             {(mainTab === 'raw' || mainTab === 'packaging') && (
               <button className="inline-flex items-center gap-2 border border-neutral-soft rounded-lg px-4 py-2 text-sm bg-white hover:border-neutral-medium hover:bg-neutral-light/40 text-neutral-dark">
-                <LineChart className="h-4 w-4 text-primary-medium" /> {mainTab === 'packaging' ? 'Generate Monthly Forecast' : 'Generate Forecast'}
+                <LineChart className="h-4 w-4 text-primary-medium" /> Generate Forecast
               </button>
             )}
 
@@ -902,9 +901,9 @@ const Inventory: React.FC = () => {
                 {historyLoading ? (
                   <div className="p-6 text-center text-neutral-medium">Loading…</div>
                 ) : historyError ? (
-                  <div className="p-6 text-center text-accent-danger text-sm">{historyError}</div>
+                  <div className="p-6 text-center text-accent-danger">{historyError}</div>
                 ) : historyData.length === 0 ? (
-                  <div className="p-6 text-center text-neutral-medium text-sm">No reservation history found</div>
+                  <div className="p-6 text-center text-neutral-medium">No reservation history found</div>
                 ) : (
                   <div className="overflow-x-auto">
                     <table className="min-w-full">
@@ -997,7 +996,7 @@ const Inventory: React.FC = () => {
             <div className="text-neutral-dark font-semibold mb-1">No forecasts available</div>
             <p className="text-sm text-neutral-medium mb-6 text-center">Generate monthly packaging forecasts to optimize planning.</p>
             <button className="inline-flex items-center gap-2 rounded-xl px-5 py-2.5 text-sm text-white bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light shadow">
-              <Plus className="h-4 w-4" /> Generate Monthly Forecast
+              <Plus className="h-4 w-4" /> Generate Forecast
             </button>
           </div>
         ) : mainTab === 'finished' ? (
@@ -1005,10 +1004,18 @@ const Inventory: React.FC = () => {
             <div className="px-6 py-4 bg-gradient-to-r from-neutral-light/60 via-neutral-light/40 to-neutral-soft/30 border-b border-neutral-soft/40">
               <div className="flex items-center justify-between">
                 <h3 className="text-lg font-semibold text-neutral-dark">Finished Goods Inventory</h3>
-                <button onClick={async () => { setFgRefreshing(true); await loadFinished() }} className="px-3 py-2 text-sm border border-neutral-soft rounded-lg hover:bg-neutral-light/40 min-w-[120px] flex items-center justify-center gap-2">
-                  {fgRefreshing ? <span className="animate-spin inline-block w-4 h-4 border-2 border-primary-medium border-t-transparent rounded-full" /> : null}
-                  <span>{fgRefreshing ? 'Refreshing…' : 'Refresh Inventory'}</span>
-                </button>
+                <div className="flex items-center gap-2">
+                  <button className="inline-flex items-center gap-2 border border-neutral-soft rounded-lg px-4 py-2 text-sm bg-white hover:border-neutral-medium hover:bg-neutral-light/40 text-neutral-dark">
+                    <Plus className="h-4 w-4 text-primary-medium" /> Update Inventory
+                  </button>
+                  <button className="inline-flex items-center gap-2 border border-neutral-soft rounded-lg px-4 py-2 text-sm bg-white hover:border-neutral-medium hover:bg-neutral-light/40 text-neutral-dark">
+                    <LineChart className="h-4 w-4 text-primary-medium" /> Generate Forecast
+                  </button>
+                  <button onClick={async () => { setFgRefreshing(true); await loadFinished() }} className="px-3 py-2 text-sm border border-neutral-soft rounded-lg hover:bg-neutral-light/40 min-w-[120px] flex items-center justify-center gap-2">
+                    {fgRefreshing ? <span className="animate-spin inline-block w-4 h-4 border-2 border-primary-medium border-t-transparent rounded-full" /> : null}
+                    <span>{fgRefreshing ? 'Refreshing…' : 'Refresh Inventory'}</span>
+                  </button>
+                </div>
               </div>
             </div>
             {fgBanner.show && (
@@ -1029,11 +1036,11 @@ const Inventory: React.FC = () => {
                     <tr className="bg-white border-b border-neutral-soft/60">
                       <th className="px-5 py-3 text-left text-[11px] font-bold text-neutral-700 uppercase tracking-wider whitespace-nowrap">Product</th>
                       <th className="px-5 py-3 text-left text-[11px] font-bold text-neutral-700 uppercase tracking-wider whitespace-nowrap">Location</th>
+                      <th className="px-5 py-3 text-left text-[11px] font-bold text-neutral-700 uppercase tracking-wider whitespace-nowrap">Lot #</th>
                       <th className="px-5 py-3 text-left text-[11px] font-bold text-neutral-700 uppercase tracking-wider whitespace-nowrap">Mfg Date</th>
                       <th className="px-5 py-3 text-left text-[11px] font-bold text-neutral-700 uppercase tracking-wider whitespace-nowrap">Expiry Date</th>
                       <th className="px-5 py-3 text-right text-[11px] font-bold text-neutral-700 uppercase tracking-wider whitespace-nowrap w-28">Available Qty</th>
                       <th className="px-5 py-3 text-right text-[11px] font-bold text-neutral-700 uppercase tracking-wider whitespace-nowrap w-28">Reserved Qty</th>
-                      <th className="px-5 py-3 text-right text-[11px] font-bold text-neutral-700 uppercase tracking-wider whitespace-nowrap w-28">Segregated Qty</th>
                       <th className="px-5 py-3 text-center text-[11px] font-bold text-neutral-700 uppercase tracking-wider whitespace-nowrap w-32">Status</th>
                       <th className="px-5 py-3 text-left text-[11px] font-bold text-neutral-700 uppercase tracking-wider whitespace-nowrap">History</th>
                     </tr>
@@ -1045,7 +1052,6 @@ const Inventory: React.FC = () => {
                       const highlighted = highlightedRows[key] !== undefined
                       const hasStock = Number(item.available_qty || 0) > 0
                       const qaHold = Boolean((item as any).qa_hold)
-                      const segregatedQty = Number((item as any).segregated_qty || 0)
                       const status = qaHold ? 'QA Hold - Segregated Lot' : (hasStock ? 'Sufficient' : 'No Stock')
                       const statusTone = qaHold ? 'rose' : (hasStock ? 'emerald' : 'red')
                       const nf = new Intl.NumberFormat('en-US')
@@ -1064,11 +1070,11 @@ const Inventory: React.FC = () => {
                             </div>
                           </td>
                           <td className="px-5 py-3 text-neutral-800 whitespace-nowrap">{item.location || '—'}</td>
+                          <td className="px-5 py-3 text-neutral-800 whitespace-nowrap">{(item as any).lot_number || '—'}</td>
                           <td className="px-5 py-3 text-neutral-800 whitespace-nowrap">{fmtDate(item.manufacture_date)}</td>
                           <td className="px-5 py-3 text-neutral-800 whitespace-nowrap">{fmtDate(item.expiry_date)}</td>
                           <td className="px-5 py-3 text-right text-neutral-900 whitespace-nowrap font-mono tabular-nums">{nf.format(Number(item.available_qty || 0))}</td>
                           <td className="px-5 py-3 text-right text-neutral-900 whitespace-nowrap font-mono tabular-nums">{nf.format(allocated)}</td>
-                          <td className="px-5 py-3 text-right text-neutral-900 whitespace-nowrap font-mono tabular-nums">{nf.format(segregatedQty)}</td>
                           <td className="px-5 py-3 text-center whitespace-nowrap">
                             {qaHold ? (
                               <div className="flex flex-col items-center gap-1">

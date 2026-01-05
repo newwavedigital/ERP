@@ -1,8 +1,9 @@
 // src/pages/ProductionSchedule.tsx
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from 'react-router-dom'
-import { Calendar, X, Plus, Eye, Pencil, Trash2, MoreVertical, AlertTriangle, FileText, Lightbulb, CheckCircle2 } from "lucide-react";
+import { Calendar, X, Plus, Eye, Pencil, Trash2, MoreVertical, AlertTriangle, FileText, Lightbulb, CheckCircle2, Upload } from "lucide-react";
 import { supabase } from "../lib/supabase";
+import { useAuth } from "../contexts/AuthContext";
 import ProductionLines from "./ProductionLines";
 
 // ─────────────────────────────────────────────────────────────
@@ -98,7 +99,7 @@ type ScheduleItem = {
 // UI helpers
 // ─────────────────────────────────────────────────────────────
 const roomsList = ["Main Room", "Bnutty Room", "Dilly's Room", "Room A", "Room B"];
-const statusList = ["Scheduled", "In Progress", "Completed", "COA Failed", "Delayed"];
+const statusList = ["Scheduled", "In Progress", "Production Complete", "Completed", "Quality Hold", "Ready to Ship", "Shipped", "COA Failed", "Delayed"];
 const yesNo = ["No", "Yes"];
 
 const statusChip = (status: string) => {
@@ -107,8 +108,16 @@ const statusChip = (status: string) => {
       return "bg-blue-100 text-blue-800";
     case "In Progress":
       return "bg-yellow-100 text-yellow-800";
+    case "Production Complete":
+      return "bg-orange-100 text-orange-800";
     case "Completed":
       return "bg-green-100 text-green-800";
+    case "Quality Hold":
+      return "bg-purple-100 text-purple-800 border border-purple-200";
+    case "Ready to Ship":
+      return "bg-emerald-100 text-emerald-800";
+    case "Shipped":
+      return "bg-gray-100 text-gray-800";
     case "COMPLETED_REWORK":
       return "bg-green-100 text-green-800";
     case "QA_HOLD":
@@ -126,10 +135,25 @@ const statusText = (status: string) => {
   switch (status) {
     case "COMPLETED_REWORK":
       return "Rework Completed";
+    case "Production Complete":
+      return "Production Complete";
+    case "Quality Hold":
+      return "Quality Hold";
+    case "Ready to Ship":
+      return "Ready to Ship";
     default:
       return status;
   }
 };
+
+// Role-based access helpers
+const canManageProduction = (role: string | null) => {
+  return role === 'production_manager' || role === 'admin'
+}
+
+const canManageWarehouse = (role: string | null) => {
+  return role === 'warehouse' || role === 'admin'
+}
 
 const fmtDate = (d?: string | null) => {
   if (!d) return "";
@@ -150,6 +174,8 @@ const fmtDate = (d?: string | null) => {
 const ProductionSchedule: React.FC = () => {
   const [open, setOpen] = useState(false);
   const location = useLocation()
+  const { user } = useAuth()
+  const [currentUserRole, setCurrentUserRole] = useState<string | null>(null)
 
   // Reference datasets
   const [customers, setCustomers] = useState<Customer[]>([]);
@@ -204,6 +230,15 @@ const ProductionSchedule: React.FC = () => {
   const [highlightPoId, setHighlightPoId] = useState<string | null>(null)
   const [menuRowId, setMenuRowId] = useState<string | null>(null)
   const [menuPosition, setMenuPosition] = useState<{ top: number; left: number } | null>(null)
+
+  // PO Selection Panel State
+  const [purchaseOrders, setPurchaseOrders] = useState<any[]>([]);
+  const [poLoading, setPoLoading] = useState(false);
+  const [selectedPo, setSelectedPo] = useState<any | null>(null);
+  const [scheduleFromPoOpen, setScheduleFromPoOpen] = useState(false);
+  const [batchGoal, setBatchGoal] = useState<string>("");
+  const [productGoal, setProductGoal] = useState<number>(0);
+  const [alreadyScheduled, setAlreadyScheduled] = useState<number>(0);
 
   // Notifications
   type Toast = { id: string; type: 'success' | 'error' | 'warning'; message: string }
@@ -296,6 +331,15 @@ const ProductionSchedule: React.FC = () => {
   }>({ isOpen: false, batchId: '', lotNumber: '', action: null })
   const [dispositionNotes, setDispositionNotes] = useState('')
   const [isApplyingDisposition, setIsApplyingDisposition] = useState(false)
+  
+  // Warehouse shipping controls
+  const [shippingModal, setShippingModal] = useState<{
+    isOpen: boolean;
+    batchId: string;
+    poId: string;
+  } | null>(null)
+  const [shippingFile, setShippingFile] = useState<File | null>(null)
+  const [uploading, setUploading] = useState(false)
 
   const saveShortagesToCache = (batchId: string, shortages: ShortageRow[]) => {
     try { localStorage.setItem(SHORTAGE_CACHE_PREFIX + batchId, JSON.stringify(shortages)) } catch {}
@@ -329,6 +373,22 @@ const ProductionSchedule: React.FC = () => {
   const productByName = useMemo(() => new Map<string, Product>(products.map((p)=> [String(p.product_name || ''), p])), [products])
   const productionLineByName = useMemo(() => new Map<string, ProductionLine>(productionLines.map(pl => [String(pl.line_name || ''), pl])), [productionLines])
 
+  // ───────── Load current user role
+  const loadUserRole = async () => {
+    if (!user?.id) return
+    try {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('role')
+        .eq('id', user.id)
+        .single()
+      if (error) throw error
+      setCurrentUserRole(data?.role || null)
+    } catch (e) {
+      console.warn('Failed to load user role:', e)
+    }
+  }
+
   // ───────── Load lookups + batches
   const loadLookups = async () => {
     const [{ data: c }, { data: p }, { data: f }, { data: pl }] = await Promise.all([
@@ -345,6 +405,116 @@ const ProductionSchedule: React.FC = () => {
     setProducts(p || []);
     setFormulas(f || []);
     setProductionLines(pl || []);
+  };
+
+  // ───────── Load Purchase Orders for scheduling
+  const loadPurchaseOrders = async () => {
+    setPoLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from('purchase_orders')
+        .select('*, risk_flag')
+        .order('created_at', { ascending: false });
+      
+      if (error) throw error;
+      const raw = Array.isArray(data) ? data : []
+      const allowed = new Set(['approved', 'open', 'backordered', 'ready to schedule', 'Ready to Schedule'])
+      const filtered = raw.filter((po: any) => allowed.has(String(po?.status || '').toLowerCase()))
+      setPurchaseOrders(filtered);
+    } catch (e) {
+      console.error('Failed to load purchase orders:', e);
+      pushToast({ type: 'error', message: 'Failed to load purchase orders' });
+    } finally {
+      setPoLoading(false);
+    }
+  };
+
+  // ───────── Calculate already scheduled quantity for a PO
+  const calculateAlreadyScheduled = async (poId: string): Promise<number> => {
+    try {
+      const { data, error } = await supabase
+        .from('production_batches')
+        .select('qty')
+        .eq('source_po_id', poId);
+      
+      if (error) throw error;
+      return (data || []).reduce((sum, batch) => sum + Number(batch.qty || 0), 0);
+    } catch (e) {
+      console.error('Failed to calculate scheduled quantity:', e);
+      return 0;
+    }
+  };
+
+  // ───────── Handle PO click for scheduling
+  const handlePoClick = async (po: any) => {
+    setSelectedPo(po);
+    const scheduled = await calculateAlreadyScheduled(po.id);
+    setAlreadyScheduled(scheduled);
+    setProductGoal(Number(po.quantity || 0) - scheduled);
+    setBatchGoal('');
+    setScheduleFromPoOpen(true);
+  };
+
+  // ───────── Create batch from PO
+  const createBatchFromPo = async () => {
+    if (!selectedPo || !batchGoal || !scheduledDate) {
+      pushToast({ type: 'error', message: 'Please fill in all required fields' });
+      return;
+    }
+
+    const batchQty = Number(batchGoal);
+    if (batchQty <= 0 || batchQty > productGoal) {
+      pushToast({ type: 'error', message: 'Batch Goal must be between 1 and Product Goal' });
+      return;
+    }
+
+    setCreatingFromPo(true);
+    try {
+      // Create batch with PO reference
+      const { data: created, error: createErr } = await supabase
+        .from('production_batches')
+        .insert({
+          product_sku: selectedPo.product_name,
+          qty: batchQty,
+          room: room,
+          start_date: scheduledDate,
+          end_date: scheduledDate,
+          status: 'Scheduled',
+          customer_id: selectedPo.customer_id,
+          po_number: selectedPo.po_number || String(selectedPo.id),
+          source_po_id: selectedPo.id,
+          lot_number: lot,
+          samples_received: samplesReceived === 'Yes',
+          samples_sent: samplesSent || null,
+          completed_qty: Number(completedQty) || 0
+        })
+        .select()
+        .single();
+
+      if (createErr) throw createErr;
+
+      // Generate material requirements
+      const { error: reqErr } = await supabase.rpc('generate_material_requirements', {
+        p_batch_id: created.id
+      });
+      if (reqErr) throw reqErr;
+
+      // Update Product Goal
+      const newScheduled = alreadyScheduled + batchQty;
+      setAlreadyScheduled(newScheduled);
+      setProductGoal(Number(selectedPo.quantity || 0) - newScheduled);
+      setBatchGoal('');
+
+      await loadBatches();
+      pushToast({ type: 'success', message: 'Production batch created from PO' });
+
+      // Keep modal open for additional scheduling
+    } catch (e: any) {
+      console.error('Create batch from PO error:', e);
+      pushToast({ type: 'error', message: e?.message || 'Failed to create batch from PO' });
+    } finally {
+      setCreatingFromPo(false);
+    }
   };
 
   // ───────── QA Approve action (optimistic)
@@ -364,6 +534,143 @@ const ProductionSchedule: React.FC = () => {
       pushToast({ type: 'success', message: 'QA marked as approved' })
     } catch (e:any) {
       pushToast({ type: 'error', message: e?.message || 'Failed to mark QA approved' })
+    }
+  }
+
+  // ───────── Production Manager Status Change
+  const changeProductionStatus = async (batchId: string, newStatus: string) => {
+    try {
+      const updates: any = { status: newStatus }
+      
+      // If setting to "In Progress", also update start time
+      if (newStatus === 'In Progress') {
+        updates.start_date = new Date().toISOString()
+      }
+      
+      const { error } = await supabase
+        .from('production_batches')
+        .update(updates)
+        .eq('id', batchId)
+      
+      if (error) throw error
+      
+      // If status is "Completed", move to "Ready to Ship" and trigger communications
+      if (newStatus === 'Completed') {
+        await handleProductionCompleted(batchId)
+      }
+      
+      await loadBatches()
+      pushToast({ type: 'success', message: `Status updated to ${newStatus}` })
+    } catch (e: any) {
+      pushToast({ type: 'error', message: e?.message || 'Failed to update status' })
+    } finally {
+    }
+  }
+
+  // ───────── Handle Production Completed
+  const handleProductionCompleted = async (batchId: string) => {
+    try {
+      // Update the batch status to "Ready to Ship"
+      const { error: updateError } = await supabase
+        .from('production_batches')
+        .update({ status: 'Ready to Ship' })
+        .eq('id', batchId)
+      
+      if (updateError) throw updateError
+      
+      // TODO: Trigger communication with sales rep and warehouse
+      // This would involve creating notifications or sending emails
+      console.log('TODO: Trigger communication with sales rep and warehouse for batch:', batchId)
+      
+    } catch (e: any) {
+      console.error('Failed to handle production completion:', e)
+      throw e
+    }
+  }
+
+  // ───────── Handle Quality Hold
+  const handleQualityHold = async (batchId: string) => {
+    try {
+      const { error } = await supabase
+        .from('production_batches')
+        .update({ status: 'Quality Hold' })
+        .eq('id', batchId)
+      
+      if (error) throw error
+      
+      // TODO: Trigger communication between Quality Manager, Production Manager, and sales rep
+      console.log('TODO: Trigger communication for Quality Hold on batch:', batchId)
+      
+      await loadBatches()
+      pushToast({ type: 'success', message: 'Batch placed on Quality Hold' })
+    } catch (e: any) {
+      pushToast({ type: 'error', message: e?.message || 'Failed to place on Quality Hold' })
+    }
+  }
+
+  // ───────── Warehouse Shipping Controls
+  const handleShipOrder = async (batchId: string, poId: string) => {
+    if (!shippingFile) {
+      pushToast({ type: 'error', message: 'Please upload shipping file' })
+      return
+    }
+    
+    setUploading(true)
+    try {
+      // Upload shipping file
+      const fileExt = shippingFile.name.split('.').pop()
+      const fileName = `shipping-${poId}-${Date.now()}.${fileExt}`
+      
+      const { error: uploadError } = await supabase.storage
+        .from('shipping-documents')
+        .upload(fileName, shippingFile)
+      
+      if (uploadError) throw uploadError
+      
+      // Update batch status to "Shipped"
+      const { error: updateError } = await supabase
+        .from('production_batches')
+        .update({ 
+          status: 'Shipped',
+          shipping_file: fileName
+        })
+        .eq('id', batchId)
+      
+      if (updateError) throw updateError
+      
+      await loadBatches()
+      setShippingModal(null)
+      setShippingFile(null)
+      pushToast({ type: 'success', message: 'Order marked as shipped' })
+    } catch (e: any) {
+      pushToast({ type: 'error', message: e?.message || 'Failed to ship order' })
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  // ───────── Check if date has arrived for auto status change
+  const checkAutoStatusChange = async () => {
+    const today = new Date().toISOString().split('T')[0]
+    const scheduledBatches = items.filter(item => 
+      item.status === 'Scheduled' && 
+      item.startDate && 
+      item.startDate.split('T')[0] <= today
+    )
+    
+    for (const batch of scheduledBatches) {
+      try {
+        await supabase
+          .from('production_batches')
+          .update({ status: 'In Progress' })
+          .eq('id', batch.id)
+      } catch (e) {
+        console.warn('Failed to auto-update batch status:', e)
+      }
+    }
+    
+    if (scheduledBatches.length > 0) {
+      await loadBatches()
     }
   }
 
@@ -527,11 +834,13 @@ const ProductionSchedule: React.FC = () => {
 
     // Load lookups first, then batches (so map has names)
     (async () => {
+      await loadUserRole();
       await loadLookups();
       await loadBatches();
+      await loadPurchaseOrders();
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [location.search]);
+  }, [location.search, user?.id]);
 
   // ───────── Helpers for create
   const selectedProductName = useMemo(() => {
@@ -612,6 +921,13 @@ const ProductionSchedule: React.FC = () => {
       pushToast({ type: "error", message: "Failed to create schedule" });
     }
   };
+
+  // ───────── Auto-check for status changes on load
+  useEffect(() => {
+    if (items.length > 0) {
+      checkAutoStatusChange()
+    }
+  }, [items.length])
 
   // ───────── Filtered table items
   const filtered = useMemo(() => {
@@ -1860,7 +2176,7 @@ const ProductionSchedule: React.FC = () => {
   }
   return (
     <div className="min-h-screen bg-gradient-to-br from-neutral-light/30 to-neutral-soft/20">
-      <div className="p-8">
+      <div className="p-2 sm:p-4 lg:p-6">
         {/* Toasts */}
         <div className="fixed top-4 right-4 z-[1000] space-y-2">
           {toasts.map(t => (
@@ -2054,9 +2370,7 @@ const ProductionSchedule: React.FC = () => {
               <h1 className="text-3xl font-bold text-neutral-dark mb-1">
                 {activeSection === 'lines' ? 'Production' : 'Production Schedule'}
               </h1>
-              <p className="text-neutral-medium text-lg">
-                {activeSection === 'lines' ? 'Manage production lines and sanitation/QA' : 'Schedule production with material requirements'}
-              </p>
+              
             </div>
             <div className="flex items-center gap-3">
               {activeSection === 'schedule' && (
@@ -2198,6 +2512,57 @@ const ProductionSchedule: React.FC = () => {
           </div>
         ) : (
         <>
+        {/* PO Selection Panel */}
+        <div className="mt-6 grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <div className="lg:col-span-1">
+            <div className="bg-white rounded-2xl shadow-md border border-neutral-soft/20 overflow-hidden">
+              <div className="px-6 py-4 bg-gradient-to-r from-neutral-light/60 via-neutral-light/40 to-neutral-soft/30 border-b border-neutral-soft/40">
+                <h3 className="text-lg font-semibold text-neutral-dark">Purchase Orders</h3>
+                <p className="text-sm text-neutral-medium mt-1">Click to schedule production</p>
+              </div>
+              <div className="max-h-96 overflow-y-auto">
+                {poLoading ? (
+                  <div className="p-6 text-center text-neutral-medium">Loading purchase orders...</div>
+                ) : purchaseOrders.length === 0 ? (
+                  <div className="p-6 text-center text-neutral-medium">No purchase orders available for scheduling</div>
+                ) : (
+                  <div className="divide-y divide-neutral-soft/40">
+                    {purchaseOrders.map((po) => {
+                      const customer = customers.find(c => c.id === po.customer_id);
+                      const customerName = customer?.company_name || 'Unknown Customer';
+                      return (
+                        <div
+                          key={po.id}
+                          onClick={() => handlePoClick(po)}
+                          className="p-4 hover:bg-neutral-light/30 cursor-pointer transition-colors"
+                        >
+                          <div className="flex items-center justify-between mb-2">
+                            <div className="text-sm font-semibold text-neutral-dark">
+                              PO #{po.po_number || po.id}
+                            </div>
+                            <span className={`px-2 py-1 rounded-full text-xs font-medium ${
+                              po.status === 'Approved' ? 'bg-green-100 text-green-800' :
+                              po.status === 'Open' ? 'bg-blue-100 text-blue-800' :
+                              'bg-yellow-100 text-yellow-800'
+                            }`}>
+                              {po.status}
+                            </span>
+                          </div>
+                          <div className="text-sm text-neutral-medium mb-1">{customerName}</div>
+                          <div className="text-sm text-neutral-dark font-medium">{po.product_name}</div>
+                          <div className="text-xs text-neutral-medium mt-1">
+                            Qty: {Number(po.quantity || 0).toLocaleString()}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+          
+          <div className="lg:col-span-2">
         {/* Suggested Consolidation banners (Schedule tab only) */}
         {activeSection === 'schedule' && (() => {
           try {
@@ -2520,6 +2885,8 @@ const ProductionSchedule: React.FC = () => {
             </div>
           </div>
         )}
+          </div>
+        </div>
         </>
         )}
 
@@ -2527,7 +2894,7 @@ const ProductionSchedule: React.FC = () => {
         {menuRowId && menuPosition && (
           <div 
             ref={menuPopupRef}
-            className="fixed w-32 bg-white border border-neutral-soft rounded-lg shadow-lg z-50 text-xs"
+            className="fixed w-40 bg-white border border-neutral-soft rounded-lg shadow-lg z-50 text-xs"
             style={{ 
               top: `${menuPosition.top}px`, 
               left: `${menuPosition.left}px` 
@@ -2559,6 +2926,65 @@ const ProductionSchedule: React.FC = () => {
             >
               <Pencil className="h-3.5 w-3.5 mr-2" /> Edit
             </button>
+            
+            {/* Production Manager Status Controls */}
+            {canManageProduction(currentUserRole) && (() => {
+              const row = filtered.find(r => r.id === menuRowId);
+              if (!row) return null;
+              
+              const availableStatuses = [];
+              if (row.status === 'Scheduled') {
+                availableStatuses.push('In Progress');
+              } else if (row.status === 'In Progress') {
+                availableStatuses.push('Production Complete');
+              } else if (row.status === 'Production Complete') {
+                availableStatuses.push('Completed', 'Quality Hold');
+              }
+              
+              return availableStatuses.map(status => (
+                <button
+                  key={status}
+                  className="w-full flex items-center px-3 py-2 hover:bg-blue-50 text-blue-700"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (status === 'Quality Hold') {
+                      handleQualityHold(menuRowId!);
+                    } else {
+                      changeProductionStatus(menuRowId!, status);
+                    }
+                    setMenuRowId(null);
+                    setMenuPosition(null);
+                  }}
+                >
+                  <CheckCircle2 className="h-3.5 w-3.5 mr-2" /> {status}
+                </button>
+              ));
+            })()}
+            
+            {/* Warehouse Shipping Controls */}
+            {canManageWarehouse(currentUserRole) && (() => {
+              const row = filtered.find(r => r.id === menuRowId);
+              if (!row || row.status !== 'Ready to Ship') return null;
+              
+              return (
+                <button
+                  className="w-full flex items-center px-3 py-2 hover:bg-green-50 text-green-700"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setShippingModal({
+                      isOpen: true,
+                      batchId: menuRowId!,
+                      poId: row.sourcePoId || row.po || ''
+                    });
+                    setMenuRowId(null);
+                    setMenuPosition(null);
+                  }}
+                >
+                  <Upload className="h-3.5 w-3.5 mr-2" /> Ship Order
+                </button>
+              );
+            })()}
+            
             <button
               className="w-full flex items-center px-3 py-2 hover:bg-red-50 text-accent-danger"
               onClick={(e) => { 
@@ -3430,6 +3856,197 @@ const ProductionSchedule: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* Schedule from PO Modal */}
+      {scheduleFromPoOpen && selectedPo && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/60" onClick={() => !creatingFromPo && setScheduleFromPoOpen(false)}></div>
+          <div className="relative z-10 w-full max-w-2xl max-h-[88vh] bg-white rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden flex flex-col">
+            <div className="flex items-center justify-between px-8 py-6 bg-gradient-to-r from-neutral-light to-neutral-light/80 border-b border-neutral-soft/50">
+              <div>
+                <h2 className="text-2xl font-semibold text-neutral-dark">Schedule from Purchase Order</h2>
+                <p className="text-sm text-neutral-medium mt-1">Create production batches from PO #{selectedPo.po_number || selectedPo.id}</p>
+              </div>
+              <button 
+                onClick={() => !creatingFromPo && setScheduleFromPoOpen(false)} 
+                className="p-3 text-neutral-medium hover:text-neutral-dark hover:bg-white/60 rounded-xl transition-all duration-200 hover:shadow-sm"
+              >
+                <X className="h-6 w-6" />
+              </button>
+            </div>
+
+            <div className="p-8 space-y-6 overflow-y-auto">
+              {/* PO Information (Read-Only) */}
+              <div className="rounded-xl border border-neutral-soft bg-neutral-light/20 p-6">
+                <h3 className="text-lg font-semibold text-neutral-dark mb-4">Purchase Order Information</h3>
+                <div className="grid grid-cols-2 gap-4 text-sm">
+                  <div>
+                    <div className="text-neutral-medium mb-1">PO Number</div>
+                    <div className="font-semibold text-neutral-dark">{selectedPo.id}</div>
+                  </div>
+                  <div>
+                    <div className="text-neutral-medium mb-1">Customer</div>
+                    <div className="font-semibold text-neutral-dark">
+                      {customers.find(c => c.id === selectedPo.customer_id)?.company_name || 'Unknown'}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-neutral-medium mb-1">Product</div>
+                    <div className="font-semibold text-neutral-dark">{selectedPo.product_name}</div>
+                  </div>
+                  <div>
+                    <div className="text-neutral-medium mb-1">Status</div>
+                    <div className="font-semibold text-neutral-dark">{selectedPo.status}</div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Quantity Information */}
+              <div className="rounded-xl border border-neutral-soft bg-white p-6">
+                <h3 className="text-lg font-semibold text-neutral-dark mb-4">Quantity Breakdown</h3>
+                <div className="grid grid-cols-3 gap-4 text-sm">
+                  <div>
+                    <div className="text-neutral-medium mb-1">Total PO Quantity</div>
+                    <div className="text-2xl font-bold text-neutral-dark">{Number(selectedPo.quantity || 0).toLocaleString()}</div>
+                  </div>
+                  <div>
+                    <div className="text-neutral-medium mb-1">Already Scheduled</div>
+                    <div className="text-2xl font-bold text-blue-600">{alreadyScheduled.toLocaleString()}</div>
+                  </div>
+                  <div>
+                    <div className="text-neutral-medium mb-1">Product Goal (Remaining)</div>
+                    <div className="text-2xl font-bold text-primary-medium">{productGoal.toLocaleString()}</div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Batch Goal Input */}
+              <div className="space-y-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div>
+                    <label className="block text-sm font-semibold text-neutral-dark mb-2">Scheduled Date</label>
+                    <input
+                      type="date"
+                      value={scheduledDate}
+                      onChange={(e) => setScheduledDate(e.target.value)}
+                      className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light bg-white text-neutral-dark"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-semibold text-neutral-dark mb-2">Production Room</label>
+                    <select
+                      value={room}
+                      onChange={(e) => setRoom(e.target.value)}
+                      className="w-full px-4 py-3 border border-neutral-soft rounded-lg bg-white focus:ring-2 focus:ring-primary-light focus:border-primary-light"
+                    >
+                      {roomsList.map(r => (
+                        <option key={r} value={r}>{r}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-semibold text-neutral-dark mb-2">Batch Goal</label>
+                  <input
+                    type="number"
+                    value={batchGoal}
+                    onChange={(e) => setBatchGoal(e.target.value)}
+                    placeholder="Enter quantity for this batch"
+                    min="1"
+                    max={productGoal}
+                    className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light bg-white text-neutral-dark"
+                  />
+                  <p className="text-xs text-neutral-medium mt-1">
+                    Maximum: {productGoal.toLocaleString()} (remaining quantity)
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-semibold text-neutral-dark mb-2">Lot Number (Optional)</label>
+                  <input
+                    type="text"
+                    value={lot}
+                    onChange={(e) => setLot(e.target.value)}
+                    placeholder="Enter lot number"
+                    className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light bg-white text-neutral-dark"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="px-8 py-6 border-t border-neutral-soft/50 bg-white flex items-center justify-between">
+              <div className="text-sm text-neutral-medium">
+                {productGoal > 0 ? 'Modal will stay open for additional scheduling' : 'PO fully scheduled'}
+              </div>
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => setScheduleFromPoOpen(false)}
+                  disabled={creatingFromPo}
+                  className="px-5 py-2.5 rounded-xl border border-neutral-soft text-neutral-dark hover:bg-neutral-light/60 transition-all disabled:opacity-50"
+                >
+                  Close
+                </button>
+                <button
+                  onClick={createBatchFromPo}
+                  disabled={creatingFromPo || !batchGoal || !scheduledDate || Number(batchGoal) <= 0 || Number(batchGoal) > productGoal}
+                  className="px-6 py-2.5 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold shadow-md disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                >
+                  {creatingFromPo ? 'Creating Batch...' : 'Create Batch'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+        {/* Shipping Modal for Warehouse Staff */}
+        {shippingModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-black/50" onClick={() => setShippingModal(null)}></div>
+            <div className="relative z-10 w-full max-w-md bg-white rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden">
+              <div className="px-6 py-4 border-b flex items-center justify-between">
+                <div>
+                  <h3 className="text-lg font-semibold text-neutral-dark">Ship Order</h3>
+                  <p className="text-sm text-neutral-medium">Upload shipping document and mark as shipped</p>
+                </div>
+                <button className="p-2" onClick={() => setShippingModal(null)}><X className="h-5 w-5"/></button>
+              </div>
+
+              <div className="p-6 space-y-4">
+                <div>
+                  <label className="block text-sm font-semibold text-neutral-dark mb-2">Shipping Document</label>
+                  <input
+                    type="file"
+                    accept=".pdf,.jpg,.jpeg,.png"
+                    onChange={(e) => setShippingFile(e.target.files?.[0] || null)}
+                    className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light bg-white text-neutral-dark"
+                  />
+                  <p className="text-xs text-neutral-medium mt-1">
+                    Upload scan of shipping document (PDF, JPG, PNG)
+                  </p>
+                </div>
+
+                <div className="flex items-center justify-end gap-3 pt-4">
+                  <button
+                    onClick={() => setShippingModal(null)}
+                    disabled={uploading}
+                    className="px-4 py-2 rounded-lg border border-neutral-soft text-neutral-dark hover:bg-neutral-light/60 transition-all disabled:opacity-50"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={() => handleShipOrder(shippingModal.batchId, shippingModal.poId)}
+                    disabled={uploading || !shippingFile}
+                    className="px-6 py-2 rounded-lg bg-green-600 hover:bg-green-700 text-white font-semibold disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                  >
+                    {uploading ? 'Shipping...' : 'Mark as Shipped'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
     </div>
   );
 };

@@ -189,9 +189,6 @@ const Formulas: React.FC<FormulasProps> = ({ openSignal, embedded = false }) => 
               <h1 className="text-2xl font-bold text-neutral-dark">
                 Formula Manager
               </h1>
-              <p className="text-neutral-medium">
-                Manage product recipes and bills of materials
-              </p>
             </div>
 
             <button

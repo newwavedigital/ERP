@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react'
-import { Plus, Search, Filter, Truck, Building2, MapPin, Phone, Star, User, Mail, Globe, CreditCard, X, Eye, Edit, Trash2, CheckCircle2, Percent } from 'lucide-react'
+import { Plus, Minus, Search, Filter, Truck, Building2, MapPin, Phone, User, Mail, Globe, CreditCard, X, Eye, Edit, Trash2, CheckCircle2, Percent, Package, ExternalLink } from 'lucide-react'
 import { supabase } from '../lib/supabase'
+import { useNavigate } from 'react-router-dom'
 
 interface Supplier {
   id: string
@@ -66,52 +67,53 @@ const ViewSupplierModal: React.FC<ViewSupplierModalProps> = ({ supplier, onClose
   ]
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 animate-fade-in">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-1 sm:p-4 animate-fade-in">
       <div className="absolute inset-0 bg-gradient-to-br from-primary-dark/20 via-black/60 to-primary-medium/20 backdrop-blur-sm" onClick={onClose}></div>
-      <div className="relative z-10 w-full max-w-6xl max-h-[95vh] bg-white rounded-3xl shadow-2xl border border-neutral-soft/30 overflow-hidden flex flex-col transform animate-scale-in">
+      <div className="relative z-10 w-full max-w-[95vw] sm:max-w-4xl lg:max-w-5xl xl:max-w-6xl max-h-[98vh] sm:max-h-[95vh] bg-white rounded-lg sm:rounded-xl lg:rounded-2xl shadow-2xl border border-neutral-soft/30 overflow-hidden flex flex-col transform animate-scale-in">
         {/* Enhanced Header */}
-        <div className="relative bg-gradient-to-r from-primary-dark via-primary-medium to-primary-light px-8 py-6">
+        <div className="relative bg-gradient-to-r from-primary-dark via-primary-medium to-primary-light px-2 sm:px-4 lg:px-6 py-2 sm:py-3 lg:py-4">
           <div className="absolute inset-0 bg-gradient-to-r from-primary-dark/90 to-primary-medium/90"></div>
           <div className="relative flex items-center justify-between">
-            <div className="flex items-center space-x-4">
-              <div className="w-12 h-12 bg-white/20 rounded-2xl flex items-center justify-center backdrop-blur-sm">
-                <Building2 className="h-6 w-6 text-white" />
+            <div className="flex items-center space-x-2 min-w-0 flex-1">
+              <div className="w-6 h-6 sm:w-8 sm:h-8 lg:w-10 lg:h-10 bg-white/20 rounded-md sm:rounded-lg lg:rounded-xl flex items-center justify-center backdrop-blur-sm flex-shrink-0">
+                <Building2 className="h-3 w-3 sm:h-4 sm:w-4 lg:h-5 lg:w-5 text-white" />
               </div>
-              <div>
-                <h2 className="text-2xl font-bold text-white">{supplier.name || 'Supplier Details'}</h2>
-                <p className="text-primary-light/90 text-sm font-medium mt-1">Complete supplier information overview</p>
+              <div className="min-w-0 flex-1">
+                <h2 className="text-sm sm:text-lg lg:text-xl font-bold text-white truncate">{supplier.name || 'Supplier Details'}</h2>
+                <p className="text-primary-light/90 text-xs font-medium mt-0.5 hidden sm:block">Complete supplier information</p>
               </div>
             </div>
             <button 
               onClick={onClose} 
-              className="p-3 text-white/80 hover:text-white hover:bg-white/20 rounded-2xl transition-all duration-300 hover:scale-110 backdrop-blur-sm"
+              className="p-1.5 sm:p-2 lg:p-3 text-white/80 hover:text-white hover:bg-white/20 rounded-md sm:rounded-lg lg:rounded-xl transition-all duration-300 backdrop-blur-sm flex-shrink-0"
             >
-              <X className="h-6 w-6" />
+              <X className="h-4 w-4 sm:h-5 sm:w-5 lg:h-6 lg:w-6" />
             </button>
           </div>
         </div>
 
         {/* Advanced Tab Navigation */}
         <div className="bg-gradient-to-r from-neutral-light via-white to-neutral-light border-b border-neutral-soft/40">
-          <div className="flex overflow-x-auto scrollbar-hide">
+          <div className="flex overflow-x-auto scrollbar-hide px-1">
             {tabs.map((tab) => {
               const Icon = tab.icon
               return (
                 <button
                   key={tab.id}
                   onClick={() => setActiveTab(tab.id)}
-                  className={`relative flex items-center space-x-3 px-6 py-4 text-sm font-semibold transition-all duration-300 border-b-3 min-w-max ${
+                  className={`relative flex items-center space-x-1 sm:space-x-2 px-1.5 sm:px-3 lg:px-4 py-2 sm:py-3 text-xs sm:text-sm font-semibold transition-all duration-300 border-b-2 min-w-max flex-shrink-0 ${
                     activeTab === tab.id
-                      ? 'text-primary-dark border-primary-medium bg-gradient-to-t from-primary-light/10 to-transparent shadow-lg'
-                      : 'text-neutral-medium border-transparent hover:text-primary-dark hover:bg-primary-light/5 hover:border-primary-light/50'
+                      ? 'text-primary-dark border-primary-medium bg-gradient-to-t from-primary-light/10 to-transparent'
+                      : 'text-neutral-medium border-transparent hover:text-primary-dark hover:bg-primary-light/5'
                   }`}
                 >
-                  <Icon className={`h-5 w-5 transition-all duration-300 ${
+                  <Icon className={`h-3 w-3 sm:h-4 sm:w-4 transition-all duration-300 ${
                     activeTab === tab.id ? 'text-primary-medium' : 'text-neutral-medium'
                   }`} />
-                  <span>{tab.label}</span>
+                  <span className="hidden sm:inline text-xs sm:text-sm">{tab.label}</span>
+                  <span className="sm:hidden text-xs">{tab.label.split(' ')[0]}</span>
                   {activeTab === tab.id && (
-                    <div className="absolute bottom-0 left-0 right-0 h-1 bg-gradient-to-r from-primary-medium to-primary-light rounded-t-full"></div>
+                    <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-gradient-to-r from-primary-medium to-primary-light"></div>
                   )}
                 </button>
               )
@@ -122,95 +124,95 @@ const ViewSupplierModal: React.FC<ViewSupplierModalProps> = ({ supplier, onClose
         {/* Enhanced Tab Content */}
         <div className="flex-1 overflow-y-auto bg-gradient-to-br from-neutral-light/30 via-white to-neutral-soft/20">
           {activeTab === 'basic' && (
-            <div className="p-8 space-y-8 animate-slide-in">
+            <div className="p-2 sm:p-4 lg:p-6 space-y-3 sm:space-y-4 lg:space-y-6 animate-slide-in">
               {/* Company Overview Card */}
-              <div className="bg-white rounded-2xl shadow-lg border border-neutral-soft/30 overflow-hidden">
-                <div className="bg-gradient-to-r from-primary-dark/5 to-primary-medium/5 px-6 py-4 border-b border-neutral-soft/20">
-                  <h3 className="text-lg font-bold text-primary-dark flex items-center">
-                    <Building2 className="h-5 w-5 mr-3 text-primary-medium" />
+              <div className="bg-white rounded-lg shadow-lg border border-neutral-soft/30 overflow-hidden">
+                <div className="bg-gradient-to-r from-primary-dark/5 to-primary-medium/5 px-2 sm:px-3 lg:px-4 py-2 sm:py-3 border-b border-neutral-soft/20">
+                  <h3 className="text-sm sm:text-base lg:text-lg font-bold text-primary-dark flex items-center">
+                    <Building2 className="h-3 w-3 sm:h-4 sm:w-4 lg:h-5 lg:w-5 mr-1.5 sm:mr-2 lg:mr-3 text-primary-medium" />
                     Company Overview
                   </h3>
                 </div>
-                <div className="p-6">
-                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                    <div className="space-y-6">
+                <div className="p-2 sm:p-3 lg:p-4">
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 sm:gap-4 lg:gap-6">
+                    <div className="space-y-3 sm:space-y-4">
                       <div className="group">
-                        <div className="flex items-center mb-2">
-                          <div className="w-2 h-2 bg-primary-medium rounded-full mr-3"></div>
+                        <div className="flex items-center mb-1 sm:mb-2">
+                          <div className="w-1.5 h-1.5 sm:w-2 sm:h-2 bg-primary-medium rounded-full mr-2 sm:mr-3"></div>
                           <label className="text-xs font-bold text-neutral-medium uppercase tracking-wider">Company Name</label>
                         </div>
-                        <div className="text-xl font-bold text-neutral-dark bg-gradient-to-r from-primary-dark to-primary-medium bg-clip-text text-transparent">
+                        <div className="text-sm sm:text-lg lg:text-xl font-bold text-neutral-dark bg-gradient-to-r from-primary-dark to-primary-medium bg-clip-text text-transparent">
                           {supplier.name || 'Not specified'}
                         </div>
                       </div>
                       
                       <div className="group">
-                        <div className="flex items-center mb-2">
-                          <div className="w-2 h-2 bg-primary-light rounded-full mr-3"></div>
+                        <div className="flex items-center mb-1 sm:mb-2">
+                          <div className="w-1.5 h-1.5 sm:w-2 sm:h-2 bg-primary-light rounded-full mr-2 sm:mr-3"></div>
                           <label className="text-xs font-bold text-neutral-medium uppercase tracking-wider">DBA</label>
                         </div>
-                        <div className="text-lg font-semibold text-neutral-dark">
+                        <div className="text-sm sm:text-base lg:text-lg font-semibold text-neutral-dark">
                           {supplier.dba || 'Same as company name'}
                         </div>
                       </div>
 
                       <div className="group">
-                        <div className="flex items-center mb-2">
-                          <div className="w-2 h-2 bg-accent-success rounded-full mr-3"></div>
+                        <div className="flex items-center mb-1 sm:mb-2">
+                          <div className="w-1.5 h-1.5 sm:w-2 sm:h-2 bg-accent-success rounded-full mr-2 sm:mr-3"></div>
                           <label className="text-xs font-bold text-neutral-medium uppercase tracking-wider">Contact Person</label>
                         </div>
-                        <div className="flex items-center space-x-3">
-                          <div className="w-10 h-10 bg-gradient-to-br from-primary-light to-primary-medium rounded-full flex items-center justify-center">
-                            <User className="h-5 w-5 text-white" />
+                        <div className="flex items-center space-x-2 sm:space-x-3">
+                          <div className="w-6 h-6 sm:w-8 sm:h-8 lg:w-10 lg:h-10 bg-gradient-to-br from-primary-light to-primary-medium rounded-full flex items-center justify-center flex-shrink-0">
+                            <User className="h-3 w-3 sm:h-4 sm:w-4 lg:h-5 lg:w-5 text-white" />
                           </div>
-                          <div className="text-lg font-semibold text-neutral-dark">
+                          <div className="text-sm sm:text-base lg:text-lg font-semibold text-neutral-dark min-w-0">
                             {supplier.contact || 'Not specified'}
                           </div>
                         </div>
                       </div>
                     </div>
 
-                    <div className="space-y-6">
+                    <div className="space-y-3 sm:space-y-4">
                       <div className="group">
-                        <div className="flex items-center mb-2">
-                          <div className="w-2 h-2 bg-primary-medium rounded-full mr-3"></div>
+                        <div className="flex items-center mb-1 sm:mb-2">
+                          <div className="w-1.5 h-1.5 sm:w-2 sm:h-2 bg-primary-medium rounded-full mr-2 sm:mr-3"></div>
                           <label className="text-xs font-bold text-neutral-medium uppercase tracking-wider">Email Address</label>
                         </div>
-                        <div className="flex items-center space-x-3">
-                          <div className="w-10 h-10 bg-gradient-to-br from-accent-success to-primary-medium rounded-full flex items-center justify-center">
-                            <Mail className="h-5 w-5 text-white" />
+                        <div className="flex items-center space-x-2 sm:space-x-3">
+                          <div className="w-6 h-6 sm:w-8 sm:h-8 lg:w-10 lg:h-10 bg-gradient-to-br from-accent-success to-primary-medium rounded-full flex items-center justify-center flex-shrink-0">
+                            <Mail className="h-3 w-3 sm:h-4 sm:w-4 lg:h-5 lg:w-5 text-white" />
                           </div>
-                          <div className="text-lg font-medium text-primary-dark hover:text-primary-medium transition-colors cursor-pointer">
+                          <div className="text-sm sm:text-base lg:text-lg font-medium text-primary-dark hover:text-primary-medium transition-colors cursor-pointer min-w-0 break-all">
                             {supplier.email || 'Not provided'}
                           </div>
                         </div>
                       </div>
 
                       <div className="group">
-                        <div className="flex items-center mb-2">
-                          <div className="w-2 h-2 bg-accent-warning rounded-full mr-3"></div>
+                        <div className="flex items-center mb-1 sm:mb-2">
+                          <div className="w-1.5 h-1.5 sm:w-2 sm:h-2 bg-accent-warning rounded-full mr-2 sm:mr-3"></div>
                           <label className="text-xs font-bold text-neutral-medium uppercase tracking-wider">Phone Number</label>
                         </div>
-                        <div className="flex items-center space-x-3">
-                          <div className="w-10 h-10 bg-gradient-to-br from-accent-warning to-primary-light rounded-full flex items-center justify-center">
-                            <Phone className="h-5 w-5 text-white" />
+                        <div className="flex items-center space-x-2 sm:space-x-3">
+                          <div className="w-6 h-6 sm:w-8 sm:h-8 lg:w-10 lg:h-10 bg-gradient-to-br from-accent-warning to-primary-light rounded-full flex items-center justify-center flex-shrink-0">
+                            <Phone className="h-3 w-3 sm:h-4 sm:w-4 lg:h-5 lg:w-5 text-white" />
                           </div>
-                          <div className="text-lg font-medium text-neutral-dark">
+                          <div className="text-sm sm:text-base lg:text-lg font-medium text-neutral-dark min-w-0">
                             {supplier.phone || 'Not provided'}
                           </div>
                         </div>
                       </div>
 
                       <div className="group">
-                        <div className="flex items-center mb-2">
-                          <div className="w-2 h-2 bg-primary-light rounded-full mr-3"></div>
+                        <div className="flex items-center mb-1 sm:mb-2">
+                          <div className="w-1.5 h-1.5 sm:w-2 sm:h-2 bg-primary-light rounded-full mr-2 sm:mr-3"></div>
                           <label className="text-xs font-bold text-neutral-medium uppercase tracking-wider">Website</label>
                         </div>
-                        <div className="flex items-center space-x-3">
-                          <div className="w-10 h-10 bg-gradient-to-br from-primary-light to-primary-dark rounded-full flex items-center justify-center">
-                            <Globe className="h-5 w-5 text-white" />
+                        <div className="flex items-center space-x-2 sm:space-x-3">
+                          <div className="w-6 h-6 sm:w-8 sm:h-8 lg:w-10 lg:h-10 bg-gradient-to-br from-primary-light to-primary-dark rounded-full flex items-center justify-center flex-shrink-0">
+                            <Globe className="h-3 w-3 sm:h-4 sm:w-4 lg:h-5 lg:w-5 text-white" />
                           </div>
-                          <div className="text-lg font-medium text-primary-dark hover:text-primary-medium transition-colors cursor-pointer break-all">
+                          <div className="text-sm sm:text-base lg:text-lg font-medium text-primary-dark hover:text-primary-medium transition-colors cursor-pointer min-w-0 break-all">
                             {supplier.website || 'Not provided'}
                           </div>
                         </div>
@@ -691,10 +693,16 @@ const ViewSupplierModal: React.FC<ViewSupplierModalProps> = ({ supplier, onClose
 }
 
 const Suppliers: React.FC = () => {
+  const navigate = useNavigate()
   const [searchTerm, setSearchTerm] = useState<string>('')
   const [suppliers, setSuppliers] = useState<Supplier[]>([])
   const [isAddOpen, setIsAddOpen] = useState<boolean>(false)
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false)
+  const [ingredients, setIngredients] = useState<any[]>([])
+  const [packaging, setPackaging] = useState<any[]>([])
+  const [loadingInventory, setLoadingInventory] = useState<boolean>(false)
+  const [showIngredientsList, setShowIngredientsList] = useState<boolean>(false)
+  const [showPackagingList, setShowPackagingList] = useState<boolean>(false)
   const [isViewOpen, setIsViewOpen] = useState<boolean>(false)
   const [viewData, setViewData] = useState<Supplier | null>(null)
   const [isEditOpen, setIsEditOpen] = useState<boolean>(false)
@@ -783,6 +791,8 @@ const Suppliers: React.FC = () => {
     purchase_approval_documents_received: false,
     purchase_approval_determination: '',
     approved_by: '',
+    selected_ingredients: [] as string[],
+    selected_packaging: [] as string[],
   })
 
   const filteredSuppliers = suppliers.filter(supplier => {
@@ -796,10 +806,6 @@ const Suppliers: React.FC = () => {
     )
   })
 
-  const totalSuppliers = suppliers.length
-  const activeSuppliers = suppliers.filter(s => s.status === 'Active').length
-  const averageRating = suppliers.length ? suppliers.reduce((sum, s) => sum + s.rating, 0) / suppliers.length : 0
-  const categories = [...new Set(suppliers.map(s => s.category))].length
 
   const refresh = async () => {
     const { data, error } = await supabase
@@ -864,10 +870,75 @@ const Suppliers: React.FC = () => {
 
   useEffect(() => {
     if (toast.show) {
-      const t = setTimeout(() => setToast({ show: false, message: '' }), 3000)
-      return () => clearTimeout(t)
+      const timer = setTimeout(() => setToast({ show: false, message: '' }), 3000)
+      return () => clearTimeout(timer)
     }
   }, [toast.show])
+
+  useEffect(() => {
+    const loadInventoryData = async () => {
+      if (!supabase) return
+      setLoadingInventory(true)
+      
+      try {
+        // Load ingredients (raw materials)
+        const { data: rawMaterials, error: rawError } = await supabase
+          .from('inventory_materials')
+          .select('id, product_name, category')
+          .order('product_name', { ascending: true })
+        
+        if (rawError) {
+          console.error('Failed to load ingredients:', rawError)
+        } else {
+          setIngredients(rawMaterials || [])
+        }
+        
+        // For packaging, we'll use the same table but filter by category
+        // or you can modify this to use a different table if packaging is stored separately
+        const { data: packagingMaterials, error: packagingError } = await supabase
+          .from('inventory_materials')
+          .select('id, product_name, category')
+          .eq('category', 'Packaging')
+          .order('product_name', { ascending: true })
+        
+        if (packagingError) {
+          console.error('Failed to load packaging:', packagingError)
+        } else {
+          setPackaging(packagingMaterials || [])
+        }
+      } catch (error) {
+        console.error('Error loading inventory data:', error)
+      } finally {
+        setLoadingInventory(false)
+      }
+    }
+    
+    loadInventoryData()
+  }, [])
+
+  const handleIngredientToggle = (ingredientId: string) => {
+    setAddForm(prev => ({
+
+      ...prev,
+      selected_ingredients: prev.selected_ingredients.includes(ingredientId)
+        ? prev.selected_ingredients.filter(id => id !== ingredientId)
+        : [...prev.selected_ingredients, ingredientId]
+    }))
+  }
+
+  const handlePackagingToggle = (packagingId: string) => {
+    setAddForm(prev => ({
+      ...prev,
+      selected_packaging: prev.selected_packaging.includes(packagingId)
+        ? prev.selected_packaging.filter(id => id !== packagingId)
+        : [...prev.selected_packaging, packagingId]
+    }))
+  }
+
+  const handleNavigateToInventory = () => {
+    setIsAddOpen(false)
+    navigate('/admin/inventory')
+  }
 
   const handleView = (s: Supplier) => {
     setViewData(s)
@@ -926,16 +997,15 @@ const Suppliers: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-neutral-light/30 to-neutral-soft/20">
-      <div className="p-8">
+      <div className="p-2 sm:p-4 lg:p-6 max-w-full">
         {/* Header */}
-        <div className="bg-white rounded-2xl shadow-md border border-neutral-soft/20 p-8 mb-8">
-          <div className="flex justify-between items-center">
+        <div className="bg-white rounded-xl shadow-md border border-neutral-soft/20 p-3 sm:p-4 lg:p-6 mb-3 lg:mb-4">
+          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
             <div>
-              <h1 className="text-3xl font-bold text-neutral-dark mb-2">Suppliers</h1>
-              <p className="text-neutral-medium text-lg">Manage your supplier relationships and procurement</p>
+              <h1 className="text-xl sm:text-2xl font-bold text-neutral-dark mb-1">Suppliers</h1>
             </div>
-            <button onClick={() => setIsAddOpen(true)} className="px-6 py-3 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold transition-all duration-300 shadow-lg hover:shadow-xl transform hover:-translate-y-0.5 flex items-center">
-              <Plus className="h-5 w-5 mr-3" />
+            <button onClick={() => setIsAddOpen(true)} className="w-full sm:w-auto px-4 sm:px-6 py-2.5 sm:py-3 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold transition-all duration-300 shadow-lg hover:shadow-xl transform hover:-translate-y-0.5 flex items-center justify-center">
+              <Plus className="h-4 w-4 sm:h-5 sm:w-5 mr-2 sm:mr-3" />
               Add Supplier
             </button>
           </div>
@@ -1058,6 +1128,8 @@ const Suppliers: React.FC = () => {
                         purchase_approval_documents_received: false,
                         purchase_approval_determination: '',
                         approved_by: '',
+                        selected_ingredients: [],
+                        selected_packaging: [],
                       })
                       setToast({ show: true, message: 'Supplier added successfully' })
                     } catch (err: any) {
@@ -1209,6 +1281,122 @@ const Suppliers: React.FC = () => {
                         className="w-full min-h-[80px] px-4 py-2.5 border border-neutral-soft/60 rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-medium bg-white text-neutral-dark placeholder-neutral-medium/70 hover:border-neutral-medium transition-all resize-none"
                         placeholder="List materials and services provided"
                       />
+                    </div>
+
+                    {/* Ingredients Field */}
+                    <div className="grid grid-cols-1 md:grid-cols-[200px_1fr] gap-4 items-start">
+                      <label className="text-sm font-medium text-neutral-dark pt-2">Ingredients</label>
+                      <div className="space-y-3">
+                        <div>
+                          <button
+                            type="button"
+                            onClick={() => setShowIngredientsList((v) => !v)}
+                            className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg border border-neutral-soft/60 bg-white text-neutral-dark hover:bg-neutral-light/40 transition-all text-sm font-medium"
+                          >
+                            {showIngredientsList ? <Minus className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
+                            {showIngredientsList ? 'Hide Ingredients' : 'Add Ingredients'}
+                          </button>
+                        </div>
+
+                        {showIngredientsList && (
+                          <div className="border border-neutral-soft/60 rounded-lg p-3 bg-white space-y-3">
+                            <div className="max-h-40 overflow-y-auto">
+                              {loadingInventory ? (
+                                <div className="text-sm text-neutral-medium">Loading ingredients...</div>
+                              ) : ingredients.length === 0 ? (
+                                <div className="text-sm text-neutral-medium">No ingredients found</div>
+                              ) : (
+                                <div className="space-y-2">
+                                  {ingredients.map((ingredient) => (
+                                    <label key={ingredient.id} className="flex items-center space-x-2 cursor-pointer hover:bg-neutral-light/20 p-1 rounded">
+                                      <input
+                                        type="checkbox"
+                                        checked={addForm.selected_ingredients.includes(ingredient.id)}
+                                        onChange={() => handleIngredientToggle(ingredient.id)}
+                                        className="h-4 w-4 text-primary-medium focus:ring-primary-light border-neutral-soft rounded"
+                                      />
+                                      <span className="text-sm text-neutral-dark">{ingredient.product_name}</span>
+                                      {ingredient.category && (
+                                        <span className="text-xs text-neutral-medium bg-neutral-light/40 px-2 py-0.5 rounded">
+                                          {ingredient.category}
+                                        </span>
+                                      )}
+                                    </label>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+
+                            <button
+                              type="button"
+                              onClick={handleNavigateToInventory}
+                              className="inline-flex items-center gap-2 text-sm text-primary-medium hover:text-primary-dark transition-colors"
+                            >
+                              <Plus className="h-4 w-4" />
+                              <span>Add New Ingredient</span>
+                              <ExternalLink className="h-3 w-3" />
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Packaging Field */}
+                    <div className="grid grid-cols-1 md:grid-cols-[200px_1fr] gap-4 items-start">
+                      <label className="text-sm font-medium text-neutral-dark pt-2">Packaging</label>
+                      <div className="space-y-3">
+                        <div>
+                          <button
+                            type="button"
+                            onClick={() => setShowPackagingList((v) => !v)}
+                            className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg border border-neutral-soft/60 bg-white text-neutral-dark hover:bg-neutral-light/40 transition-all text-sm font-medium"
+                          >
+                            {showPackagingList ? <Minus className="h-4 w-4" /> : <Package className="h-4 w-4" />}
+                            {showPackagingList ? 'Hide Packaging' : 'Add Packaging'}
+                          </button>
+                        </div>
+
+                        {showPackagingList && (
+                          <div className="border border-neutral-soft/60 rounded-lg p-3 bg-white space-y-3">
+                            <div className="max-h-40 overflow-y-auto">
+                              {loadingInventory ? (
+                                <div className="text-sm text-neutral-medium">Loading packaging...</div>
+                              ) : packaging.length === 0 ? (
+                                <div className="text-sm text-neutral-medium">No packaging found</div>
+                              ) : (
+                                <div className="space-y-2">
+                                  {packaging.map((pack) => (
+                                    <label key={pack.id} className="flex items-center space-x-2 cursor-pointer hover:bg-neutral-light/20 p-1 rounded">
+                                      <input
+                                        type="checkbox"
+                                        checked={addForm.selected_packaging.includes(pack.id)}
+                                        onChange={() => handlePackagingToggle(pack.id)}
+                                        className="h-4 w-4 text-primary-medium focus:ring-primary-light border-neutral-soft rounded"
+                                      />
+                                      <span className="text-sm text-neutral-dark">{pack.product_name}</span>
+                                      {pack.category && (
+                                        <span className="text-xs text-neutral-medium bg-neutral-light/40 px-2 py-0.5 rounded">
+                                          {pack.category}
+                                        </span>
+                                      )}
+                                    </label>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+
+                            <button
+                              type="button"
+                              onClick={handleNavigateToInventory}
+                              className="inline-flex items-center gap-2 text-sm text-primary-medium hover:text-primary-dark transition-colors"
+                            >
+                              <Package className="h-4 w-4" />
+                              <span>Add New Packaging</span>
+                              <ExternalLink className="h-3 w-3" />
+                            </button>
+                          </div>
+                        )}
+                      </div>
                     </div>
                   </div>
 
@@ -1581,103 +1769,31 @@ const Suppliers: React.FC = () => {
           </div>
         )}
 
-        {/* Enhanced Analytics Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-          <div className="group bg-gradient-to-br from-white to-neutral-light/30 rounded-2xl shadow-lg border border-neutral-soft/30 p-6 hover:shadow-xl transition-all duration-300 hover:-translate-y-1">
-            <div className="flex items-start justify-between mb-4">
-              <div className="w-12 h-12 bg-gradient-to-br from-primary-medium/20 to-primary-medium/10 rounded-2xl flex items-center justify-center shadow-sm group-hover:shadow-md transition-all duration-300">
-                <Truck className="h-7 w-7 text-primary-medium" />
-              </div>
-              <div className="w-2 h-2 bg-primary-medium rounded-full opacity-60"></div>
-            </div>
-            <div>
-              <p className="text-xs font-semibold text-neutral-medium uppercase tracking-wider mb-2">Total Suppliers</p>
-              <p className="text-3xl font-bold text-neutral-dark mb-1">{totalSuppliers}</p>
-              <div className="flex items-center">
-                <div className="w-8 h-1 bg-gradient-to-r from-primary-medium to-primary-light rounded-full"></div>
-                <span className="text-xs text-neutral-medium ml-2">Suppliers</span>
-              </div>
-            </div>
-          </div>
-
-          <div className="group bg-gradient-to-br from-white to-neutral-light/30 rounded-2xl shadow-lg border border-neutral-soft/30 p-6 hover:shadow-xl transition-all duration-300 hover:-translate-y-1">
-            <div className="flex items-start justify-between mb-4">
-              <div className="w-12 h-12 bg-gradient-to-br from-accent-success/20 to-accent-success/10 rounded-2xl flex items-center justify-center shadow-sm group-hover:shadow-md transition-all duration-300">
-                <Building2 className="h-7 w-7 text-accent-success" />
-              </div>
-              <div className="w-2 h-2 bg-accent-success rounded-full opacity-60"></div>
-            </div>
-            <div>
-              <p className="text-xs font-semibold text-neutral-medium uppercase tracking-wider mb-2">Active Suppliers</p>
-              <p className="text-3xl font-bold text-neutral-dark mb-1">{activeSuppliers}</p>
-              <div className="flex items-center">
-                <div className="w-8 h-1 bg-gradient-to-r from-accent-success to-accent-success/40 rounded-full"></div>
-                <span className="text-xs text-neutral-medium ml-2">Active</span>
-              </div>
-            </div>
-          </div>
-
-          <div className="group bg-gradient-to-br from-white to-neutral-light/30 rounded-2xl shadow-lg border border-neutral-soft/30 p-6 hover:shadow-xl transition-all duration-300 hover:-translate-y-1">
-            <div className="flex items-start justify-between mb-4">
-              <div className="w-12 h-12 bg-gradient-to-br from-accent-warning/25 to-accent-warning/10 rounded-2xl flex items-center justify-center shadow-sm group-hover:shadow-md transition-all duration-300">
-                <Star className="h-7 w-7 text-accent-warning" />
-              </div>
-              <div className="w-2 h-2 bg-accent-warning rounded-full opacity-60"></div>
-            </div>
-            <div>
-              <p className="text-xs font-semibold text-neutral-medium uppercase tracking-wider mb-2">Avg Rating</p>
-              <p className="text-3xl font-bold text-neutral-dark mb-1">{averageRating.toFixed(1)}</p>
-              <div className="flex items-center">
-                <div className="w-8 h-1 bg-gradient-to-r from-accent-warning to-accent-warning/40 rounded-full"></div>
-                <span className="text-xs text-neutral-medium ml-2">Stars</span>
-              </div>
-            </div>
-          </div>
-
-          <div className="group bg-gradient-to-br from-white to-neutral-light/30 rounded-2xl shadow-lg border border-neutral-soft/30 p-6 hover:shadow-xl transition-all duration-300 hover:-translate-y-1">
-            <div className="flex items-start justify-between mb-4">
-              <div className="w-12 h-12 bg-gradient-to-br from-primary-dark/20 to-primary-dark/10 rounded-2xl flex items-center justify-center shadow-sm group-hover:shadow-md transition-all duration-300">
-                <MapPin className="h-7 w-7 text-primary-dark" />
-              </div>
-              <div className="w-2 h-2 bg-primary-dark rounded-full opacity-60"></div>
-            </div>
-            <div>
-              <p className="text-xs font-semibold text-neutral-medium uppercase tracking-wider mb-2">Categories</p>
-              <p className="text-3xl font-bold text-neutral-dark mb-1">{categories}</p>
-              <div className="flex items-center">
-                <div className="w-8 h-1 bg-gradient-to-r from-primary-dark to-primary-medium rounded-full"></div>
-                <span className="text-xs text-neutral-medium ml-2">Types</span>
-              </div>
-            </div>
-          </div>
-        </div>
 
         {/* Search and Filter */}
-        <div className="bg-white rounded-2xl shadow-md border border-neutral-soft/20 p-8 mb-8">
-          <div className="flex flex-col md:flex-row gap-6">
+        <div className="bg-white rounded-xl shadow-md border border-neutral-soft/20 p-3 sm:p-4 lg:p-6 mb-3 lg:mb-4">
+          <div className="flex flex-col lg:flex-row gap-3 lg:gap-4">
             <div className="flex-1">
-              <label className="flex items-center text-sm font-semibold text-neutral-dark mb-3">
-                Search Suppliers
-              </label>
+              <label className="flex items-center text-sm font-semibold text-neutral-dark mb-2">Search Suppliers</label>
               <div className="relative">
-                <Search className="absolute left-4 top-1/2 transform -translate-y-1/2 h-5 w-5 text-neutral-medium" />
+                <Search className="absolute left-3 sm:left-4 top-1/2 transform -translate-y-1/2 h-4 w-4 sm:h-5 sm:w-5 text-neutral-medium" />
                 <input
                   type="text"
                   placeholder="Search suppliers..."
-                  className="w-full pl-12 pr-4 py-4 border border-neutral-soft rounded-xl focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all duration-200 bg-white text-neutral-dark placeholder-neutral-medium shadow-sm hover:shadow-md hover:border-neutral-medium"
+                  className="w-full pl-10 sm:pl-12 pr-3 sm:pr-4 py-2 sm:py-3 border border-neutral-soft rounded-xl focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all duration-200 bg-white text-neutral-dark placeholder-neutral-medium shadow-sm hover:shadow-md hover:border-neutral-medium text-sm sm:text-base"
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
                 />
               </div>
             </div>
-            <div className="md:w-64">
-              <label className="flex items-center text-sm font-semibold text-neutral-dark mb-3">
-                <Filter className="h-5 w-5 mr-3 text-primary-medium" />
+            <div className="lg:w-64">
+              <label className="flex items-center text-sm font-semibold text-neutral-dark mb-2">
+                <Filter className="h-4 w-4 sm:h-5 sm:w-5 mr-2 sm:mr-3 text-primary-medium" />
                 Filter & Sort
               </label>
-              <button className="w-full px-4 py-4 border border-neutral-soft rounded-xl text-left bg-white hover:border-neutral-medium focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all shadow-sm hover:shadow-md flex items-center justify-between">
+              <button className="w-full flex items-center justify-between px-3 sm:px-4 py-2 sm:py-3 border border-neutral-soft rounded-xl text-left bg-white transition-all shadow-sm hover:border-neutral-medium focus:ring-2 focus:ring-primary-light focus:border-primary-light hover:shadow-md text-sm sm:text-base">
                 <span className="text-neutral-medium">All Categories</span>
-                <Filter className="h-5 w-5 text-neutral-medium" />
+                <Filter className="h-4 w-4 sm:h-5 sm:w-5 text-neutral-medium" />
               </button>
             </div>
           </div>
@@ -1685,36 +1801,37 @@ const Suppliers: React.FC = () => {
 
         {/* Table or Empty State */}
         {filteredSuppliers.length === 0 ? (
-          <div className="bg-white rounded-3xl shadow-md border border-neutral-soft/30 overflow-hidden">
-            <div className="px-10 py-8 bg-gradient-to-r from-primary-dark/5 via-primary-medium/5 to-primary-light/5 border-b border-neutral-soft/40">
+          <div className="bg-white rounded-xl shadow-md border border-neutral-soft/30 overflow-hidden">
+            <div className="px-3 sm:px-4 lg:px-6 py-2 sm:py-3 lg:py-4 bg-gradient-to-r from-primary-dark/5 via-primary-medium/5 to-primary-light/5 border-b border-neutral-soft/40">
               <div className="flex items-center justify-between">
-                <h3 className="text-2xl font-bold text-neutral-dark mb-2">Supplier Directory</h3>
-                <div className="px-4 py-2 bg-primary-light/10 rounded-xl border border-primary-light/20">
-                  <span className="text-sm font-semibold text-primary-dark">0 Total</span>
+                <h3 className="text-base sm:text-lg lg:text-xl font-bold text-neutral-dark mb-1">Supplier Directory</h3>
+                <div className="px-3 py-1.5 bg-primary-light/10 rounded-xl border border-primary-light/20">
+                  <span className="text-xs sm:text-sm font-semibold text-primary-dark">0 Total</span>
                 </div>
               </div>
             </div>
-            <div className="p-16 text-center">
-              <div className="mx-auto w-16 h-16 bg-primary-light/20 rounded-full flex items-center justify-center mb-4">
-                <Truck className="h-8 w-8 text-primary-medium" />
+            <div className="p-8 sm:p-12 lg:p-16 text-center">
+              <div className="mx-auto w-14 h-14 bg-primary-light/20 rounded-full flex items-center justify-center mb-4">
+                <Truck className="h-7 w-7 text-primary-medium" />
               </div>
               <p className="text-neutral-medium mb-1">No suppliers found</p>
               <p className="text-sm text-neutral-medium">Add suppliers to manage your raw material sourcing.</p>
-              <button className="mt-6 px-6 py-3 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold shadow-md flex items-center mx-auto">
+              <button
+                type="button"
+                onClick={() => setIsAddOpen(true)}
+                className="mt-6 px-6 py-3 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold shadow-md flex items-center mx-auto"
+              >
                 <Plus className="h-5 w-5 mr-2" />
                 Add Your First Supplier
               </button>
             </div>
           </div>
         ) : (
-          <div className="bg-white rounded-3xl shadow-md border border-neutral-soft/30 overflow-hidden">
+          <div className="bg-white rounded-xl shadow-md border border-neutral-soft/30 overflow-hidden">
             {/* Gradient header section */}
-            <div className="px-10 py-8 bg-gradient-to-r from-primary-dark/5 via-primary-medium/5 to-primary-light/5 border-b border-neutral-soft/40">
+            <div className="px-3 sm:px-4 lg:px-6 py-2 sm:py-3 lg:py-4 bg-gradient-to-r from-primary-dark/5 via-primary-medium/5 to-primary-light/5 border-b border-neutral-soft/40">
               <div className="flex items-center justify-between">
-                <h3 className="text-2xl font-bold text-neutral-dark mb-2">Supplier Directory</h3>
-                <div className="px-4 py-2 bg-primary-light/10 rounded-xl border border-primary-light/20">
-                  <span className="text-sm font-semibold text-primary-dark">{filteredSuppliers.length} Total</span>
-                </div>
+                <h3 className="text-base sm:text-lg lg:text-xl font-bold text-neutral-dark mb-1">Supplier Directory</h3>
               </div>
             </div>
             {/* Column headers */}
@@ -1722,59 +1839,64 @@ const Suppliers: React.FC = () => {
               <table className="min-w-full">
                 <thead>
                   <tr className="bg-gradient-to-r from-neutral-light/60 via-neutral-light/40 to-neutral-soft/30 border-b-2 border-neutral-soft/50">
-                    <th className="px-8 py-6 text-left text-sm font-bold text-neutral-dark uppercase tracking-wider">
-                      <div className="flex items-center space-x-2">
-                        <Building2 className="h-4 w-4 text-primary-medium" />
+                    <th className="px-2 sm:px-3 lg:px-4 py-2 sm:py-3 text-left text-xs sm:text-sm font-bold text-neutral-dark uppercase tracking-wider">
+                      <div className="flex items-center space-x-1 sm:space-x-2">
+                        <Building2 className="h-3 w-3 sm:h-4 sm:w-4 text-primary-medium" />
                         <span>Supplier</span>
                       </div>
                     </th>
-                    <th className="px-8 py-6 text-left text-sm font-bold text-neutral-dark uppercase tracking-wider">Contact</th>
-                    <th className="px-8 py-6 text-left text-sm font-bold text-neutral-dark uppercase tracking-wider">Email</th>
-                    <th className="px-8 py-6 text-left text-sm font-bold text-neutral-dark uppercase tracking-wider">Phone</th>
-                    <th className="px-8 py-6 text-left text-sm font-bold text-neutral-dark uppercase tracking-wider">Website</th>
-                    <th className="px-8 py-6 text-center text-sm font-bold text-neutral-dark uppercase tracking-wider">Actions</th>
+                    <th className="hidden sm:table-cell px-2 sm:px-3 lg:px-4 py-2 sm:py-3 text-left text-xs sm:text-sm font-bold text-neutral-dark uppercase tracking-wider">Contact</th>
+                    <th className="hidden md:table-cell px-2 sm:px-3 lg:px-4 py-2 sm:py-3 text-left text-xs sm:text-sm font-bold text-neutral-dark uppercase tracking-wider">Email</th>
+                    <th className="hidden lg:table-cell px-2 sm:px-3 lg:px-4 py-2 sm:py-3 text-left text-xs sm:text-sm font-bold text-neutral-dark uppercase tracking-wider">Phone</th>
+                    <th className="hidden xl:table-cell px-2 sm:px-3 lg:px-4 py-2 sm:py-3 text-left text-xs sm:text-sm font-bold text-neutral-dark uppercase tracking-wider">Website</th>
+                    <th className="px-2 sm:px-3 lg:px-4 py-2 sm:py-3 text-center text-xs sm:text-sm font-bold text-neutral-dark uppercase tracking-wider">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-neutral-soft/20">
                   {filteredSuppliers.map((supplier) => (
                     <tr key={supplier.id} className="group hover:bg-gradient-to-r hover:from-primary-light/5 hover:to-primary-medium/5 transition-all duration-300 hover:shadow-sm">
-                      <td className="px-8 py-6">
-                        <div className="flex items-center space-x-4">
-                          <div className="w-12 h-12 bg-neutral-light/60 rounded-xl flex items-center justify-center shadow-sm">
-                            <Truck className="h-6 w-6 text-primary-dark" />
+                      <td className="px-2 sm:px-3 lg:px-4 py-2 sm:py-3">
+                        <div className="flex items-center space-x-1 sm:space-x-2">
+                          <div className="w-6 h-6 sm:w-8 sm:h-8 lg:w-10 lg:h-10 bg-neutral-light/60 rounded-lg flex items-center justify-center shadow-sm">
+                            <Truck className="h-3 w-3 sm:h-4 sm:w-4 lg:h-5 lg:w-5 text-primary-dark" />
                           </div>
-                          <div className="min-w-0">
-                            <div className="text-sm font-semibold text-neutral-dark truncate max-w-[260px]">{supplier.name}</div>
-                            <div className="text-xs text-neutral-medium truncate max-w-[260px]">{supplier.website}</div>
+                          <div className="min-w-0 flex-1">
+                            <div className="text-xs sm:text-sm font-semibold text-neutral-dark truncate">{supplier.name || '—'}</div>
+                            <div className="sm:hidden text-xs text-neutral-medium truncate">{supplier.contact || supplier.email || '—'}</div>
+                            {supplier.website && <div className="hidden sm:block text-xs text-neutral-medium truncate">{supplier.website}</div>}
                           </div>
                         </div>
                       </td>
-                      <td className="px-8 py-6">
-                        <div className="text-sm font-medium text-neutral-dark">{supplier.contact}</div>
+                      <td className="hidden sm:table-cell px-2 sm:px-3 lg:px-4 py-2 sm:py-3">
+                        <div className="text-xs sm:text-sm font-medium text-neutral-dark">{supplier.contact || '—'}</div>
                       </td>
-                      <td className="px-8 py-6">
-                        <a href={`mailto:${supplier.email}`} className="text-sm text-primary-medium hover:underline">{supplier.email || '—'}</a>
-                      </td>
-                      <td className="px-8 py-6">
-                        <div className="text-sm text-neutral-dark">{supplier.phone || '—'}</div>
-                      </td>
-                      <td className="px-8 py-6">
-                        {supplier.website ? (
-                          <a href={supplier.website} target="_blank" rel="noreferrer" className="text-sm text-primary-medium hover:underline truncate inline-block max-w-[220px]">{supplier.website}</a>
+                      <td className="hidden md:table-cell px-2 sm:px-3 lg:px-4 py-2 sm:py-3">
+                        {supplier.email ? (
+                          <a href={`mailto:${supplier.email}`} className="text-xs sm:text-sm text-primary-medium hover:underline truncate">{supplier.email}</a>
                         ) : (
-                          <span className="text-sm text-neutral-medium">—</span>
+                          <span className="text-xs sm:text-sm text-neutral-medium">—</span>
                         )}
                       </td>
-                      <td className="px-8 py-6">
-                        <div className="flex items-center justify-center space-x-2">
-                          <button type="button" onClick={() => handleView(supplier)} className="group/btn p-3 text-primary-medium hover:text-white hover:bg-primary-medium rounded-xl transition-all duration-300 hover:shadow-lg hover:scale-105 border border-primary-light/30 hover:border-primary-medium">
-                            <Eye className="h-5 w-5" />
+                      <td className="hidden lg:table-cell px-2 sm:px-3 lg:px-4 py-2 sm:py-3">
+                        <div className="text-xs sm:text-sm text-neutral-dark">{supplier.phone || '—'}</div>
+                      </td>
+                      <td className="hidden xl:table-cell px-2 sm:px-3 lg:px-4 py-2 sm:py-3">
+                        {supplier.website ? (
+                          <a href={supplier.website} target="_blank" rel="noreferrer" className="text-xs sm:text-sm text-primary-medium hover:underline truncate inline-block max-w-[220px]">{supplier.website}</a>
+                        ) : (
+                          <span className="text-xs sm:text-sm text-neutral-medium">—</span>
+                        )}
+                      </td>
+                      <td className="px-2 sm:px-3 lg:px-4 py-2 sm:py-3">
+                        <div className="flex items-center justify-center space-x-1">
+                          <button type="button" onClick={() => handleView(supplier)} className="group/btn p-1.5 sm:p-2 text-primary-medium hover:text-white hover:bg-primary-medium rounded-lg transition-all duration-300 hover:shadow-lg hover:scale-105 border border-primary-light/30 hover:border-primary-medium">
+                            <Eye className="h-3 w-3 sm:h-4 sm:w-4" />
                           </button>
-                          <button type="button" onClick={() => handleEdit(supplier)} className="group/btn p-3 text-neutral-medium hover:text-white hover:bg-neutral-medium rounded-xl transition-all duration-300 hover:shadow-lg hover:scale-105 border border-neutral-soft hover:border-neutral-medium">
-                            <Edit className="h-5 w-5" />
+                          <button type="button" onClick={() => handleEdit(supplier)} className="group/btn p-1.5 sm:p-2 text-neutral-medium hover:text-white hover:bg-neutral-medium rounded-lg transition-all duration-300 hover:shadow-lg hover:scale-105 border border-neutral-soft hover:border-neutral-medium">
+                            <Edit className="h-3 w-3 sm:h-4 sm:w-4" />
                           </button>
-                          <button type="button" onClick={() => handleDelete(supplier)} className="group/btn p-3 text-red-600 hover:text-white hover:bg-red-600 rounded-xl transition-all duration-300 hover:shadow-lg hover:scale-105 border border-red-200 hover:border-red-600">
-                            <Trash2 className="h-5 w-5" />
+                          <button type="button" onClick={() => handleDelete(supplier)} className="group/btn p-1.5 sm:p-2 text-red-600 hover:text-white hover:bg-red-600 rounded-lg transition-all duration-300 hover:shadow-lg hover:scale-105 border border-red-200 hover:border-red-600">
+                            <Trash2 className="h-3 w-3 sm:h-4 sm:w-4" />
                           </button>
                         </div>
                       </td>

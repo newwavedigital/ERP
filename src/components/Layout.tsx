@@ -8,16 +8,14 @@ import {
   ShoppingCart, 
   CheckCircle, 
   Library, 
-  Users, 
-  Truck, 
-  MessageCircle, 
-  Brain,
-  LogOut,
   Menu,
-  UserCog,
-  Settings2,
   Search,
   Bell,
+  LogOut,
+  UserCog,
+  Users,
+  Truck, 
+  Brain,
 } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../contexts/AuthContext'
@@ -38,6 +36,7 @@ const Layout: React.FC = () => {
   const navigate = useNavigate()
   const { user, initializing, signOut } = useAuth()
   const [collapsed, setCollapsed] = useState(false)
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [profile, setProfile] = useState<Profile | null>(null)
   const [loading, setLoading] = useState(true)
   const [showSignOutModal, setShowSignOutModal] = useState(false)
@@ -97,6 +96,23 @@ const Layout: React.FC = () => {
     }
   }, [userMenuOpen])
 
+  // Close mobile menu on route change
+  useEffect(() => {
+    setMobileMenuOpen(false)
+  }, [location.pathname])
+
+  // Prevent body scroll when mobile menu is open
+  useEffect(() => {
+    if (mobileMenuOpen) {
+      document.body.style.overflow = 'hidden'
+    } else {
+      document.body.style.overflow = 'unset'
+    }
+    return () => {
+      document.body.style.overflow = 'unset'
+    }
+  }, [mobileMenuOpen])
+
   const confirmSignOut = async () => {
     setShowSignOutModal(false)
     await signOut()
@@ -108,44 +124,19 @@ const Layout: React.FC = () => {
     return `${firstName?.[0] || ''}${lastName?.[0] || ''}`.toUpperCase()
   }
 
-  // Navigation sections for better organization
-  const navigationSections = [
-    {
-      title: 'Overview',
-      items: [
-        { name: 'Dashboard', path: '/admin/dashboard', icon: LayoutDashboard },
-      ]
-    },
-    {
-      title: 'Production Management',
-      items: [
-        { name: 'Products', path: '/admin/products', icon: Package },
-        { name: 'Inventory', path: '/admin/inventory', icon: Warehouse },
-        { name: 'Production Schedule', path: '/admin/production-schedule', icon: Calendar },
-      ]
-    },
-    {
-      title: 'Order Management',
-      items: [
-        { name: 'Purchase Orders', path: '/admin/purchase-orders', icon: ShoppingCart },
-        { name: 'Completed Orders', path: '/admin/completed-orders', icon: CheckCircle },
-      ]
-    },
-    {
-      title: 'Business Relations',
-      items: [
-        { name: 'Customers', path: '/admin/customers', icon: Users },
-        { name: 'Suppliers', path: '/admin/suppliers', icon: Truck },
-      ]
-    },
-    {
-      title: 'Tools & Analytics',
-      items: [
-        { name: 'Content Library', path: '/admin/content-library', icon: Library },
-        { name: 'Team Chat', path: '/admin/team-chat', icon: MessageCircle },
-        { name: 'AI Insights', path: '/admin/ai-insights', icon: Brain },
-      ]
-    }
+  // Flat navigation items in specified order
+  const navigationItems = [
+    { name: 'Dashboard', path: '/admin/dashboard', icon: LayoutDashboard },
+    { name: 'Production Schedule', path: '/admin/production-schedule', icon: Calendar },
+    { name: 'Purchase Orders', path: '/admin/purchase-orders', icon: ShoppingCart },
+    { name: 'Completed Orders', path: '/admin/completed-orders', icon: CheckCircle },
+    { name: 'Supply Chain & Procurement', path: '/admin/supply-chain-procurement', icon: Truck },
+    { name: 'Inventory', path: '/admin/inventory', icon: Warehouse },
+    { name: 'Products', path: '/admin/products', icon: Package },
+    { name: 'Suppliers', path: '/admin/suppliers', icon: Truck },
+    { name: 'Customers', path: '/admin/customers', icon: Users },
+    { name: 'Content Library', path: '/admin/content-library', icon: Library },
+    { name: 'AI Insights', path: '/admin/ai-insights', icon: Brain },
   ]
 
   const isActive = (path: string): boolean => {
@@ -155,7 +146,7 @@ const Layout: React.FC = () => {
   }
 
   return (
-    <div className="flex h-screen bg-gradient-to-br from-neutral-light/50 via-white to-neutral-light/30">
+    <div className="flex h-screen bg-gradient-to-br from-neutral-light/50 via-white to-neutral-light/30 overflow-hidden">
       {initializing && (
         <div className="absolute inset-0 flex items-center justify-center bg-white/90 backdrop-blur-sm z-50">
           <div className="flex items-center gap-3">
@@ -249,8 +240,19 @@ const Layout: React.FC = () => {
         </div>
       )}
       {!initializing && !user && <Navigate to="/login" replace />}
-      {/* Enhanced Professional Sidebar */}
-      <div className={`${collapsed ? 'w-20' : 'w-72'} bg-white border-r border-neutral-soft/40 transition-all duration-500 ease-out flex flex-col`}>
+      
+      {/* Mobile Menu Overlay */}
+      {mobileMenuOpen && (
+        <div className="fixed inset-0 z-40 lg:hidden">
+          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setMobileMenuOpen(false)}></div>
+        </div>
+      )}
+      
+      {/* Enhanced Professional Sidebar - Desktop Only */}
+      <div className={`${
+        // Desktop behavior
+        collapsed ? 'w-20' : 'w-72'
+      } hidden lg:flex bg-white border-r border-neutral-soft/40 transition-all duration-500 ease-out flex-col`}>
         {/* Modern Header Section */}
         <div className={`px-5 py-4 border-b border-neutral-soft/30 ${collapsed ? 'flex flex-col items-center' : 'flex items-center justify-between'} bg-gradient-to-r from-primary-dark/5 via-white to-primary-medium/5`}>
           {!collapsed && (
@@ -262,8 +264,8 @@ const Layout: React.FC = () => {
                 <div className="absolute -top-1 -right-1 w-3 h-3 bg-accent-success rounded-full border-2 border-white shadow-sm animate-pulse"></div>
               </div>
               <div>
-                <h1 className="text-xl font-bold text-neutral-dark tracking-tight">ERP System</h1>
-                <p className="text-xs text-neutral-medium font-medium">Manufacturing ERP</p>
+                <h1 className="text-xl font-bold text-neutral-dark tracking-tight">Nut House Co-Packing</h1>
+                <p className="text-xs text-neutral-medium font-medium">ERP System</p>
               </div>
             </div>
           )}
@@ -287,10 +289,10 @@ const Layout: React.FC = () => {
         {/* Enhanced Professional Navigation Section */}
         <nav className="flex-1 py-3 overflow-y-auto">
           <div className={`${collapsed ? 'px-2' : 'px-3'}`}>
-            {/* Render navigation by sections */}
-            {navigationSections.map((section, sectionIndex) => {
+            {/* Render flat navigation items */}
+            {(() => {
               const role = String(profile?.role || '').toLowerCase()
-              let sectionItems = section.items
+              let filteredItems = navigationItems
               
               // Filter items based on permissions for clients
               if (role !== 'admin' && !initializing && !loading && profile) {
@@ -301,92 +303,65 @@ const Layout: React.FC = () => {
                 } else if (raw && typeof raw === 'object') {
                   perms = raw as Record<string, boolean>
                 }
-                sectionItems = section.items.filter((item) => {
+                filteredItems = navigationItems.filter((item) => {
                   return Object.prototype.hasOwnProperty.call(perms, item.name)
                     ? !!perms[item.name]
                     : true
                 })
               }
               
-              // Don't render empty sections
-              if (sectionItems.length === 0) return null
-              
               return (
-                <div key={section.title} className="mb-4">
-                  {/* Section Header */}
-                  {!collapsed && (
-                    <div className="px-2 mb-2">
-                      <h3 className="text-xs font-bold text-neutral-medium/80 uppercase tracking-wider">
-                        {section.title}
-                      </h3>
-                      <div className="mt-1 h-px bg-gradient-to-r from-neutral-soft/60 to-transparent"></div>
-                    </div>
-                  )}
-                  
-                  {/* Section Items */}
-                  <div className="space-y-0.5">
-                    {sectionItems.map((item, itemIndex) => {
-                      const Icon = item.icon
-                      const globalIndex = sectionIndex * 10 + itemIndex
-                      return (
-                        <div key={item.path} style={{ animationDelay: `${globalIndex * 20}ms` }} className="animate-fade-in">
-                          <Link
-                            to={item.path}
-                            className={`group relative flex items-center ${collapsed ? 'justify-center p-2.5' : 'px-3 py-2'} text-sm font-medium rounded-lg transition-all duration-300 ${
-                              isActive(item.path)
-                                ? collapsed
-                                  ? 'bg-primary-medium text-white shadow-lg scale-105'
-                                  : 'bg-primary-medium/10 text-primary-dark border-l-2 border-primary-medium'
-                                : 'text-neutral-600 hover:bg-neutral-light/80 hover:text-neutral-dark'
-                            }`}
-                          >
-                            <div className={`relative flex items-center ${collapsed ? '' : 'mr-2.5'}`}>
-                              <Icon className={`h-5 w-5 transition-all duration-300 ${
-                                isActive(item.path) 
-                                  ? collapsed 
-                                    ? 'text-white' 
-                                    : 'text-primary-medium' 
-                                  : 'text-neutral-500 group-hover:text-neutral-700'
-                              }`} />
-                              {isActive(item.path) && !collapsed && (
-                                <div className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 bg-primary-medium rounded-full animate-pulse"></div>
+                <div className="space-y-0.5">
+                  {filteredItems.map((item, itemIndex) => {
+                    const Icon = item.icon
+                    return (
+                      <div key={item.path} style={{ animationDelay: `${itemIndex * 20}ms` }} className="animate-fade-in">
+                        <Link
+                          to={item.path}
+                          className={`group relative flex items-center ${collapsed ? 'justify-center p-2.5' : 'px-3 py-2'} text-sm font-medium rounded-lg transition-all duration-300 ${
+                            isActive(item.path)
+                              ? collapsed
+                                ? 'bg-primary-medium text-white shadow-lg scale-105'
+                                : 'bg-primary-medium/10 text-primary-dark border-l-2 border-primary-medium'
+                              : 'text-neutral-600 hover:bg-neutral-light/80 hover:text-neutral-dark'
+                          }`}
+                        >
+                          <div className={`relative flex items-center ${collapsed ? '' : 'mr-2.5'}`}>
+                            <Icon className={`h-5 w-5 transition-all duration-300 ${
+                              isActive(item.path) 
+                                ? collapsed 
+                                  ? 'text-white' 
+                                  : 'text-primary-medium' 
+                                : 'text-neutral-500 group-hover:text-neutral-700'
+                            }`} />
+                            {isActive(item.path) && !collapsed && (
+                              <div className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 bg-primary-medium rounded-full animate-pulse"></div>
+                            )}
+                          </div>
+                          {!collapsed && (
+                            <div className="flex-1 flex items-center justify-between min-w-0">
+                              <span className="font-medium truncate">{item.name}</span>
+                              {isActive(item.path) && (
+                                <div className="w-1.5 h-1.5 bg-primary-medium rounded-full ml-2 flex-shrink-0"></div>
                               )}
                             </div>
-                            {!collapsed && (
-                              <div className="flex-1 flex items-center justify-between min-w-0">
-                                <span className="font-medium truncate">{item.name}</span>
-                                {isActive(item.path) && (
-                                  <div className="w-1.5 h-1.5 bg-primary-medium rounded-full ml-2 flex-shrink-0"></div>
-                                )}
-                              </div>
-                            )}
-                            {/* Clean hover effect */}
-                            <div className="absolute inset-0 rounded-lg bg-gradient-to-r from-transparent to-transparent group-hover:from-neutral-light/20 group-hover:to-neutral-light/10 transition-all duration-300"></div>
-                          </Link>
-                        </div>
-                      )
-                    })}
-                  </div>
+                          )}
+                          {/* Clean hover effect */}
+                          <div className="absolute inset-0 rounded-lg bg-gradient-to-r from-transparent to-transparent group-hover:from-neutral-light/20 group-hover:to-neutral-light/10 transition-all duration-300"></div>
+                        </Link>
+                      </div>
+                    )
+                  })}
                 </div>
               )
-            })}
+            })()}
             
             {/* Admin-only section */}
             {String(profile?.role || '').toLowerCase() === 'admin' && (
-              <div className="mb-4">
-                {!collapsed && (
-                  <div className="px-2 mb-2">
-                    <h3 className="text-xs font-bold text-neutral-medium/80 uppercase tracking-wider">
-                      Administration
-                    </h3>
-                    <div className="mt-1 h-px bg-gradient-to-r from-neutral-soft/60 to-transparent"></div>
-                  </div>
-                )}
-                
+              <div className="mt-4 pt-4 border-t border-neutral-soft/30">
                 <div className="space-y-0.5">
                   {[
-                    { name: 'Management Account', path: '/admin/management/user-approvals', icon: UserCog },
-                    { name: 'Tool Permissions', path: '/admin/tool-permissions', icon: Settings2 },
+                    { name: 'Account Management', path: '/admin/management/users', icon: UserCog },
                   ].map((item, index) => {
                     const Icon = item.icon
                     return (
@@ -431,27 +406,170 @@ const Layout: React.FC = () => {
             )}
           </div>
         </nav>
-
+      </div>
+      
+      {/* Mobile Sidebar */}
+      <div className={`${
+        mobileMenuOpen ? 'translate-x-0' : '-translate-x-full'
+      } fixed inset-y-0 left-0 z-50 w-72 bg-white border-r border-neutral-soft/40 transition-transform duration-300 ease-out flex flex-col lg:hidden`}>
+        {/* Mobile Header */}
+        <div className="px-5 py-4 border-b border-neutral-soft/30 flex items-center justify-between bg-gradient-to-r from-primary-dark/5 via-white to-primary-medium/5">
+          <div className="flex items-center space-x-3">
+            <div className="relative group">
+              <div className="w-11 h-11 bg-gradient-to-br from-primary-dark to-primary-medium rounded-xl flex items-center justify-center shadow-lg ring-1 ring-primary-light/30 group-hover:shadow-xl transition-all duration-300">
+                <LayoutDashboard className="h-5 w-5 text-white" />
+              </div>
+              <div className="absolute -top-1 -right-1 w-3 h-3 bg-accent-success rounded-full border-2 border-white shadow-sm animate-pulse"></div>
+            </div>
+            <div>
+              <h1 className="text-xl font-bold text-neutral-dark tracking-tight">Nut House Co-Packing</h1>
+              <p className="text-xs text-neutral-medium font-medium">ERP System</p>
+            </div>
+          </div>
+          <button
+            aria-label="Close mobile menu"
+            onClick={() => setMobileMenuOpen(false)}
+            className="group inline-flex items-center justify-center h-9 w-9 rounded-lg bg-neutral-light/60 hover:bg-primary-light/20 border border-neutral-soft/50 hover:border-primary-medium/40 transition-all duration-300 hover:scale-105"
+          >
+            <Menu className="h-4 w-4 text-neutral-medium group-hover:text-primary-medium transition-colors duration-200" />
+          </button>
+        </div>
+        
+        {/* Mobile Navigation */}
+        <nav className="flex-1 py-3 overflow-y-auto">
+          <div className="px-3">
+            {(() => {
+              const role = String(profile?.role || '').toLowerCase()
+              let filteredItems = navigationItems
+              
+              if (role !== 'admin' && !initializing && !loading && profile) {
+                let perms: Record<string, boolean> = {}
+                const raw = (profile?.tool_permissions as any) ?? {}
+                if (typeof raw === 'string') {
+                  try { perms = JSON.parse(raw) || {} } catch { perms = {} }
+                } else if (raw && typeof raw === 'object') {
+                  perms = raw as Record<string, boolean>
+                }
+                filteredItems = navigationItems.filter((item) => {
+                  return Object.prototype.hasOwnProperty.call(perms, item.name)
+                    ? !!perms[item.name]
+                    : true
+                })
+              }
+              
+              return (
+                <div className="space-y-0.5">
+                  {filteredItems.map((item, itemIndex) => {
+                    const Icon = item.icon
+                    return (
+                      <div key={item.path} style={{ animationDelay: `${itemIndex * 20}ms` }} className="animate-fade-in">
+                        <Link
+                          to={item.path}
+                          onClick={() => setMobileMenuOpen(false)}
+                          className={`group relative flex items-center px-3 py-2 text-sm font-medium rounded-lg transition-all duration-300 ${
+                            isActive(item.path)
+                              ? 'bg-primary-medium/10 text-primary-dark border-l-2 border-primary-medium'
+                              : 'text-neutral-600 hover:bg-neutral-light/80 hover:text-neutral-dark'
+                          }`}
+                        >
+                          <div className="relative flex items-center mr-2.5">
+                            <Icon className={`h-5 w-5 transition-all duration-300 ${
+                              isActive(item.path) 
+                                ? 'text-primary-medium' 
+                                : 'text-neutral-500 group-hover:text-neutral-700'
+                            }`} />
+                            {isActive(item.path) && (
+                              <div className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 bg-primary-medium rounded-full animate-pulse"></div>
+                            )}
+                          </div>
+                          <div className="flex-1 flex items-center justify-between min-w-0">
+                            <span className="font-medium truncate">{item.name}</span>
+                            {isActive(item.path) && (
+                              <div className="w-1.5 h-1.5 bg-primary-medium rounded-full ml-2 flex-shrink-0"></div>
+                            )}
+                          </div>
+                          <div className="absolute inset-0 rounded-lg bg-gradient-to-r from-transparent to-transparent group-hover:from-neutral-light/20 group-hover:to-neutral-light/10 transition-all duration-300"></div>
+                        </Link>
+                      </div>
+                    )
+                  })}
+                </div>
+              )
+            })()}
+            
+            {/* Admin-only section for mobile */}
+            {String(profile?.role || '').toLowerCase() === 'admin' && (
+              <div className="mt-4 pt-4 border-t border-neutral-soft/30">
+                <div className="space-y-0.5">
+                  {[
+                    { name: 'Account Management', path: '/admin/management/users', icon: UserCog },
+                  ].map((item, index) => {
+                    const Icon = item.icon
+                    return (
+                      <div key={item.path} style={{ animationDelay: `${(100 + index) * 20}ms` }} className="animate-fade-in">
+                        <Link
+                          to={item.path}
+                          onClick={() => setMobileMenuOpen(false)}
+                          className={`group relative flex items-center px-3 py-2 text-sm font-medium rounded-lg transition-all duration-300 ${
+                            isActive(item.path)
+                              ? 'bg-primary-medium/10 text-primary-dark border-l-2 border-primary-medium'
+                              : 'text-neutral-600 hover:bg-neutral-light/80 hover:text-neutral-dark'
+                          }`}
+                        >
+                          <div className="relative flex items-center mr-2.5">
+                            <Icon className={`h-5 w-5 transition-all duration-300 ${
+                              isActive(item.path) 
+                                ? 'text-primary-medium' 
+                                : 'text-neutral-500 group-hover:text-neutral-700'
+                            }`} />
+                            {isActive(item.path) && (
+                              <div className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 bg-primary-medium rounded-full animate-pulse"></div>
+                            )}
+                          </div>
+                          <div className="flex-1 flex items-center justify-between min-w-0">
+                            <span className="font-medium truncate">{item.name}</span>
+                            {isActive(item.path) && (
+                              <div className="w-1.5 h-1.5 bg-primary-medium rounded-full ml-2 flex-shrink-0"></div>
+                            )}
+                          </div>
+                          <div className="absolute inset-0 rounded-lg bg-gradient-to-r from-transparent to-transparent group-hover:from-neutral-light/20 group-hover:to-neutral-light/10 transition-all duration-300"></div>
+                        </Link>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+        </nav>
       </div>
 
       {/* Main content with top header */}
-      <div className="flex-1 flex flex-col">
+      <div className="flex-1 flex flex-col min-w-0">
         {/* Enhanced Top Header */}
         <header className="bg-white/95 backdrop-blur-md border-b border-neutral-soft/30 shadow-sm relative z-30">
-          <div className="px-8 py-4 flex items-center justify-between">
-            <div className="flex items-center flex-1 max-w-3xl">
+          <div className="px-4 sm:px-6 lg:px-8 py-3 sm:py-4 flex items-center justify-between">
+            {/* Mobile hamburger menu */}
+            <button
+              onClick={() => setMobileMenuOpen(true)}
+              className="lg:hidden inline-flex items-center justify-center h-10 w-10 rounded-xl bg-gradient-to-br from-neutral-light/70 to-white border border-neutral-soft/60 shadow-sm text-neutral-medium hover:text-primary-medium hover:shadow-md hover:border-primary-medium/40 focus:outline-none focus:ring-2 focus:ring-primary-medium/30 transition-all duration-200 group"
+            >
+              <Menu className="w-5 h-5 group-hover:scale-110 transition-transform duration-200" />
+            </button>
+            
+            <div className="flex items-center flex-1 max-w-3xl ml-4 lg:ml-0">
               {/* Enhanced Search Bar */}
               <div className="relative flex-1 max-w-lg">
-                <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
-                  <Search className="w-5 h-5 text-neutral-medium/70" />
+                <div className="absolute inset-y-0 left-0 pl-3 sm:pl-4 flex items-center pointer-events-none">
+                  <Search className="w-4 h-4 sm:w-5 sm:h-5 text-neutral-medium/70" />
                 </div>
                 <input
                   type="text"
-                  placeholder="Search products, orders, customers..."
-                  className="w-full pl-12 pr-6 py-3.5 bg-gradient-to-r from-neutral-light/60 to-neutral-light/40 border border-neutral-soft/60 rounded-2xl focus:outline-none focus:ring-2 focus:ring-primary-medium/40 focus:border-primary-medium/60 focus:bg-white transition-all duration-300 text-sm font-medium placeholder:text-neutral-medium/70 shadow-inner hover:shadow-md"
+                  placeholder="Search..."
+                  className="w-full pl-10 sm:pl-12 pr-4 sm:pr-6 py-2.5 sm:py-3.5 bg-gradient-to-r from-neutral-light/60 to-neutral-light/40 border border-neutral-soft/60 rounded-xl sm:rounded-2xl focus:outline-none focus:ring-2 focus:ring-primary-medium/40 focus:border-primary-medium/60 focus:bg-white transition-all duration-300 text-sm font-medium placeholder:text-neutral-medium/70 shadow-inner hover:shadow-md"
                 />
-                <div className="absolute inset-y-0 right-0 pr-4 flex items-center">
-                  <kbd className="hidden sm:inline-flex items-center px-2 py-1 text-xs font-medium text-neutral-medium/60 bg-neutral-light/80 border border-neutral-soft/50 rounded-md">
+                <div className="absolute inset-y-0 right-0 pr-3 sm:pr-4 flex items-center">
+                  <kbd className="hidden md:inline-flex items-center px-2 py-1 text-xs font-medium text-neutral-medium/60 bg-neutral-light/80 border border-neutral-soft/50 rounded-md">
                     ⌘K
                   </kbd>
                 </div>
@@ -459,39 +577,39 @@ const Layout: React.FC = () => {
             </div>
             
             {/* Enhanced Right Section */}
-            <div className="flex items-center space-x-2">
+            <div className="flex items-center space-x-1 sm:space-x-2">
               {/* Enhanced Notifications */}
-              <div className="relative">
+              <div className="relative hidden sm:block">
                 <button
                   title="Notifications"
-                  className="relative inline-flex items-center justify-center h-10 w-10 rounded-xl bg-gradient-to-br from-neutral-light/70 to-white border border-neutral-soft/60 shadow-sm text-neutral-medium hover:text-primary-medium hover:shadow-md hover:border-primary-medium/40 focus:outline-none focus:ring-2 focus:ring-primary-medium/30 transition-all duration-200 group"
+                  className="relative inline-flex items-center justify-center h-9 w-9 sm:h-10 sm:w-10 rounded-xl bg-gradient-to-br from-neutral-light/70 to-white border border-neutral-soft/60 shadow-sm text-neutral-medium hover:text-primary-medium hover:shadow-md hover:border-primary-medium/40 focus:outline-none focus:ring-2 focus:ring-primary-medium/30 transition-all duration-200 group"
                 >
-                  <Bell className="w-5 h-5 group-hover:scale-110 transition-transform duration-200" />
+                  <Bell className="w-4 h-4 sm:w-5 sm:h-5 group-hover:scale-110 transition-transform duration-200" />
                   {/* Count Badge */}
-                  <span className="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1 bg-accent-danger text-white text-[10px] font-bold rounded-full border-2 border-white shadow-md flex items-center justify-center">
+                  <span className="absolute -top-1.5 -right-1.5 min-w-[16px] h-[16px] sm:min-w-[18px] sm:h-[18px] px-1 bg-accent-danger text-white text-[9px] sm:text-[10px] font-bold rounded-full border-2 border-white shadow-md flex items-center justify-center">
                     3
                   </span>
                 </button>
               </div>
               
               {/* Enhanced User Profile with Dropdown */}
-              <div className="flex items-center space-x-3 pl-4 ml-2 border-l border-neutral-soft/40">
+              <div className="flex items-center space-x-2 sm:space-x-3 pl-2 sm:pl-4 ml-1 sm:ml-2 border-l border-neutral-soft/40">
                 <div className="relative" ref={userMenuRef}>
                   <button
                     onClick={() => setUserMenuOpen(!userMenuOpen)}
-                    className="flex items-center space-x-3 group cursor-pointer hover:bg-neutral-light/40 rounded-xl p-2 transition-all duration-200"
+                    className="flex items-center space-x-2 sm:space-x-3 group cursor-pointer hover:bg-neutral-light/40 rounded-xl p-1.5 sm:p-2 transition-all duration-200"
                   >
                     <div className="flex-shrink-0 relative">
-                      <div className="w-10 h-10 bg-gradient-to-br from-primary-dark via-primary-medium to-primary-light rounded-xl flex items-center justify-center shadow-lg ring-2 ring-white group-hover:shadow-xl transition-all duration-300">
-                        <span className="text-white text-sm font-bold">
+                      <div className="w-8 h-8 sm:w-10 sm:h-10 bg-gradient-to-br from-primary-dark via-primary-medium to-primary-light rounded-lg sm:rounded-xl flex items-center justify-center shadow-lg ring-2 ring-white group-hover:shadow-xl transition-all duration-300">
+                        <span className="text-white text-xs sm:text-sm font-bold">
                           {loading ? 'U' : getInitials(profile?.first_name, profile?.last_name)}
                         </span>
                       </div>
-                      <div className="absolute -bottom-1 -right-1 w-3.5 h-3.5 bg-accent-success border-2 border-white rounded-full shadow-sm">
+                      <div className="absolute -bottom-0.5 -right-0.5 sm:-bottom-1 sm:-right-1 w-2.5 h-2.5 sm:w-3.5 sm:h-3.5 bg-accent-success border-2 border-white rounded-full shadow-sm">
                         <div className="w-full h-full bg-accent-success rounded-full animate-pulse"></div>
                       </div>
                     </div>
-                    <div className="min-w-0 hidden sm:block">
+                    <div className="min-w-0 hidden md:block">
                       <p className="text-sm font-bold text-neutral-dark truncate group-hover:text-primary-dark transition-colors">
                         {loading ? 'Loading...' : profile ? `${profile.first_name} ${profile.last_name}` : 'Admin User'}
                       </p>

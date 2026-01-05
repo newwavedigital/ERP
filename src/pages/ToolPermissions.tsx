@@ -11,6 +11,10 @@ type ProfileRow = {
   tool_permissions?: Record<string, boolean> | null
 }
 
+type ToolPermissionsProps = {
+  embedded?: boolean
+}
+
 const CLIENT_TABS = [
   'Dashboard',
   'Products',
@@ -30,7 +34,7 @@ const defaultOn: Record<string, boolean> = CLIENT_TABS.reduce((acc, k) => {
   return acc
 }, {} as Record<string, boolean>)
 
-const ToolPermissions: React.FC = () => {
+const ToolPermissions: React.FC<ToolPermissionsProps> = ({ embedded }) => {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [users, setUsers] = useState<ProfileRow[]>([])
@@ -128,53 +132,54 @@ const ToolPermissions: React.FC = () => {
   const resetDefaults = () => setDefaults(defaultOn)
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-neutral-light via-white to-primary-light/5">
+    <div className={embedded ? '' : 'min-h-screen bg-gradient-to-br from-neutral-light via-white to-primary-light/5'}>
       {/* Header Section */}
-      <div className="bg-white/80 backdrop-blur-sm border-b border-neutral-soft/50 sticky top-0 z-10">
-        <div className="max-w-7xl mx-auto px-6 py-6">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-4">
-              <div className="relative">
-                <div className="w-14 h-14 bg-gradient-to-br from-primary-dark via-primary-medium to-primary-light rounded-2xl flex items-center justify-center shadow-xl ring-2 ring-primary-light/20">
-                  <Shield className="w-7 h-7 text-white drop-shadow-sm" />
+      {!embedded && (
+        <div className="bg-white/80 backdrop-blur-sm border-b border-neutral-soft/50 sticky top-0 z-10">
+          <div className="max-w-7xl mx-auto px-6 py-6">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-4">
+                <div className="relative">
+                  <div className="w-14 h-14 bg-gradient-to-br from-primary-dark via-primary-medium to-primary-light rounded-2xl flex items-center justify-center shadow-xl ring-2 ring-primary-light/20">
+                    <Shield className="w-7 h-7 text-white drop-shadow-sm" />
+                  </div>
+                  <div className="absolute -top-1 -right-1 w-6 h-6 bg-accent-success rounded-full border-2 border-white shadow-lg flex items-center justify-center">
+                    <CheckCircle2 className="w-3 h-3 text-white" />
+                  </div>
                 </div>
-                <div className="absolute -top-1 -right-1 w-6 h-6 bg-accent-success rounded-full border-2 border-white shadow-lg flex items-center justify-center">
-                  <CheckCircle2 className="w-3 h-3 text-white" />
+                <div>
+                  <h1 className="text-3xl font-bold text-neutral-dark bg-gradient-to-r from-neutral-dark to-primary-dark bg-clip-text text-transparent">
+                    Tool Permissions
+                  </h1>
                 </div>
               </div>
-              <div>
-                <h1 className="text-3xl font-bold text-neutral-dark bg-gradient-to-r from-neutral-dark to-primary-dark bg-clip-text text-transparent">
-                  Tool Permissions
-                </h1>
-                <p className="text-neutral-medium font-medium">Advanced access control for client tools and features</p>
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={resetDefaults}
+                  className="inline-flex items-center gap-2 px-4 py-2.5 text-sm font-semibold text-accent-danger hover:text-white hover:bg-accent-danger border border-accent-danger/30 hover:border-accent-danger rounded-xl transition-all duration-200 hover:shadow-lg hover:scale-105"
+                >
+                  <XCircle className="w-4 h-4" />
+                  Reset Defaults
+                </button>
+                <button
+                  disabled={saving || !dbWritable}
+                  onClick={saveAll}
+                  className={`inline-flex items-center gap-2 px-6 py-2.5 rounded-xl font-semibold text-white shadow-lg transition-all duration-200 ${
+                    saving || !dbWritable 
+                      ? 'bg-neutral-medium/50 cursor-not-allowed' 
+                      : 'bg-gradient-to-r from-primary-medium to-primary-dark hover:from-primary-dark hover:to-primary-medium hover:shadow-xl hover:scale-105'
+                  }`}
+                >
+                  {saving ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                  {saving ? 'Saving...' : 'Save Changes'}
+                </button>
               </div>
-            </div>
-            <div className="flex items-center gap-3">
-              <button
-                onClick={resetDefaults}
-                className="inline-flex items-center gap-2 px-4 py-2.5 text-sm font-semibold text-accent-danger hover:text-white hover:bg-accent-danger border border-accent-danger/30 hover:border-accent-danger rounded-xl transition-all duration-200 hover:shadow-lg hover:scale-105"
-              >
-                <XCircle className="w-4 h-4" />
-                Reset Defaults
-              </button>
-              <button
-                disabled={saving || !dbWritable}
-                onClick={saveAll}
-                className={`inline-flex items-center gap-2 px-6 py-2.5 rounded-xl font-semibold text-white shadow-lg transition-all duration-200 ${
-                  saving || !dbWritable 
-                    ? 'bg-neutral-medium/50 cursor-not-allowed' 
-                    : 'bg-gradient-to-r from-primary-medium to-primary-dark hover:from-primary-dark hover:to-primary-medium hover:shadow-xl hover:scale-105'
-                }`}
-              >
-                {saving ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-                {saving ? 'Saving...' : 'Save Changes'}
-              </button>
             </div>
           </div>
         </div>
-      </div>
+      )}
 
-      <div className="max-w-7xl mx-auto px-6 py-8 space-y-8">
+      <div className={embedded ? 'space-y-6' : 'max-w-7xl mx-auto px-6 py-8 space-y-8'}>
         {/* Alert Banner */}
         {!dbWritable && (
           <div className="bg-gradient-to-r from-accent-warning/10 via-accent-warning/5 to-accent-warning/10 border border-accent-warning/30 rounded-2xl p-4 shadow-lg">

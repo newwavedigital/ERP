@@ -9,7 +9,6 @@ const AIInsights: React.FC = () => {
       <div className="flex justify-between items-center mb-6">
         <div>
           <h1 className="text-2xl font-semibold text-gray-900">AI Insights</h1>
-          <p className="text-gray-600">Intelligent analytics and recommendations for your business</p>
         </div>
         <div className="flex space-x-2">
           <select

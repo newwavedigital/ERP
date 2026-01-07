@@ -1,8 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { Calculator, RefreshCw, CheckCircle } from 'lucide-react'
 import { supabase } from '../lib/supabase'
+import { useAuth } from '../contexts/AuthContext'
 
 const SupplyChainProcurement: React.FC = () => {
+  const { user } = useAuth()
   const [loading, setLoading] = useState<boolean>(false)
   const [error, setError] = useState<string | null>(null)
   const [orders, setOrders] = useState<any[]>([])
@@ -14,13 +16,52 @@ const SupplyChainProcurement: React.FC = () => {
   const [packagingMaterials, setPackagingMaterials] = useState<Array<{ material_id: string; material_name: string; uom: string; required_qty: number }>>([])
   const [missingFormulas, setMissingFormulas] = useState<Array<{ product_name: string; quantity: number }>>([])
   const [approvingId, setApprovingId] = useState<string | null>(null)
+  const [roleLoading, setRoleLoading] = useState<boolean>(false)
+  const [currentUserRole, setCurrentUserRole] = useState<string | null>(null)
 
   const procurementStatuses = useMemo(
     () => ['Move to Procurement', 'move_to_procurement', 'procurement', 'Procurement'],
     []
   )
 
+  const canManageProcurement = useMemo(() => {
+    const r = String(currentUserRole || '').toLowerCase()
+    return r === 'admin' || r === 'procurement' || r === 'supply_chain' || r === 'supply_chain_procurement'
+  }, [currentUserRole])
+
+  const canViewProcurement = useMemo(() => {
+    const r = String(currentUserRole || '').toLowerCase()
+    return canManageProcurement || r === 'finance'
+  }, [canManageProcurement, currentUserRole])
+
+  const loadUserRole = async () => {
+    if (!user?.id) {
+      setCurrentUserRole(null)
+      return
+    }
+    setRoleLoading(true)
+    try {
+      const { data, error: profErr } = await supabase
+        .from('profiles')
+        .select('role')
+        .eq('id', user.id)
+        .single()
+      if (profErr) throw profErr
+      setCurrentUserRole((data as any)?.role ? String((data as any).role) : null)
+    } catch (e: any) {
+      setCurrentUserRole(null)
+      setError(e?.message || 'Failed to load user role')
+    } finally {
+      setRoleLoading(false)
+    }
+  }
+
   const load = async () => {
+    if (!canViewProcurement) {
+      setOrders([])
+      setSelectedPo(null)
+      return
+    }
     setLoading(true)
     setError(null)
     try {
@@ -47,6 +88,7 @@ const SupplyChainProcurement: React.FC = () => {
   }
 
   const loadCalculator = async (po: any) => {
+    if (!canManageProcurement) return
     const poId = String(po?.id || '')
     if (!poId) return
 
@@ -189,6 +231,7 @@ const SupplyChainProcurement: React.FC = () => {
   }
 
   const approvePO = async (po: any) => {
+    if (!canManageProcurement) return
     const poId = String(po?.id || '')
     if (!poId) return
     
@@ -220,9 +263,13 @@ const SupplyChainProcurement: React.FC = () => {
   }
 
   useEffect(() => {
-    load()
+    loadUserRole()
+  }, [user?.id])
+
+  useEffect(() => {
+    if (!roleLoading) load()
     // Intentionally no realtime subscription added here to avoid changing existing backend behavior.
-  }, [])
+  }, [roleLoading])
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-neutral-light/30 to-neutral-soft/20">
@@ -238,7 +285,7 @@ const SupplyChainProcurement: React.FC = () => {
             <button
               type="button"
               onClick={load}
-              disabled={loading}
+              disabled={loading || roleLoading}
               className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-4 py-2 rounded-xl border border-neutral-soft bg-white hover:bg-neutral-light/40 text-neutral-dark transition-all disabled:opacity-60"
             >
               <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
@@ -261,8 +308,20 @@ const SupplyChainProcurement: React.FC = () => {
               </div>
               <div className="min-w-0">
                 <div className="text-sm font-semibold text-neutral-dark">Materials Calculator</div>
-                <div className="text-sm text-neutral-medium">Select a PO from the Procurement Queue to calculate raw materials and packaging requirements.</div>
+                <div className="text-sm text-neutral-medium">
+                  {canManageProcurement
+                    ? 'Select a PO from the Procurement Queue to calculate raw materials and packaging requirements.'
+                    : 'You can view moved POs here, but only Procurement / Supply Chain team members can run calculations and approve.'}
+                </div>
               </div>
+            </div>
+          </div>
+        )}
+
+        {!canViewProcurement && !roleLoading && (
+          <div className="bg-white rounded-xl shadow-md border border-neutral-soft/20 p-3 sm:p-4 lg:p-6 mb-3 lg:mb-4">
+            <div className="text-sm text-neutral-medium">
+              You can view moved POs here, but only Finance / Procurement / Supply Chain team members can access this page.
             </div>
           </div>
         )}
@@ -286,11 +345,16 @@ const SupplyChainProcurement: React.FC = () => {
                   const poNumber = String(po.po_number ?? po.number ?? id.slice(0, 8))
                   const isSelected = selectedPo?.id != null && String(selectedPo.id) === id
                   return (
-                    <button
+                    <div
                       key={id}
-                      type="button"
-                      onClick={() => { setSelectedPo(po); loadCalculator(po) }}
-                      className={`w-full text-left rounded-xl border border-neutral-soft/40 transition-colors p-3 sm:p-4 ${isSelected ? 'bg-primary-light/10 border-primary-light' : 'bg-white hover:bg-neutral-light/20'}`}
+                      role={canManageProcurement ? 'button' : undefined}
+                      tabIndex={canManageProcurement ? 0 : undefined}
+                      onClick={() => {
+                        if (!canManageProcurement) return
+                        setSelectedPo(po)
+                        loadCalculator(po)
+                      }}
+                      className={`w-full text-left rounded-xl border border-neutral-soft/40 transition-colors p-3 sm:p-4 ${isSelected ? 'bg-primary-light/10 border-primary-light' : 'bg-white'} ${canManageProcurement ? 'hover:bg-neutral-light/20 cursor-pointer' : ''}`}
                     >
                       <div className="flex flex-col gap-3">
                         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
@@ -308,21 +372,25 @@ const SupplyChainProcurement: React.FC = () => {
                           <div className="text-xs text-neutral-medium">
                             Product: {String(po.product_name || '—')} • Qty: {Number(po.quantity || 0)}
                           </div>
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation()
-                              approvePO(po)
-                            }}
-                            disabled={approvingId === id}
-                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-green-600 hover:bg-green-700 text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                          >
-                            <CheckCircle className="h-3.5 w-3.5" />
-                            {approvingId === id ? 'Approving...' : 'Approve for Scheduling'}
-                          </button>
+                          {canManageProcurement ? (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                approvePO(po)
+                              }}
+                              disabled={approvingId === id}
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-green-600 hover:bg-green-700 text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                              <CheckCircle className="h-3.5 w-3.5" />
+                              {approvingId === id ? 'Approving...' : 'Approve for Scheduling'}
+                            </button>
+                          ) : (
+                            <div className="text-xs text-neutral-medium">Approval restricted</div>
+                          )}
                         </div>
                       </div>
-                    </button>
+                    </div>
                   )
                 })}
               </div>
@@ -330,7 +398,7 @@ const SupplyChainProcurement: React.FC = () => {
           </div>
         </div>
 
-        {selectedPo && (
+        {selectedPo && canManageProcurement && (
           <div className="bg-white rounded-xl shadow-md border border-neutral-soft/20 overflow-hidden mt-3 lg:mt-4">
             <div className="px-3 sm:px-4 lg:px-6 py-2 sm:py-3 border-b border-neutral-soft/40 bg-neutral-light/30 flex items-center justify-between">
               <div className="flex items-center gap-2">

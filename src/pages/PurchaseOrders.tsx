@@ -1737,6 +1737,8 @@ const PurchaseOrders: React.FC = () => {
             product_id: resolved.id ?? mainProd?.id ?? null,
             product_name: resolved.name || null,
             requested_ship_date: shipDate,
+            quantity: form.quantity ? Number(form.quantity) : null,
+            case_qty: form.caseQty ? Number(form.caseQty) : null,
             location: draft.location || null,
             status,
             risk_flag,
@@ -1763,6 +1765,8 @@ const PurchaseOrders: React.FC = () => {
             product_id: resolved.id ?? mainProd?.id ?? null,
             product_name: resolved.name || null,
             requested_ship_date: shipDate,
+            quantity: form.quantity ? Number(form.quantity) : null,
+            case_qty: form.caseQty ? Number(form.caseQty) : null,
             location: draft.location || null,
             status,
             risk_flag,
@@ -3077,7 +3081,7 @@ const PurchaseOrders: React.FC = () => {
                           )}
                         </div>
                         <div className="flex items-center gap-2">
-                          <span className={`inline-flex items-center px-3 py-1.5 rounded-xl text-xs font-semibold border ${statusClass}`}>{o.status}</span>
+                          <span className={`inline-flex items-center px-3 py-1.5 rounded-xl text-xs font-semibold border ${statusClass}`}>{String(o.status) === 'Ready to Schedule' ? 'Ready be Schedule' : o.status}</span>
                           {o.is_rush && !o.is_copack && (
                             <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-orange-100 text-orange-700">RUSH</span>
                           )}

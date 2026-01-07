@@ -1,6 +1,7 @@
-import React, { useState, useEffect, useRef } from 'react'
+import React, { useState, useEffect, useRef, useMemo } from 'react'
 import { Plus, Package, Box, Factory, LineChart, Inbox, Landmark, X, Tag, User, Scale, DollarSign, ClipboardList, Eye, Edit, Trash2, CheckCircle2, Clock, Upload, List, Grid3X3, FileText, RefreshCw, Bell } from 'lucide-react'
 import { supabase } from '../lib/supabase'
+import { useAuth } from '../contexts/AuthContext'
 
 // Map filename extension to themed badge styles
 const getFileMeta = (name?: string) => {
@@ -62,6 +63,20 @@ interface RawMaterial {
 }
 
 const Inventory: React.FC = () => {
+  const { user } = useAuth()
+  const [currentUserRole, setCurrentUserRole] = useState<string | null>(null)
+  const [roleLoading, setRoleLoading] = useState<boolean>(false)
+
+  const canManageInventory = useMemo(() => {
+    const r = String(currentUserRole || '').toLowerCase()
+    return r === 'admin' || r === 'warehouse' || r === 'procurement' || r === 'supply_chain' || r === 'supply_chain_procurement'
+  }, [currentUserRole])
+
+  const canViewInventory = useMemo(() => {
+    const r = String(currentUserRole || '').toLowerCase()
+    return canManageInventory || r === 'finance'
+  }, [canManageInventory, currentUserRole])
+
   const [mainTab, setMainTab] = useState<'raw' | 'packaging' | 'finished'>('raw')
   const [subTab, setSubTab] = useState<'list' | 'forecast'>('list')
   const [isCategoryOpen, setIsCategoryOpen] = useState(false)
@@ -158,6 +173,32 @@ const Inventory: React.FC = () => {
   const uomRef = useRef<HTMLDivElement>(null)
   const addDocInputRef = useRef<HTMLInputElement>(null)
   const editDocInputRef = useRef<HTMLInputElement>(null)
+
+  // Load user role
+  const loadUserRole = async () => {
+    if (!user?.id) {
+      setCurrentUserRole(null)
+      return
+    }
+    setRoleLoading(true)
+    try {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('role')
+        .eq('id', user.id)
+        .single()
+      if (error) throw error
+      setCurrentUserRole(data?.role ? String(data.role) : null)
+    } catch (e) {
+      setCurrentUserRole(null)
+    } finally {
+      setRoleLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    loadUserRole()
+  }, [user?.id])
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -933,10 +974,15 @@ const Inventory: React.FC = () => {
             </div>
           </div>
         )}
-            {mainTab !== 'finished' && (
+            {mainTab !== 'finished' && canManageInventory && (
               <button onClick={() => { if (mainTab==='raw') setIsAddRawOpen(true) }} className="inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm text-white bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light shadow-md">
                 <Plus className="h-4 w-4" /> {addLabelByTab[mainTab]}
               </button>
+            )}
+            {!canViewInventory && !roleLoading && (
+              <div className="text-sm text-neutral-medium">
+                Access restricted to authorized roles only.
+              </div>
             )}
           </div>
         </div>
@@ -1284,32 +1330,34 @@ const Inventory: React.FC = () => {
                                 </button>
                               </div>
                             </td>
-                            <td className="px-6 py-4 text-sm text-neutral-dark">{Number(m.total_available || 0) - Number(((m as any).reserved_qty ?? 0))}</td>
+                            <td className="px-6 py-4 text-sm text-neutral-dark">{Number(m.total_available || 0) - Number(m.reserved_qty || 0)}</td>
                             <td className="px-6 py-4">
                               <div className="flex items-center justify-center gap-2">
                                 <button type="button" onClick={() => { setViewData(m); setIsViewOpen(true) }} className="p-2 text-primary-medium hover:text-white hover:bg-primary-medium rounded-lg border border-primary-light/30">
                                   <Eye className="h-4 w-4" />
                                 </button>
-                                <button type="button" onClick={() => { setEditId(m.id); setEditForm({
-                                  product_name: m.product_name || '',
-                                  category: m.category || '',
-                                  supplier_id: m.supplier_id || '',
-                                  supplier_name: m.supplier_name || '',
-                                  unit_of_measure: m.unit_of_measure || '',
-                                  unit_weight: m.unit_weight || '',
-                                  cost_per_unit: m.cost_per_unit || '',
-                                  total_available: `${m.total_available ?? ''}`,
-                                  lot_number: (m as any).lot_number || '',
-                                  manufacture_date: (m as any).manufacture_date || '',
-                                  expiry_date: (m as any).expiry_date || '',
-                                  reorder_point: String((m as any).reorder_point ?? ''),
-                                  reorder_to_level: String((m as any).reorder_to_level ?? ''),
-                                  moq: String((m as any).moq ?? ''),
-                                  eoq: String((m as any).eoq ?? ''),
-                                  material_file_urls: (m as any).material_file_urls || [],
-                                }); setEditDocFiles([]); setIsEditOpen(true) }} className="p-2 text-neutral-medium hover:text-white hover:bg-neutral-medium rounded-lg border border-neutral-soft">
-                                  <Edit className="h-4 w-4" />
-                                </button>
+                                {canManageInventory && (
+                                  <button type="button" onClick={() => { setEditId(m.id); setEditForm({
+                                    product_name: m.product_name || '',
+                                    category: m.category || '',
+                                    supplier_id: m.supplier_id || '',
+                                    supplier_name: m.supplier_name || '',
+                                    unit_of_measure: m.unit_of_measure || '',
+                                    unit_weight: m.unit_weight || '',
+                                    cost_per_unit: m.cost_per_unit || '',
+                                    total_available: String(m.total_available ?? ''),
+                                    lot_number: '',
+                                    manufacture_date: '',
+                                    expiry_date: '',
+                                    reorder_point: String((m as any).reorder_point ?? ''),
+                                    reorder_to_level: String((m as any).reorder_to_level ?? ''),
+                                    moq: String((m as any).moq ?? ''),
+                                    eoq: String((m as any).eoq ?? ''),
+                                    material_file_urls: (m as any).material_file_urls || [],
+                                  }); setEditDocFiles([]); setIsEditOpen(true) }} className="p-2 text-neutral-medium hover:text-white hover:bg-neutral-medium rounded-lg border border-neutral-soft">
+                                    <Edit className="h-4 w-4" />
+                                  </button>
+                                )}
                                 {(() => {
                                   const hasPending = Boolean(m.replenishmentStatus?.hasPending)
                                   const net = Number(m.total_available || 0) - Number((m as any).reserved_qty || 0)
@@ -1330,9 +1378,11 @@ const Inventory: React.FC = () => {
                                   }
                                   return null
                                 })()}
-                                <button type="button" onClick={() => { setDeleteTarget(m); setIsDeleteOpen(true) }} className="p-2 text-accent-danger hover:text-white hover:bg-accent-danger rounded-lg border border-accent-danger/30">
-                                  <Trash2 className="h-4 w-4" />
-                                </button>
+                                {canManageInventory && (
+                                  <button type="button" onClick={() => { setDeleteTarget(m); setIsDeleteOpen(true) }} className="p-2 text-accent-danger hover:text-white hover:bg-accent-danger rounded-lg border border-accent-danger/30">
+                                    <Trash2 className="h-4 w-4" />
+                                  </button>
+                                )}
                               </div>
                             </td>
                           </tr>

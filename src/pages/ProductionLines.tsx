@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "../lib/supabase";
+import { useAuth } from "../contexts/AuthContext";
 import { Plus, Eye, Pencil, Trash2 } from "lucide-react";
 
 // Page: Production Lines (single-file, self-contained CRUD)
@@ -133,6 +134,21 @@ function TagsInput({ value, onChange, placeholder = "Type allergen and press Ent
 
 export default function ProductionLines({ embedded = false, refreshSignal = 0, openCreateSignal = 0 }: { embedded?: boolean; refreshSignal?: number; openCreateSignal?: number }) {
   const { add: addToast, Toasts } = useToasts();
+  const { user } = useAuth();
+  const [currentUserRole, setCurrentUserRole] = useState<string | null>(null);
+  const [roleLoading, setRoleLoading] = useState<boolean>(false);
+
+  const canManageProductionLines = useMemo(() => {
+    if (!currentUserRole) return false
+    const r = String(currentUserRole).toLowerCase()
+    return r === 'admin' || r === 'production_manager' || r === 'warehouse'
+  }, [currentUserRole])
+
+  const canViewProductionLines = useMemo(() => {
+    if (!currentUserRole) return false
+    const r = String(currentUserRole).toLowerCase()
+    return canManageProductionLines || r === 'finance' || r === 'procurement' || r === 'supply_chain'
+  }, [canManageProductionLines, currentUserRole])
 
   const [rows, setRows] = useState<ProductionLine[]>([]);
   const [loading, setLoading] = useState<boolean>(false);
@@ -155,6 +171,32 @@ export default function ProductionLines({ embedded = false, refreshSignal = 0, o
   const isEdit = !!form.id;
 
   const resetForm = () => setForm({ id: null, line_name: "", allowed_allergens: [], sanitation_minutes: 30, needs_qa_signoff: true });
+
+  // Load user role
+  const loadUserRole = async () => {
+    if (!user?.id) {
+      setCurrentUserRole(null)
+      return
+    }
+    setRoleLoading(true)
+    try {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('role')
+        .eq('id', user.id)
+        .single()
+      if (error) throw error
+      setCurrentUserRole(data?.role ? String(data.role) : null)
+    } catch (e) {
+      setCurrentUserRole(null)
+    } finally {
+      setRoleLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    loadUserRole()
+  }, [user?.id])
 
   const fetchRows = async () => {
     setLoading(true);
@@ -294,10 +336,22 @@ export default function ProductionLines({ embedded = false, refreshSignal = 0, o
                 <button onClick={fetchRows} className="px-5 py-3 rounded-xl bg-neutral-light hover:bg-neutral-soft text-neutral-dark text-sm font-semibold transition-all shadow-sm hover:shadow-md" disabled={loading}>
                   {loading ? "Refreshing…" : "Reload"}
                 </button>
-                <button onClick={openCreate} className="px-6 py-3 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold transition-all shadow-lg hover:shadow-xl flex items-center">
-                  <Plus className="h-5 w-5 mr-2" />
-                  Add Line
-                </button>
+                {!roleLoading && canManageProductionLines && (
+                  <button onClick={openCreate} className="px-6 py-3 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold transition-all shadow-lg hover:shadow-xl flex items-center">
+                    <Plus className="h-5 w-5 mr-2" />
+                    Add Line
+                  </button>
+                )}
+                {!roleLoading && !canViewProductionLines && (
+                  <div className="text-sm text-neutral-medium">
+                    Access restricted to authorized roles only.
+                  </div>
+                )}
+                {roleLoading && (
+                  <div className="text-sm text-neutral-medium">
+                    Loading permissions...
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -358,22 +412,26 @@ export default function ProductionLines({ embedded = false, refreshSignal = 0, o
                       >
                         <Eye className="h-5 w-5" />
                       </button>
-                      <button
-                        type="button"
-                        title="Edit"
-                        onClick={() => openEdit(r)}
-                        className="p-3 text-neutral-700 hover:text-white hover:bg-neutral-800 rounded-xl transition-all duration-300 hover:shadow-lg hover:scale-105 border border-neutral-soft/60 hover:border-neutral-800"
-                      >
-                        <Pencil className="h-5 w-5" />
-                      </button>
-                      <button
-                        type="button"
-                        title="Delete"
-                        onClick={() => openDelete(r)}
-                        className="p-3 text-accent-danger hover:text-white hover:bg-accent-danger rounded-xl transition-all duration-300 hover:shadow-lg hover:scale-105 border border-accent-danger/30 hover:border-accent-danger"
-                      >
-                        <Trash2 className="h-5 w-5" />
-                      </button>
+                      {canManageProductionLines && (
+                        <button
+                          type="button"
+                          title="Edit"
+                          onClick={() => openEdit(r)}
+                          className="p-3 text-neutral-700 hover:text-white hover:bg-neutral-800 rounded-xl transition-all duration-300 hover:shadow-lg hover:scale-105 border border-neutral-soft/60 hover:border-neutral-800"
+                        >
+                          <Pencil className="h-5 w-5" />
+                        </button>
+                      )}
+                      {canManageProductionLines && (
+                        <button
+                          type="button"
+                          title="Delete"
+                          onClick={() => openDelete(r)}
+                          className="p-3 text-accent-danger hover:text-white hover:bg-accent-danger rounded-xl transition-all duration-300 hover:shadow-lg hover:scale-105 border border-accent-danger/30 hover:border-accent-danger"
+                        >
+                          <Trash2 className="h-5 w-5" />
+                        </button>
+                      )}
                     </div>
                   </td>
                 </tr>

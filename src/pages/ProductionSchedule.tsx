@@ -418,7 +418,7 @@ const ProductionSchedule: React.FC = () => {
       
       if (error) throw error;
       const raw = Array.isArray(data) ? data : []
-      const allowed = new Set(['approved', 'open', 'backordered', 'ready to schedule', 'Ready to Schedule'])
+      const allowed = new Set(['approved', 'open', 'backordered', 'ready to schedule', 'Ready to Schedule', 'scheduled'])
       const filtered = raw.filter((po: any) => allowed.has(String(po?.status || '').toLowerCase()))
       setPurchaseOrders(filtered);
     } catch (e) {
@@ -470,8 +470,39 @@ const ProductionSchedule: React.FC = () => {
 
     setCreatingFromPo(true);
     try {
+      let resolvedFormulaId: string | null = null
+      try {
+        if (selectedPo.product_id) {
+          const { data: fRow, error: fErr } = await supabase
+            .from('formulas')
+            .select('id, version')
+            .eq('product_id', selectedPo.product_id)
+            .order('version', { ascending: false })
+            .limit(1)
+            .maybeSingle()
+          if (!fErr && fRow?.id) resolvedFormulaId = String(fRow.id)
+        }
+        if (!resolvedFormulaId && selectedPo.product_name) {
+          const { data: prod } = await supabase
+            .from('products')
+            .select('id')
+            .ilike('product_name', `%${selectedPo.product_name}%`)
+            .maybeSingle()
+          if (prod?.id) {
+            const { data: fRow2, error: fErr2 } = await supabase
+              .from('formulas')
+              .select('id, version')
+              .eq('product_id', prod.id)
+              .order('version', { ascending: false })
+              .limit(1)
+              .maybeSingle()
+            if (!fErr2 && fRow2?.id) resolvedFormulaId = String(fRow2.id)
+          }
+        }
+      } catch {}
+
       // Create batch with PO reference
-      const { data: created, error: createErr } = await supabase
+      const { error: createErr } = await supabase
         .from('production_batches')
         .insert({
           product_sku: selectedPo.product_name,
@@ -483,21 +514,25 @@ const ProductionSchedule: React.FC = () => {
           customer_id: selectedPo.customer_id,
           po_number: selectedPo.po_number || String(selectedPo.id),
           source_po_id: selectedPo.id,
+          formula_id: resolvedFormulaId,
           lot_number: lot,
           samples_received: samplesReceived === 'Yes',
           samples_sent: samplesSent || null,
           completed_qty: Number(completedQty) || 0
         })
-        .select()
-        .single();
+        ;
 
       if (createErr) throw createErr;
 
-      // Generate material requirements
-      const { error: reqErr } = await supabase.rpc('generate_material_requirements', {
-        p_batch_id: created.id
-      });
-      if (reqErr) throw reqErr;
+      try {
+        const { error: poUpdateErr } = await supabase
+          .from('purchase_orders')
+          .update({ status: 'Scheduled' })
+          .eq('id', selectedPo.id)
+        if (poUpdateErr) throw poUpdateErr
+      } catch (e: any) {
+        pushToast({ type: 'warning', message: e?.message || 'Batch created, but failed to update PO status.' })
+      }
 
       // Update Product Goal
       const newScheduled = alreadyScheduled + batchQty;
@@ -506,6 +541,7 @@ const ProductionSchedule: React.FC = () => {
       setBatchGoal('');
 
       await loadBatches();
+      await loadPurchaseOrders();
       pushToast({ type: 'success', message: 'Production batch created from PO' });
 
       // Keep modal open for additional scheduling
@@ -651,11 +687,12 @@ const ProductionSchedule: React.FC = () => {
 
   // ───────── Check if date has arrived for auto status change
   const checkAutoStatusChange = async () => {
-    const today = new Date().toISOString().split('T')[0]
+    const now = new Date()
+    const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
     const scheduledBatches = items.filter(item => 
       item.status === 'Scheduled' && 
       item.startDate && 
-      item.startDate.split('T')[0] <= today
+      String(item.startDate).split('T')[0] < today
     )
     
     for (const batch of scheduledBatches) {
@@ -2412,7 +2449,7 @@ const ProductionSchedule: React.FC = () => {
                   {creatingFromPo ? 'Creating…' : 'Auto-create from PO'}
                 </button>
               )}
-              {activeSection === 'schedule' && (
+              {activeSection === 'schedule' && canManageProduction(currentUserRole) && (
                 <button
                   onClick={() => setOpen(true)}
                   className="px-6 py-3 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold transition-all shadow-lg hover:shadow-xl flex items-center"
@@ -2429,13 +2466,15 @@ const ProductionSchedule: React.FC = () => {
                   >
                     Reload
                   </button>
-                  <button
-                    onClick={() => setLinesOpenCreateSignal((s)=> s + 1)}
-                    className="px-6 py-3 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold transition-all shadow-lg hover:shadow-xl flex items-center"
-                  >
-                    <Plus className="h-5 w-5 mr-2" />
-                    Add Line
-                  </button>
+                  {canManageProduction(currentUserRole) && (
+                    <button
+                      onClick={() => setLinesOpenCreateSignal((s)=> s + 1)}
+                      className="px-6 py-3 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold transition-all shadow-lg hover:shadow-xl flex items-center"
+                    >
+                      <Plus className="h-5 w-5 mr-2" />
+                      Add Line
+                    </button>
+                  )}
                 </>
               )}
             </div>
@@ -2513,7 +2552,7 @@ const ProductionSchedule: React.FC = () => {
         ) : (
         <>
         {/* PO Selection Panel */}
-        <div className="mt-6 grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div className="mt-6 grid grid-cols-1 lg:grid-cols-4 gap-6">
           <div className="lg:col-span-1">
             <div className="bg-white rounded-2xl shadow-md border border-neutral-soft/20 overflow-hidden">
               <div className="px-6 py-4 bg-gradient-to-r from-neutral-light/60 via-neutral-light/40 to-neutral-soft/30 border-b border-neutral-soft/40">
@@ -2545,11 +2584,11 @@ const ProductionSchedule: React.FC = () => {
                               po.status === 'Open' ? 'bg-blue-100 text-blue-800' :
                               'bg-yellow-100 text-yellow-800'
                             }`}>
-                              {po.status}
+                              {String(po.status) === 'Ready to Schedule' ? 'Ready be Schedule' : po.status}
                             </span>
                           </div>
                           <div className="text-sm text-neutral-medium mb-1">{customerName}</div>
-                          <div className="text-sm text-neutral-dark font-medium">{po.product_name}</div>
+                          <div className="text-sm font-semibold text-neutral-dark mb-1">{po.product_name || '—'}</div>
                           <div className="text-xs text-neutral-medium mt-1">
                             Qty: {Number(po.quantity || 0).toLocaleString()}
                           </div>
@@ -2562,7 +2601,7 @@ const ProductionSchedule: React.FC = () => {
             </div>
           </div>
           
-          <div className="lg:col-span-2">
+          <div className="lg:col-span-3">
         {/* Suggested Consolidation banners (Schedule tab only) */}
         {activeSection === 'schedule' && (() => {
           try {
@@ -2630,259 +2669,217 @@ const ProductionSchedule: React.FC = () => {
               No production scheduled
             </p>
             <p className="text-neutral-medium mb-6">
-              Create a production schedule to get started.
+              {canManageProduction(currentUserRole) ? 'Create a production schedule to get started.' : 'No production schedules available to view.'}
             </p>
-            <button
-              onClick={() => setOpen(true)}
-              className="px-6 py-3 rounded-xl bg-primary-medium hover:bg-primary-dark text-white font-semibold shadow-sm"
-            >
-              Schedule Production
-            </button>
+            {canManageProduction(currentUserRole) && (
+              <button
+                onClick={() => setOpen(true)}
+                className="px-6 py-3 rounded-xl bg-primary-medium hover:bg-primary-dark text-white font-semibold shadow-sm"
+              >
+                Schedule Production
+              </button>
+            )}
           </div>
         )}
 
-        {/* Table */}
+        {/* Card List (matches PurchaseOrders styling) */}
         {filtered.length > 0 && (
-          <div className="bg-white rounded-2xl shadow-md border border-neutral-soft/20">
+          <div className="space-y-4">
             {/* hidden read of capaMap to satisfy TS/linters */}
             <span className="hidden" aria-hidden="true">{capaBadgeCount}</span>
-            <div className="overflow-x-auto">
-              <table className="min-w-full divide-y divide-neutral-soft">
-                <thead className="bg-neutral-light/60">
-                  <tr>
-                    <th className="px-6 py-3 text-left text-xs font-semibold text-neutral-medium uppercase tracking-wider">
-                      Product
-                    </th>
-                    <th className="px-6 py-3 text-left text-xs font-semibold text-neutral-medium uppercase tracking-wider">
-                      Qty
-                    </th>
-                    <th className="px-6 py-3 text-left text-xs font-semibold text-neutral-medium uppercase tracking-wider">
-                      Formula
-                    </th>
-                    <th className="px-6 py-3 text-left text-xs font-semibold text-neutral-medium uppercase tracking-wider">
-                      PO Source
-                    </th>
-                    <th className="px-6 py-3 text-left text-xs font-semibold text-neutral-medium uppercase tracking-wider">
-                      Completed
-                    </th>
-                    <th className="px-6 py-3 text-left text-xs font-semibold text-neutral-medium uppercase tracking-wider">
-                      Lot Number
-                    </th>
-                    <th className="px-6 py-3 text-left text-xs font-semibold text-neutral-medium uppercase tracking-wider">
-                      Start Date
-                    </th>
-                    <th className="px-6 py-3 text-left text-xs font-semibold text-neutral-medium uppercase tracking-wider">
-                      Status
-                    </th>
-                    <th className="px-6 py-3 text-left text-xs font-semibold text-neutral-medium uppercase tracking-wider">
-                      Compliance
-                    </th>
-                    <th className="px-6 py-3"></th>
-                  </tr>
-                </thead>
-                <tbody className="bg-white divide-y divide-neutral-soft">
-                  {filtered.map((row) => {
-                    const isHighlighted = highlightPoId && row.sourcePoId && String(row.sourcePoId) === highlightPoId
-                    return (
-                    <tr
-                      key={row.id}
-                      className={
-                        isHighlighted
-                          ? "bg-teal-50/60 hover:bg-teal-50 border-l-4 border-teal-400"
-                          : "hover:bg-neutral-light/40"
-                      }
-                      onClick={() => { setHighlightPoId(null); setMenuRowId(null); setMenuPosition(null); }}
-                    >
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <div className="text-sm font-medium text-neutral-dark">
-                          {row.product}
-                          {row.sourcePoId && poSourceMap[String(row.sourcePoId)] && (
-                            <span
-                              className="ml-2 inline-flex px-2 py-0.5 rounded-full text-[10px] font-semibold bg-indigo-100 text-indigo-700 align-middle"
-                            >
-                              COPACK
-                            </span>
-                          )}
-                          {row.sourcePoId && poSourceMap[String(row.sourcePoId)] === 'OPS' && (
-                            <span className="ml-2 inline-flex px-2 py-0.5 rounded-full text-[10px] font-semibold bg-blue-100 text-blue-700 align-middle">
-                              OPERATION
-                            </span>
-                          )}
-                          {row.sourcePoId && poSourceMap[String(row.sourcePoId)] === 'CLIENT' && (
-                            <span className="ml-2 inline-flex px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-100 text-emerald-700 align-middle">
-                              CLIENT
-                            </span>
-                          )}
-                        </div>
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-neutral-dark">
-                        {row.qty}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-neutral-dark">
-                        {row.formula || '-'}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-neutral-dark">
-                        {row.sourcePoId ? `PO ${row.sourcePoId}` : '-'}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-neutral-dark">
-                        {row.completedQty}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-neutral-dark">
-                        {row.lot || '-'}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-neutral-dark">
-                        {fmtDate(row.startDate)}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <div className="flex items-center gap-2">
-                          <span
-                            className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${statusChip(
-                              row.status
-                            )}`}
-                          >
-                            {statusText(row.status)}
+            {filtered.map((row) => {
+              const isHighlighted = highlightPoId && row.sourcePoId && String(row.sourcePoId) === highlightPoId
+              return (
+                <div
+                  key={row.id}
+                  onClick={() => { setHighlightPoId(null); setMenuRowId(null); setMenuPosition(null); }}
+                  className={`rounded-2xl border border-neutral-soft/40 bg-gradient-to-br from-white to-neutral-light/30 p-5 shadow-sm hover:shadow-md transition-all ${isHighlighted ? 'ring-2 ring-teal-300' : ''}`}
+                >
+                  <div className="flex items-start justify-between pb-3 border-b border-neutral-soft/60">
+                    <div className="min-w-0">
+                      <div className="text-[11px] uppercase tracking-wide text-neutral-medium">Product</div>
+                      <div className="text-sm font-semibold text-neutral-dark truncate">
+                        {row.product}
+                        {row.sourcePoId && poSourceMap[String(row.sourcePoId)] && (
+                          <span className="ml-2 inline-flex px-2 py-0.5 rounded-full text-[10px] font-semibold bg-indigo-100 text-indigo-700 align-middle">
+                            COPACK
                           </span>
-                          {/* Secondary badges */}
-                          {isCoaFail(row) && (
-                            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-red-100 text-red-700 border border-red-300">
-                              COA Fail
-                            </span>
-                          )}
-                          {qaHoldMap[row.id] && (
-                            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-rose-100 text-rose-700 border border-rose-200">
-                              QA Hold
-                            </span>
-                          )}
-                          {allergenConflictMap[row.id] && (
-                            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-100 text-amber-700 border border-amber-200">
-                              Allergen Conflict
-                            </span>
-                          )}
-                          {capaMap[row.id] && (
-                            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-red-100 text-red-700 border border-red-200">
-                              CAPA
-                              <span className="ml-1 h-2 w-2 rounded-full bg-yellow-400 inline-block"></span>
-                            </span>
-                          )}
-                          {(row as any)?.flags === 'REWORK' && (
-                            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-yellow-100 text-yellow-700 border border-yellow-200" title="This batch was generated from a QA rework request.">
-                              REWORK BATCH
-                            </span>
-                          )}
-                        </div>
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm">
-                        <div className="flex items-center gap-3">
-                          {row.sanitationRequired && (
-                            <div className="flex items-center gap-2">
-                              <div className="h-2 w-24 rounded-full bg-amber-200/80 shadow-[inset_0_0_2px_rgba(0,0,0,0.06)]" />
-                              <span className="text-[11px] text-amber-700 font-semibold whitespace-nowrap">
-                                Sanitation ({(() => { const m = diffMinutes(row.sanitationStart, row.sanitationEnd); return m != null ? `${m} min` : '—' })()})
-                              </span>
-                            </div>
-                          )}
-                          {row.qaRequired && (
-                            row.qaApproved ? (
-                              <span className="inline-flex px-2 py-0.5 rounded-full text-[10px] font-semibold border border-neutral-300 text-neutral-700 bg-white">QA OK</span>
-                            ) : (
-                              <span className="inline-flex px-2 py-0.5 rounded-full text-[10px] font-semibold border border-red-200 text-red-700 bg-red-50">QA Pending</span>
-                            )
-                          )}
-                        </div>
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm">
-                        <div className="flex items-center justify-end gap-3">
-                          {/* Action buttons horizontal, smaller */}
-                          <div className="flex flex-row gap-1">
-                            <button
-                              className="px-2.5 py-1 rounded-md bg-blue-50 text-blue-700 hover:bg-blue-100 text-[11px]"
-                              disabled={!!(startDisabled[row.id] || shortagesCache[row.id] || prExistsMap[row.id])}
-                              title={(qaRequiredMap[row.id] && !qaApprovedMap[row.id]) ? 'QA approval required (start will show notice).' : (allergenConflictMap[row.id] ? 'Allergen conflict will be shown.' : undefined)}
-                              onClick={(e) => { e.stopPropagation(); onStartBatch(row.id); }}
-                            >
-                              Start
-                            </button>   
-                            {shortagesCache[row.id] && (
-                              <button
-                                className="px-2.5 py-1 rounded-md bg-red-50 text-red-700 hover:bg-red-100 text-[11px]"
-                                onClick={(e) => { e.stopPropagation(); setShortageInfo({ batchId: row.id, shortages: shortagesCache[row.id] }); }}
-                                title="View detected material shortages"
-                              >
-                                View Shortage
-                              </button>
-                            )}
-                            {!shortagesCache[row.id] && prExistsMap[row.id] && (
-                              <button
-                                className="px-2.5 py-1 rounded-md bg-amber-50 text-amber-700 hover:bg-amber-100 text-[11px]"
-                                onClick={async (e) => { 
-                                  e.stopPropagation(); 
-                                  const { data } = await supabase
-                                    .from('purchase_requisitions')
-                                    .select('id, item_name, required_qty, needed_by, status, created_at, notes')
-                                    .eq('batch_id', row.id)
-                                    .order('created_at', { ascending: false })
-                                  setPrs(data || [])
-                                  setPrListOpenFor(row.id)
-                                }}
-                                title="View auto-created PRs for this batch"
-                              >
-                                View PRs
-                              </button>
-                            )}
-                            <button
-                              className="px-2.5 py-1 rounded-md bg-neutral-light text-neutral-dark hover:bg-neutral-soft text-[11px]"
-                              onClick={(e) => { e.stopPropagation(); onCancelBatch(row.id); }}
-                            >
-                              Cancel
-                            </button>
-                            {/* Hide Complete when COA Fail */}
-                            {!isCoaFail(row) && (
-                              <button
-                                className="px-2.5 py-1 rounded-md bg-green-50 text-green-700 hover:bg-green-100 text-[11px]"
-                                onClick={(e) => { e.stopPropagation(); setCompleteId(row.id); }}
-                              >
-                                Complete
-                              </button>
-                            )}
-                            <button
-                              className="px-2.5 py-1 rounded-md bg-amber-50 text-amber-700 hover:bg-amber-100 text-[11px]"
-                              onClick={(e) => { e.stopPropagation(); onGeneratePO(row.id); }}
-                            >
-                              Auto-PO
-                            </button>
-                          </div>
+                        )}
+                        {row.sourcePoId && poSourceMap[String(row.sourcePoId)] === 'OPS' && (
+                          <span className="ml-2 inline-flex px-2 py-0.5 rounded-full text-[10px] font-semibold bg-blue-100 text-blue-700 align-middle">
+                            OPERATION
+                          </span>
+                        )}
+                        {row.sourcePoId && poSourceMap[String(row.sourcePoId)] === 'CLIENT' && (
+                          <span className="ml-2 inline-flex px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-100 text-emerald-700 align-middle">
+                            CLIENT
+                          </span>
+                        )}
+                      </div>
+                    </div>
 
-                          {/* More menu for view/edit/delete */}
-                          <div className="relative">
-                            <button
-                              ref={menuRef}
-                              className="p-2 rounded-full hover:bg-neutral-light"
-                              onClick={(e) => { 
-                                e.stopPropagation(); 
-                                if (menuRowId === row.id) {
-                                  setMenuRowId(null);
-                                  setMenuPosition(null);
-                                } else {
-                                  const rect = e.currentTarget.getBoundingClientRect();
-                                  setMenuPosition({
-                                    top: rect.bottom + 4,
-                                    left: rect.right - 128 // 128px = w-32
-                                  });
-                                  setMenuRowId(row.id);
-                                }
-                              }}
-                              title="More actions"
-                            >
-                              <MoreVertical className="h-4 w-4" />
-                            </button>
-                          </div>
-                        </div>
-                      </td>
-                    </tr>
-                  )})}
-                </tbody>
-              </table>
-            </div>
+                    <div className="flex items-center gap-2">
+                      <span className={`inline-flex items-center px-3 py-1.5 rounded-xl text-xs font-semibold border ${statusChip(row.status)}`}>
+                        {statusText(row.status)}
+                      </span>
+                      <button
+                        ref={menuRef}
+                        className="menu-button p-2 text-neutral-medium hover:text-primary-medium rounded-md transition-colors"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (menuRowId === row.id) {
+                            setMenuRowId(null);
+                            setMenuPosition(null);
+                          } else {
+                            const rect = e.currentTarget.getBoundingClientRect();
+                            setMenuPosition({
+                              top: rect.bottom + 4,
+                              left: rect.right - 128
+                            });
+                            setMenuRowId(row.id);
+                          }
+                        }}
+                        title="More actions"
+                      >
+                        <MoreVertical className="h-4 w-4" />
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="pt-4 grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <div className="space-y-1">
+                      <div className="text-[11px] uppercase tracking-wide text-neutral-medium">Formula</div>
+                      <div className="text-sm font-semibold text-neutral-dark">{row.formula || '—'}</div>
+                    </div>
+                    <div className="space-y-1">
+                      <div className="text-[11px] uppercase tracking-wide text-neutral-medium">Qty</div>
+                      <div className="text-sm font-semibold text-neutral-dark">{row.qty}</div>
+                    </div>
+                    <div className="space-y-1">
+                      <div className="text-[11px] uppercase tracking-wide text-neutral-medium">Start Date</div>
+                      <div className="text-sm font-semibold text-neutral-dark">{fmtDate(row.startDate)}</div>
+                    </div>
+                  </div>
+
+                  <div className="mt-3 grid grid-cols-1 md:grid-cols-3 gap-3 text-[11px] text-neutral-dark">
+                    <div className="flex items-center gap-2 bg-neutral-light/40 border border-neutral-soft/60 rounded-md px-3 py-2">
+                      <span className="font-semibold">Lot</span>
+                      <span className="opacity-80">{row.lot || '—'}</span>
+                    </div>
+                    <div className="flex items-center gap-2 bg-neutral-light/40 border border-neutral-soft/60 rounded-md px-3 py-2">
+                      <span className="font-semibold">Completed</span>
+                      <span className="opacity-80">{row.completedQty}</span>
+                    </div>
+                    <div className="flex items-center gap-2 bg-neutral-light/40 border border-neutral-soft/60 rounded-md px-3 py-2">
+                      <span className="font-semibold">Compliance</span>
+                      <div className="flex items-center gap-2">
+                        {row.sanitationRequired && (
+                          <span className="text-[11px] text-amber-700 font-semibold whitespace-nowrap">
+                            Sanitation ({(() => { const m = diffMinutes(row.sanitationStart, row.sanitationEnd); return m != null ? `${m} min` : '—' })()})
+                          </span>
+                        )}
+                        {row.qaRequired && (
+                          row.qaApproved ? (
+                            <span className="inline-flex px-2 py-0.5 rounded-full text-[10px] font-semibold border border-neutral-300 text-neutral-700 bg-white">QA OK</span>
+                          ) : (
+                            <span className="inline-flex px-2 py-0.5 rounded-full text-[10px] font-semibold border border-red-200 text-red-700 bg-red-50">QA Pending</span>
+                          )
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mt-4 flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      {isCoaFail(row) && (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-red-100 text-red-700 border border-red-300">
+                          COA Fail
+                        </span>
+                      )}
+                      {qaHoldMap[row.id] && (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-rose-100 text-rose-700 border border-rose-200">
+                          QA Hold
+                        </span>
+                      )}
+                      {allergenConflictMap[row.id] && (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-100 text-amber-700 border border-amber-200">
+                          Allergen Conflict
+                        </span>
+                      )}
+                      {capaMap[row.id] && (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-red-100 text-red-700 border border-red-200">
+                          CAPA
+                          <span className="ml-1 h-2 w-2 rounded-full bg-yellow-400 inline-block"></span>
+                        </span>
+                      )}
+                      {(row as any)?.flags === 'REWORK' && (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-yellow-100 text-yellow-700 border border-yellow-200" title="This batch was generated from a QA rework request.">
+                          REWORK BATCH
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="flex items-center justify-end gap-2 flex-wrap">
+                      <button
+                        className="inline-flex items-center px-3 py-1.5 rounded-xl text-[11px] font-semibold border bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100 transition-colors"
+                        disabled={!!(startDisabled[row.id] || shortagesCache[row.id] || prExistsMap[row.id])}
+                        title={(qaRequiredMap[row.id] && !qaApprovedMap[row.id]) ? 'QA approval required (start will show notice).' : (allergenConflictMap[row.id] ? 'Allergen conflict will be shown.' : undefined)}
+                        onClick={(e) => { e.stopPropagation(); onStartBatch(row.id); }}
+                      >
+                        Start
+                      </button>
+                      {shortagesCache[row.id] && (
+                        <button
+                          className="inline-flex items-center px-3 py-1.5 rounded-xl text-[11px] font-semibold border bg-red-50 text-red-700 border-red-200 hover:bg-red-100 transition-colors"
+                          onClick={(e) => { e.stopPropagation(); setShortageInfo({ batchId: row.id, shortages: shortagesCache[row.id] }); }}
+                          title="View detected material shortages"
+                        >
+                          View Shortage
+                        </button>
+                      )}
+                      {!shortagesCache[row.id] && prExistsMap[row.id] && (
+                        <button
+                          className="inline-flex items-center px-3 py-1.5 rounded-xl text-[11px] font-semibold border bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100 transition-colors"
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            const { data } = await supabase
+                              .from('purchase_requisitions')
+                              .select('id, item_name, required_qty, needed_by, status, created_at, notes')
+                              .eq('batch_id', row.id)
+                              .order('created_at', { ascending: false })
+                            setPrs(data || [])
+                            setPrListOpenFor(row.id)
+                          }}
+                          title="View auto-created PRs for this batch"
+                        >
+                          View PRs
+                        </button>
+                      )}
+                      <button
+                        className="inline-flex items-center px-3 py-1.5 rounded-xl text-[11px] font-semibold border bg-white text-neutral-dark border-neutral-soft/60 hover:bg-neutral-light/40 transition-colors"
+                        onClick={(e) => { e.stopPropagation(); onCancelBatch(row.id); }}
+                      >
+                        Cancel
+                      </button>
+                      {!isCoaFail(row) && (
+                        <button
+                          className="inline-flex items-center px-3 py-1.5 rounded-xl text-[11px] font-semibold border bg-green-50 text-green-700 border-green-200 hover:bg-green-100 transition-colors"
+                          onClick={(e) => { e.stopPropagation(); setCompleteId(row.id); }}
+                        >
+                          Complete
+                        </button>
+                      )}
+                      <button
+                        className="inline-flex items-center px-3 py-1.5 rounded-xl text-[11px] font-semibold border bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100 transition-colors"
+                        onClick={(e) => { e.stopPropagation(); onGeneratePO(row.id); }}
+                      >
+                        Auto-PO
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )
+            })}
           </div>
         )}
           </div>
@@ -3882,7 +3879,7 @@ const ProductionSchedule: React.FC = () => {
                 <div className="grid grid-cols-2 gap-4 text-sm">
                   <div>
                     <div className="text-neutral-medium mb-1">PO Number</div>
-                    <div className="font-semibold text-neutral-dark">{selectedPo.id}</div>
+                    <div className="font-semibold text-neutral-dark">{selectedPo.po_number || selectedPo.id}</div>
                   </div>
                   <div>
                     <div className="text-neutral-medium mb-1">Customer</div>

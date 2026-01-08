@@ -3348,14 +3348,23 @@ const PurchaseOrders: React.FC = () => {
                                 <Truck className="h-4 w-4" /> Ready to Ship
                               </button>
                             )}
-                            {!o.is_copack && String(o.status) === 'Ready to Ship' && (
-                              <button
-                                className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-semibold bg-primary-medium hover:bg-primary-dark text-white shadow-sm transition-all"
-                                onClick={() => shipPO(String(o.id))}
-                              >
-                                <PackageCheck className="h-4 w-4" /> Ship Order
-                              </button>
-                            )}
+                            {!o.is_copack && (() => {
+                              const st = String(o.status || '').toLowerCase()
+                              const isReadyToShip = st === 'ready to ship' || st === 'ready_to_ship'
+                              if (!isReadyToShip) return null
+
+                              const isWh = String(currentRole || '').toLowerCase() === 'warehouse'
+                              return (
+                                <button
+                                  className={`inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-semibold shadow-sm transition-all ${isWh ? 'bg-primary-medium hover:bg-primary-dark text-white' : 'bg-neutral-light/40 text-neutral-medium cursor-not-allowed'}`}
+                                  onClick={() => { if (!isWh) return; setOpenMenuId(null); shipPO(String(o.id)) }}
+                                  disabled={!isWh}
+                                  title={isWh ? 'Ship Order' : 'Only Warehouse can ship'}
+                                >
+                                  <PackageCheck className="h-4 w-4" /> Ship Order
+                                </button>
+                              )
+                            })()}
                             {!o.is_copack && String(o.status) === 'partial' && (o as any).allow_partial_ship === true && (
                               <button
                                 className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-semibold bg-accent-warning hover:bg-accent-warning/90 text-white shadow-sm transition-all"

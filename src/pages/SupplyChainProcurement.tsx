@@ -43,6 +43,8 @@ const SupplyChainProcurement: React.FC = () => {
   const [approvingId, setApprovingId] = useState<string | null>(null)
   const [roleLoading, setRoleLoading] = useState<boolean>(false)
   const [currentUserRole, setCurrentUserRole] = useState<string | null>(null)
+  const [shippingOrders, setShippingOrders] = useState<any[]>([])
+  const [shippingLoading, setShippingLoading] = useState<boolean>(false)
 
   const procurementStatuses = useMemo(
     () => [
@@ -116,6 +118,29 @@ const SupplyChainProcurement: React.FC = () => {
       setSelectedPo(null)
     } finally {
       setLoading(false)
+    }
+  }
+
+  const loadShippingOrders = async () => {
+    if (!canViewProcurement) {
+      setShippingOrders([])
+      return
+    }
+    setShippingLoading(true)
+    try {
+      const { data, error: qErr } = await supabase
+        .from('purchase_orders')
+        .select('*')
+        .eq('status', 'completed')
+        .order('created_at', { ascending: false })
+
+      if (qErr) throw qErr
+      setShippingOrders((data as any[]) || [])
+    } catch (e: any) {
+      console.error('Failed to load shipping orders:', e)
+      setShippingOrders([])
+    } finally {
+      setShippingLoading(false)
     }
   }
 
@@ -296,7 +321,10 @@ const SupplyChainProcurement: React.FC = () => {
   }, [user?.id])
 
   useEffect(() => {
-    if (!roleLoading) load()
+    if (!roleLoading) {
+      load()
+      loadShippingOrders()
+    }
     // Intentionally no realtime subscription added here to avoid changing existing backend behavior.
   }, [roleLoading])
 
@@ -565,7 +593,13 @@ const SupplyChainProcurement: React.FC = () => {
         )}
 
         {activeTab === 'shipping' && (
-          <ShippingTab />
+          <ShippingTab 
+            shippingOrders={shippingOrders}
+            loading={shippingLoading}
+            canViewProcurement={canViewProcurement}
+            formatStatusLabel={formatStatusLabel}
+            getStatusBadgeClass={getStatusBadgeClass}
+          />
         )}
       </div>
     </div>

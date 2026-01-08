@@ -419,7 +419,21 @@ const ProductionSchedule: React.FC = () => {
       
       if (error) throw error;
       const raw = Array.isArray(data) ? data : []
-      const allowed = new Set(['approved', 'open', 'backordered', 'ready to schedule', 'ready_to_schedule', 'scheduled'])
+      const allowed = new Set([
+        'approved',
+        'open',
+        'backordered',
+        'ready to schedule',
+        'ready_to_schedule',
+        'scheduled',
+        'in progress',
+        'in_progress',
+        'quality hold',
+        'qa_hold',
+        'ready to ship',
+        'ready_to_ship',
+        'completed',
+      ])
       const filtered = raw.filter((po: any) => allowed.has(String(po?.status || '').toLowerCase()))
       setPurchaseOrders(filtered);
     } catch (e) {
@@ -429,6 +443,49 @@ const ProductionSchedule: React.FC = () => {
       setPoLoading(false);
     }
   };
+
+  const mapBatchStatusToPoStatus = (batchStatus: string) => {
+    const s = String(batchStatus || '').toLowerCase().trim()
+    if (s === 'in progress' || s === 'in_progress') return 'in_progress'
+    if (s === 'quality hold' || s === 'qa hold' || s === 'qa_hold') return 'qa_hold'
+    if (s === 'ready to ship' || s === 'ready_to_ship') return 'ready_to_ship'
+    if (s === 'completed') return 'completed'
+    if (s === 'scheduled') return 'scheduled'
+    return null
+  }
+
+  const syncPoStatusFromBatch = async (batchId: string, batchStatus: string) => {
+    const poStatus = mapBatchStatusToPoStatus(batchStatus)
+    if (!poStatus) return
+
+    const row = (items || []).find(r => String(r.id) === String(batchId)) as any
+    const poId = row?.sourcePoId ? String(row.sourcePoId) : null
+    if (!poId) return
+
+    const { error } = await supabase
+      .from('purchase_orders')
+      .update({ status: poStatus })
+      .eq('id', poId)
+    if (error) throw error
+
+    // Update local PO list without waiting for full reload
+    setPurchaseOrders(prev => prev.map((po: any) => String(po.id) === poId ? { ...po, status: poStatus } : po))
+  }
+
+  const formatPoStatusLabel = (status: any) => {
+    const st = String(status || '')
+    const low = st.toLowerCase().trim()
+    if (low === 'ready to schedule' || low === 'ready_to_schedule') return 'Ready to Schedule'
+    if (low === 'in progress' || low === 'in_progress') return 'In Progress'
+    if (low === 'quality hold' || low === 'qa hold' || low === 'qa_hold') return 'QA Hold'
+    if (low === 'ready to ship' || low === 'ready_to_ship') return 'Ready to Ship'
+    if (low === 'approved') return 'Approved'
+    if (low === 'open') return 'Open'
+    if (low === 'backordered') return 'Backordered'
+    if (low === 'scheduled') return 'Scheduled'
+    if (low === 'completed') return 'Completed'
+    return st || '—'
+  }
 
   // ───────── Calculate already scheduled quantity for a PO
   const calculateAlreadyScheduled = async (poId: string): Promise<number> => {
@@ -642,6 +699,10 @@ const ProductionSchedule: React.FC = () => {
         .eq('id', batchId)
       
       if (error) throw error
+
+      try {
+        await syncPoStatusFromBatch(batchId, newStatus)
+      } catch {}
       
       // If status is "Completed", move to "Ready to Ship" and trigger communications
       if (newStatus === 'Completed') {
@@ -666,6 +727,10 @@ const ProductionSchedule: React.FC = () => {
         .eq('id', batchId)
       
       if (updateError) throw updateError
+
+      try {
+        await syncPoStatusFromBatch(batchId, 'Ready to Ship')
+      } catch {}
       
       // TODO: Trigger communication with sales rep and warehouse
       // This would involve creating notifications or sending emails
@@ -686,6 +751,10 @@ const ProductionSchedule: React.FC = () => {
         .eq('id', batchId)
       
       if (error) throw error
+
+      try {
+        await syncPoStatusFromBatch(batchId, 'Quality Hold')
+      } catch {}
       
       // TODO: Trigger communication between Quality Manager, Production Manager, and sales rep
       console.log('TODO: Trigger communication for Quality Hold on batch:', batchId)
@@ -1336,6 +1405,12 @@ const ProductionSchedule: React.FC = () => {
         return
       }
       // Success path
+      try {
+        await syncPoStatusFromBatch(id, 'In Progress')
+        await loadPurchaseOrders()
+      } catch (e: any) {
+        console.warn('Failed to sync PO status from started batch:', e)
+      }
       await loadBatches()
       
       // Lot traceability already validated above. If needed, backend should handle idempotency.
@@ -1422,6 +1497,7 @@ const ProductionSchedule: React.FC = () => {
   }, [completeId])
   const confirmComplete = async (qtySubmitted?: number) => {
     if (!completeId || isCompleting) return
+    const batchId = String(completeId)
     const qtyToSubmit = Number(qtySubmitted ?? completedQtyPreview ?? completeQty ?? 0)
     if (!Number.isFinite(qtyToSubmit) || qtyToSubmit <= 0) {
       pushToast({ type: 'error', message: 'Completed quantity must be greater than 0' })
@@ -1430,13 +1506,13 @@ const ProductionSchedule: React.FC = () => {
     setIsCompleting(true)
     // Optimistic UI update for the table row
     setItems(prev => prev.map(r => (
-      r.id === String(completeId)
+      r.id === String(batchId)
         ? { ...r, status: 'Completed', completedQty: qtyToSubmit }
         : r
     )))
     try {
       const { data, error } = await supabase.rpc('fn_complete_batch', {
-        p_batch_id: castBatchId(completeId),
+        p_batch_id: castBatchId(batchId),
         p_completed_qty: qtyToSubmit,
         p_scrap_qty: Number(scrapQtyPreview || 0)
       })
@@ -1468,10 +1544,17 @@ const ProductionSchedule: React.FC = () => {
       
       // Record lot traceability after successful completion
       try {
-        await supabase.rpc('fn_record_lot_traceability', { p_batch_id: castBatchId(completeId) })
+        await supabase.rpc('fn_record_lot_traceability', { p_batch_id: castBatchId(batchId) })
       } catch (traceError) {
         console.warn('Lot traceability recording failed:', traceError)
         // Don't fail the completion process if traceability fails
+      }
+
+      try {
+        await syncPoStatusFromBatch(batchId, 'Completed')
+        await loadPurchaseOrders()
+      } catch (e: any) {
+        console.warn('Failed to sync PO status from completed batch:', e)
       }
       
       setCompleteId(null)
@@ -2622,8 +2705,6 @@ const ProductionSchedule: React.FC = () => {
                 ) : (
                   <div className="divide-y divide-neutral-soft/40">
                     {purchaseOrders.map((po) => {
-                      const customer = customers.find(c => c.id === po.customer_id);
-                      const customerName = customer?.company_name || 'Unknown Customer';
                       return (
                         <div
                           key={po.id}
@@ -2634,21 +2715,21 @@ const ProductionSchedule: React.FC = () => {
                             <div className="text-sm font-semibold text-neutral-dark">
                               PO #{po.po_number || po.id}
                             </div>
-                            <span className={`px-2 py-1 rounded-full text-xs font-medium ${
-                              po.status === 'Approved' ? 'bg-green-100 text-green-800' :
-                              po.status === 'Open' ? 'bg-blue-100 text-blue-800' :
-                              'bg-yellow-100 text-yellow-800'
-                            }`}>
-                              {(() => {
-                                const st = String(po.status || '')
-                                const low = st.toLowerCase()
-                                if (low === 'ready to schedule' || low === 'ready_to_schedule') return 'Ready to Schedule'
-                                return st || '—'
-                              })()}
+                            <span className={`px-2 py-1 rounded-full text-xs font-medium ${(() => {
+                              const low = String(po.status || '').toLowerCase().trim()
+                              if (low === 'approved') return 'bg-green-100 text-green-800'
+                              if (low === 'open') return 'bg-blue-100 text-blue-800'
+                              if (low === 'in progress' || low === 'in_progress') return 'bg-amber-100 text-amber-800'
+                              if (low === 'quality hold' || low === 'qa hold' || low === 'qa_hold') return 'bg-red-100 text-red-800'
+                              if (low === 'ready to ship' || low === 'ready_to_ship') return 'bg-emerald-100 text-emerald-800'
+                              if (low === 'completed') return 'bg-emerald-100 text-emerald-800'
+                              return 'bg-yellow-100 text-yellow-800'
+                            })()}`}>
+                              {formatPoStatusLabel(po.status)}
                             </span>
                           </div>
-                          <div className="text-sm text-neutral-medium mb-1">{customerName}</div>
-                          <div className="text-sm font-semibold text-neutral-dark mb-1">{po.product_name || '—'}</div>
+                          <div className="text-xs text-neutral-medium">{po.customer_name || po.customer_company || po.customer || '—'}</div>
+                          <div className="text-sm font-medium text-neutral-dark truncate">{po.product_name || po.product || '—'}</div>
                           <div className="text-xs text-neutral-medium mt-1">
                             Qty: {Number(po.quantity || 0).toLocaleString()}
                           </div>
@@ -3843,7 +3924,7 @@ const ProductionSchedule: React.FC = () => {
                         <button className="px-4 py-2 rounded-lg border" onClick={()=>!isCompleting && setCompleteId(null)} disabled={isCompleting}>Cancel</button>
                         <button
                           onClick={() => { setCompleteQty(String(completedQtyPreview)); confirmComplete(completedQtyPreview); }}
-                          className={(varianceHigh ? 'bg-red-600 hover:bg-red-700' : 'bg-primary hover:bg-primary-dark') + ' text-white px-5 py-2 rounded-xl'}
+                          className={(varianceHigh ? 'bg-red-600 hover:bg-red-700' : 'bg-primary-medium hover:bg-primary-dark') + ' text-white px-5 py-2 rounded-xl'}
                           disabled={isCompleting || !(actualOutput > 0) || (Number(scrapQtyPreview || 0) < 0) || (Number(scrapQtyPreview || 0) > actualOutput)}
                         >
                           {isCompleting ? 'Completing…' : (varianceHigh ? 'Complete (Variance High!)' : 'Complete')}
@@ -3955,7 +4036,7 @@ const ProductionSchedule: React.FC = () => {
                   </div>
                   <div>
                     <div className="text-neutral-medium mb-1">Status</div>
-                    <div className="font-semibold text-neutral-dark">{selectedPo.status}</div>
+                    <div className="font-semibold text-neutral-dark">{formatPoStatusLabel(selectedPo.status)}</div>
                   </div>
                 </div>
               </div>

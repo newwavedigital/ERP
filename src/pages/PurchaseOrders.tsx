@@ -454,6 +454,20 @@ const PurchaseOrders: React.FC = () => {
     }
   }
 
+  const handleApproveCompletedPo = async (poId: string) => {
+    try {
+      const res = await runRpc('allocate_brand_po_finished_first', poId)
+      if (res.status === 'error') {
+        setToast({ show: true, message: res.message || 'Allocation failed', kind: 'error' })
+        return
+      }
+      setToast({ show: true, message: 'Approved: allocation updated (finished goods first).', kind: 'success' })
+      await refreshPOs()
+    } catch (e: any) {
+      setToast({ show: true, message: e?.message || 'Allocation failed', kind: 'error' })
+    }
+  }
+
   const handleShipPartial = async (poId: string) => {
     try {
       await shipPOPartial(poId)
@@ -1960,9 +1974,51 @@ const PurchaseOrders: React.FC = () => {
 
       setToast({ show: true, message: 'PO shipped successfully!', kind: 'success' })
       await refreshPOs()
-    } catch (err) {
-      console.error(err)
-      setToast({ show: true, message: 'Failed to ship PO.', kind: 'error' })
+    } catch (err: any) {
+      const msg = String(err?.message || '')
+      const code = err?.code ? String(err.code) : ''
+      const details = err?.details ? String(err.details) : ''
+      const hint = err?.hint ? String(err.hint) : ''
+      console.error('fn_ship_po failed', { msg, code, details, hint, err })
+      const isWarehouse = String(currentRole || '').toLowerCase() === 'warehouse'
+
+      // If role was recently changed, JWT claims may be stale. Try refresh session once.
+      if (isWarehouse && msg.toLowerCase().includes('only warehouse')) {
+        try {
+          await supabase.auth.refreshSession()
+          const { data: retryData, error: retryErr } = await supabase.rpc('fn_ship_po', { p_po_id: poId })
+          if (retryErr) throw retryErr
+
+          if ((retryData as any)?.asn && Array.isArray((retryData as any).asn) && (retryData as any).asn.length > 0) {
+            setAsnData((retryData as any).asn)
+            setAsnPoStatus('shipped')
+            setAsnModalOpen(true)
+          }
+
+          setToast({ show: true, message: 'PO shipped successfully!', kind: 'success' })
+          await refreshPOs()
+          return
+        } catch (retryErr: any) {
+          const rMsg = String(retryErr?.message || '')
+          const rCode = retryErr?.code ? String(retryErr.code) : ''
+          const rDetails = retryErr?.details ? String(retryErr.details) : ''
+          const rHint = retryErr?.hint ? String(retryErr.hint) : ''
+          console.error('Ship retry after refreshSession failed:', { rMsg, rCode, rDetails, rHint, retryErr })
+          setToast({
+            show: true,
+            message: `Failed to ship PO after session refresh. ${rMsg || msg || 'Unknown error'}${rCode ? ` (code: ${rCode})` : ''}`,
+            kind: 'error'
+          })
+          return
+        }
+      }
+
+      const extra = [details, hint].filter(Boolean).join(' | ')
+      setToast({
+        show: true,
+        message: `Failed to ship PO. ${msg || 'Unknown error'}${code ? ` (code: ${code})` : ''}${extra ? ` — ${extra}` : ''}`,
+        kind: 'error'
+      })
     }
   }
 
@@ -3255,6 +3311,15 @@ const PurchaseOrders: React.FC = () => {
                               >
                                 <Eye className="h-4 w-4" />
                                 View ASN
+                              </button>
+                            )}
+                            {!o.is_copack && String(o.status || '').toLowerCase() === 'completed' && (
+                              <button
+                                className="inline-flex items-center px-3.5 py-2 rounded-lg text-xs font-semibold border shadow-sm bg-white border-neutral-soft text-neutral-dark hover:border-primary-medium hover:text-primary-medium"
+                                onClick={() => { setOpenMenuId(null); handleApproveCompletedPo(String(o.id)) }}
+                                title="Approve (allocate finished goods first)"
+                              >
+                                Approve
                               </button>
                             )}
                             {(o.status === "Open" || !o.status) && (() => {

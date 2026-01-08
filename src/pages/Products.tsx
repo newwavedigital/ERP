@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react'
 import { Plus, Search, Filter, X, Package, Calendar, FileText, CheckCircle2, FlaskConical, List, Grid3X3, User, Box, Scale, Upload, Trash2 } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 import Formulas from './Formulas'
+import { useAuth } from '../contexts/AuthContext'
 
 // Map filename extension to themed badge styles
 const getFileMeta = (name?: string) => {
@@ -59,6 +60,10 @@ interface Product {
 // Supabase client is provided as a singleton from ../lib/supabase
 
 const Products: React.FC = () => {
+  const { user } = useAuth()
+  const [currentUserRole, setCurrentUserRole] = useState<string | null>(null)
+  const isSalesRepViewOnly = String(currentUserRole || '').toLowerCase() === 'sales_representative'
+
   const [searchTerm, setSearchTerm] = useState<string>('')
   const [products, setProducts] = useState<Product[]>([])
   const [imageModalOpen, setImageModalOpen] = useState(false)
@@ -524,6 +529,27 @@ const Products: React.FC = () => {
     loadCustomers()
   }, [])
 
+  useEffect(() => {
+    let active = true
+    const loadRole = async () => {
+      try {
+        if (!user?.id) return
+        const { data } = await supabase
+          .from('profiles')
+          .select('role')
+          .eq('id', user.id)
+          .maybeSingle()
+        if (!active) return
+        setCurrentUserRole((data as any)?.role ? String((data as any).role) : null)
+      } catch {
+        if (!active) return
+        setCurrentUserRole(null)
+      }
+    }
+    loadRole()
+    return () => { active = false }
+  }, [user?.id])
+
   const filteredProducts = products.filter(product =>
     product.product_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
     product.id.toLowerCase().includes(searchTerm.toLowerCase())
@@ -539,22 +565,24 @@ const Products: React.FC = () => {
               <h1 className="text-3xl font-bold text-neutral-dark mb-2">{activeTab === 'products' ? 'Products' : 'Formula Manager'}</h1>
 
             </div>
-            {activeTab === 'products' ? (
-              <button 
-                onClick={() => setIsAddOpen(true)} 
-                className="px-8 py-4 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold transition-all duration-300 shadow-lg hover:shadow-xl transform hover:-translate-y-0.5 flex items-center"
-              >
-                <Plus className="h-5 w-5 mr-3" />
-                Add Product
-              </button>
-            ) : (
-              <button 
-                onClick={() => setFormulaOpenSignal((s) => s + 1)} 
-                className="px-8 py-4 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold transition-all duration-300 shadow-lg hover:shadow-xl transform hover:-translate-y-0.5 flex items-center"
-              >
-                <Plus className="h-5 w-5 mr-3" />
-                Add Formula
-              </button>
+            {!isSalesRepViewOnly && (
+              activeTab === 'products' ? (
+                <button 
+                  onClick={() => setIsAddOpen(true)} 
+                  className="px-8 py-4 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold transition-all duration-300 shadow-lg hover:shadow-xl transform hover:-translate-y-0.5 flex items-center"
+                >
+                  <Plus className="h-5 w-5 mr-3" />
+                  Add Product
+                </button>
+              ) : (
+                <button 
+                  onClick={() => setFormulaOpenSignal((s) => s + 1)} 
+                  className="px-8 py-4 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold transition-all duration-300 shadow-lg hover:shadow-xl transform hover:-translate-y-0.5 flex items-center"
+                >
+                  <Plus className="h-5 w-5 mr-3" />
+                  Add Formula
+                </button>
+              )
             )}
           </div>
         </div>
@@ -1490,13 +1518,15 @@ const Products: React.FC = () => {
             </div>
             <h3 className="text-xl font-semibold text-neutral-dark mb-2">No products found</h3>
             <p className="text-neutral-medium mb-6">Add your first product to get started with your inventory.</p>
-            <button 
-              onClick={() => setIsAddOpen(true)}
-              className="px-6 py-3 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold transition-all duration-300 shadow-lg hover:shadow-xl transform hover:-translate-y-0.5 flex items-center"
-            >
-              <Plus className="h-5 w-5 mr-2" />
-              Add Your First Product
-            </button>
+            {!isSalesRepViewOnly && (
+              <button 
+                onClick={() => setIsAddOpen(true)}
+                className="px-6 py-3 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold transition-all duration-300 shadow-lg hover:shadow-xl transform hover:-translate-y-0.5 flex items-center"
+              >
+                <Plus className="h-5 w-5 mr-2" />
+                Add Your First Product
+              </button>
+            )}
           </div>
         ) : (
           <div className="bg-white rounded-2xl shadow-md border border-neutral-soft/30 overflow-hidden">
@@ -1571,16 +1601,18 @@ const Products: React.FC = () => {
                       </td>
                       <td className="px-8 py-6">
                         <div className="flex items-center justify-center">
-                          <button 
-                            type="button" 
-                            onClick={(e) => {
-                              e.stopPropagation()
-                              setConfirmDelete({ open: true, product, loading: false, error: null })
-                            }}
-                            className="group/btn p-3 text-accent-danger hover:text-white hover:bg-accent-danger rounded-xl transition-all duration-300 hover:shadow-lg hover:scale-105 border border-accent-danger/30 hover:border-accent-danger"
-                          >
-                            <Trash2 className="h-5 w-5" />
-                          </button>
+                          {!isSalesRepViewOnly && (
+                            <button 
+                              type="button" 
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                setConfirmDelete({ open: true, product, loading: false, error: null })
+                              }}
+                              className="group/btn p-3 text-accent-danger hover:text-white hover:bg-accent-danger rounded-xl transition-all duration-300 hover:shadow-lg hover:scale-105 border border-accent-danger/30 hover:border-accent-danger"
+                            >
+                              <Trash2 className="h-5 w-5" />
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -1619,6 +1651,7 @@ const Products: React.FC = () => {
                   </div>
                 </div>
                 <div className="flex items-center space-x-3">
+                  {!isSalesRepViewOnly && (
                   <button
                     onClick={() => {
                       const matched = customers?.find((c) => c.name === selectedProduct.customer_name)
@@ -1652,6 +1685,7 @@ const Products: React.FC = () => {
                   >
                     Edit Product
                   </button>
+                  )}
                 </div>
               </div>
               {/* Modal Body */}

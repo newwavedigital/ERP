@@ -20,6 +20,41 @@ function formatDate(dateStr?: string | null): string {
   return d.toLocaleDateString()
 }
 
+function formatStatusLabel(raw?: string | null): string {
+  const s = String(raw || '').trim()
+  if (!s) return '—'
+  const lower = s.toLowerCase()
+  if (lower === 'move_to_procurement' || lower === 'move to procurement') return 'Move to Procurement'
+  if (lower === 'ready_to_schedule' || lower === 'ready to schedule') return 'Ready to Schedule'
+  if (lower === 'on_hold' || lower === 'on hold') return 'On Hold'
+  if (lower === 'client_communication_required' || lower === 'client communication required') return 'Client Communication Required'
+  if (lower === 'partially_shipped') return 'Partially Shipped'
+  // Generic: snake_case -> Title Case
+  return s
+    .replace(/_/g, ' ')
+    .split(' ')
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+    .join(' ')
+}
+
+function getStatusBadgeClass(raw?: string | null): string {
+  const st = String(raw || '').toLowerCase()
+  if (st === 'on hold' || st === 'on_hold' || st === 'canceled' || st === 'cancelled') {
+    return 'bg-accent-danger/10 text-accent-danger border-accent-danger/30'
+  }
+  if (st === 'approved' || st === 'allocated' || st === 'submitted' || st === 'shipped') {
+    return 'bg-accent-success/10 text-accent-success border-accent-success/30'
+  }
+  if (st === 'partially_shipped') {
+    return 'bg-accent-warning/10 text-accent-warning border-accent-warning/30'
+  }
+  if (st === 'move_to_procurement' || st === 'move to procurement' || st === 'ready to schedule' || st === 'ready_to_schedule') {
+    return 'bg-amber-50 text-amber-700 border-amber-200'
+  }
+  return 'bg-neutral-light/40 text-neutral-dark border-neutral-soft/60'
+}
+
 const PurchaseOrders: React.FC = () => {
   const [isAddOpen, setIsAddOpen] = useState(false)
   const [isViewOpen, setIsViewOpen] = useState<any>(null)
@@ -72,6 +107,16 @@ const PurchaseOrders: React.FC = () => {
   const navigate = useNavigate()
   const { user } = useAuth()
   const [currentRole, setCurrentRole] = useState<string>('')
+  
+  const canManagePurchaseOrders = useMemo(() => {
+    const r = String(currentRole || '').toLowerCase()
+    return r === 'admin' || r === 'procurement' || r === 'finance' || r === 'supply_chain' || r === 'warehouse' || r === 'production_manager' || r === 'sales_representative'
+  }, [currentRole])
+
+  const canViewPurchaseOrders = useMemo(() => {
+    const r = String(currentRole || '').toLowerCase()
+    return canManagePurchaseOrders || r === 'supply_chain_procurement'
+  }, [canManagePurchaseOrders, currentRole])
   const [showBackorderAdvisory, setShowBackorderAdvisory] = useState(false)
   const [viewLines, setViewLines] = useState<Array<{ product_name: string; quantity: number; allocated_qty: number; shortfall_qty: number; status: string }>>([])
   const [viewLoading, setViewLoading] = useState(false)
@@ -2537,92 +2582,88 @@ const PurchaseOrders: React.FC = () => {
                     </button>
                     
                     {/* Edit Option */}
-                    <button 
-                      className="w-full px-4 py-3 text-left text-sm text-neutral-dark hover:bg-neutral-light/60 transition-colors flex items-center space-x-3"
-                      onClick={async () => {
-                        setIsEditOpen(currentOrder);
-                        setIsAddOpen(true);
-                        setOpenMenuId(null);
-                        // Prefill base form values
-                        const fallbackName = currentOrder.customer_name || (customers.find(c=> String(c.id)===String(currentOrder.customer_id))?.name || '');
-                        setForm({
-                          date: currentOrder.date || '',
-                          customer: fallbackName,
-                          customer_id: currentOrder.customer_id ? String(currentOrder.customer_id) : '',
-                          po_number: String((currentOrder as any)?.po_number || ''),
-                          product: currentOrder.product_name || '',
-                          requestedShipDate: currentOrder.requested_ship_date || '',
-                          ship_date: currentOrder.requested_ship_date || '',
-                          quantity: String(currentOrder.quantity),
-                          caseQty: currentOrder.case_qty ? String(currentOrder.case_qty) : '',
-                          paymentTerms: currentOrder.payment_terms || '',
-                          salesRepresentative: '',
-                          additionalPackaging: (currentOrder as any).additional_packaging || '',
-                          status: currentOrder.status || 'Open',
-                          comments: currentOrder.comments || '',
-                          location: currentOrder.location || '',
-                          is_copack: !!currentOrder.is_copack,
-                          client_materials_required: !!currentOrder.client_materials_required,
-                          operation_supplies_materials: !!currentOrder.operation_supplies_materials,
-                          deposit_paid: currentOrder.deposit_paid ?? false,
-                          lines: []
-                        });
-                        // Load additional items from purchase_order_items
-                        try {
-                          const { data: items } = await supabase
-                            .from('purchase_order_lines')
-                            .select('product_name, quantity')
-                            .eq('purchase_order_id', currentOrder.id);
-                          const extras = (items ?? [])
-                            .filter((it: any) => !(String(it.product_name || '') === String(currentOrder.product_name || '') && Number(it.quantity || 0) === Number(currentOrder.quantity || 0)))
-                            .map((it: any) => ({ id: (crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`), product: String(it.product_name || ''), qty: Number(it.quantity || 0) }));
-                          setExtraLines(extras);
-                        } catch {}
-                      }}
-                    >
-                      <Pencil className="h-4 w-4 text-neutral-medium" />
-                      <span>Edit Order</span>
-                    </button>
-
-                    {/* Finance-only Move to Procurement */}
-                    {String(currentRole || '').toLowerCase() === 'finance' && (
-                      <button
+                    {canManagePurchaseOrders && (
+                      <button 
                         className="w-full px-4 py-3 text-left text-sm text-neutral-dark hover:bg-neutral-light/60 transition-colors flex items-center space-x-3"
                         onClick={async () => {
+                          setIsEditOpen(currentOrder);
+                          setIsAddOpen(true);
+                          setOpenMenuId(null);
+                          // Prefill base form values
+                          const fallbackName = currentOrder.customer_name || (customers.find(c=> String(c.id)===String(currentOrder.customer_id))?.name || '');
+                          setForm((prev) => ({
+                            ...prev,
+                            customer: fallbackName,
+                            customer_id: currentOrder.customer_id ? String(currentOrder.customer_id) : '',
+                            product: currentOrder.product_name || '',
+                            requestedShipDate: currentOrder.requested_ship_date || '',
+                            ship_date: currentOrder.requested_ship_date || '',
+                            quantity: String(currentOrder.quantity || ''),
+                            caseQty: String(currentOrder.case_qty || ''),
+                            comments: currentOrder.notes || '',
+                            is_copack: Boolean(currentOrder.is_copack),
+                            po_number: currentOrder.po_number || '',
+                            status: currentOrder.status || 'Draft',
+                          }));
+                          // Load additional items from purchase_order_items
                           try {
-                            await supabase
-                              .from('purchase_orders')
-                              .update({ status: 'Move to Procurement' })
-                              .eq('id', currentOrder.id)
-                            setOpenMenuId(null)
-                            await refreshPOs()
-                            navigate('/admin/supply-chain-procurement')
-                          } catch (e: any) {
-                            setToast({ show: true, message: e?.message || 'Failed to move to procurement', kind: 'error' })
-                            setOpenMenuId(null)
-                          }
+                            const { data: items } = await supabase
+                              .from('purchase_order_lines')
+                              .select('product_name, quantity')
+                              .eq('purchase_order_id', currentOrder.id);
+                            const extras = (items ?? [])
+                              .filter((it: any) => !(String(it.product_name || '') === String(currentOrder.product_name || '') && Number(it.quantity || 0) === Number(currentOrder.quantity || 0)))
+                              .map((it: any) => ({ id: (crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`), product: String(it.product_name || ''), qty: Number(it.quantity || 0) }));
+                            setExtraLines(extras);
+                          } catch {}
                         }}
-                      >
-                        <Truck className="h-4 w-4 text-primary-medium" />
-                        <span>Move to Procurement</span>
-                      </button>
-                    )}
+                            >
+                              <Pencil className="h-4 w-4 text-neutral-medium" />
+                              <span>Edit Order</span>
+                            </button>
+                          )}
+
+                          {/* Move to Procurement */}
+                          {(['finance', 'procurement'].includes(String(currentRole || '').toLowerCase())) && (
+                            <button
+                              className="w-full px-4 py-3 text-left text-sm text-neutral-dark hover:bg-neutral-light/60 transition-colors flex items-center space-x-3"
+                              onClick={async () => {
+                                try {
+                                  await supabase
+                                    .from('purchase_orders')
+                                    .update({ status: 'move_to_procurement' })
+                                    .eq('id', currentOrder.id)
+                                  setOpenMenuId(null)
+                                  await refreshPOs()
+                                  navigate('/admin/supply-chain-procurement')
+                                } catch (e: any) {
+                                  setToast({ show: true, message: e?.message || 'Failed to move to procurement', kind: 'error' })
+                                  setOpenMenuId(null)
+                                }
+                              }}
+                            >
+                              <Truck className="h-4 w-4 text-primary-medium" />
+                              <span>Move to Procurement</span>
+                            </button>
+                          )}
                     
                     {/* Divider */}
                     <div className="border-t border-neutral-soft/40 my-1"></div>
                     
                     {/* Delete Option */}
-                    <button 
-                      className="w-full px-4 py-3 text-left text-sm text-accent-danger hover:bg-accent-danger/5 transition-colors flex items-center space-x-3"
-                      onClick={() => {
-                        setOpenMenuId(null);
-                        setDeleteTarget(currentOrder);
-                        setIsDeleteOpen(true);
-                      }}
-                    >
-                      <Trash2 className="h-4 w-4 text-accent-danger" />
-                      <span>Delete Order</span>
-                    </button>
+                    {canManagePurchaseOrders && (
+                      <button 
+                        className="w-full px-4 py-3 text-left text-sm text-accent-danger hover:bg-accent-danger/5 transition-colors flex items-center space-x-3"
+                        onClick={() => {
+                          setOpenMenuId(null);
+                          setDeleteTarget(currentOrder);
+                          setIsDeleteOpen(true);
+                        }}
+                      >
+                        <Trash2 className="h-4 w-4 text-accent-danger" />
+                        <span>Delete Order</span>
+                      </button>
+                    )}
                   </>
                 );
               })()}
@@ -2912,10 +2953,17 @@ const PurchaseOrders: React.FC = () => {
               <h1 className="text-3xl font-bold text-neutral-dark mb-2">Purchase Orders</h1>
               
             </div>
-            <button onClick={() => { setIsEditOpen(null); setForm((prev:any)=>({ ...(prev||{}), is_copack: poTab==='copack' })); resetForm(); setForm((prev:any)=>({ ...(prev||{}), is_copack: poTab==='copack' })); setExtraLines([]); setIsAddOpen(true) }} className="px-8 py-4 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold transition-all duration-300 shadow-lg hover:shadow-xl transform hover:-translate-y-0.5 flex items-center">
-              <Plus className="h-5 w-5 mr-3" />
-              Add Purchase Order
-            </button>
+            {canManagePurchaseOrders && (
+              <button onClick={() => { setIsEditOpen(null); setForm((prev:any)=>({ ...(prev||{}), is_copack: poTab==='copack' })); resetForm(); setForm((prev:any)=>({ ...(prev||{}), is_copack: poTab==='copack' })); setExtraLines([]); setIsAddOpen(true) }} className="px-8 py-4 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold transition-all duration-300 shadow-lg hover:shadow-xl transform hover:-translate-y-0.5 flex items-center">
+                <Plus className="h-5 w-5 mr-3" />
+                Add Purchase Order
+              </button>
+            )}
+            {!canViewPurchaseOrders && (
+              <div className="text-sm text-neutral-medium">
+                Access restricted to authorized roles only.
+              </div>
+            )}
           </div>
         </div>
 
@@ -3041,16 +3089,9 @@ const PurchaseOrders: React.FC = () => {
                 
                 const filtered = sortedForPriority.filter((o:any) => (!!o.is_copack) === (poTab === 'copack'))
                 return filtered.map((o:any) => {
-                  const st = String(o.status || '').toLowerCase()
                   const orderedQty = Number(o.quantity ?? 0)
                   const shippedSum = shippedTotals[String(o.id)] ?? null
-                  const statusClass = (st === 'on hold' || st === 'canceled')
-                    ? 'bg-accent-danger/10 text-accent-danger border-accent-danger/30'
-                    : (st === 'approved' || st === 'allocated' || st === 'submitted' || st === 'shipped')
-                      ? 'bg-accent-success/10 text-accent-success border-accent-success/30'
-                      : (st === 'partially_shipped')
-                        ? 'bg-accent-warning/10 text-accent-warning border-accent-warning/30'
-                        : 'bg-neutral-light/40 text-neutral-dark border-neutral-soft/60'
+                  const statusClass = getStatusBadgeClass(o.status)
                   
                   // Find this PO's priority rank in the sorted list
                   const brandQueue = sortedForPriority.filter((p:any) => !p.is_copack)
@@ -3081,7 +3122,7 @@ const PurchaseOrders: React.FC = () => {
                           )}
                         </div>
                         <div className="flex items-center gap-2">
-                          <span className={`inline-flex items-center px-3 py-1.5 rounded-xl text-xs font-semibold border ${statusClass}`}>{String(o.status) === 'Ready to Schedule' ? 'Ready be Schedule' : o.status}</span>
+                          <span className={`inline-flex items-center px-3 py-1.5 rounded-xl text-xs font-semibold border ${statusClass}`}>{formatStatusLabel(o.status)}</span>
                           {o.is_rush && !o.is_copack && (
                             <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-orange-100 text-orange-700">RUSH</span>
                           )}

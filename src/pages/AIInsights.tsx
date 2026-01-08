@@ -1,8 +1,35 @@
 import React, { useState } from 'react'
 import { Brain, TrendingUp, TrendingDown, AlertTriangle } from 'lucide-react'
+import { useAuth } from '../contexts/AuthContext'
+import { supabase } from '../lib/supabase'
 
 const AIInsights: React.FC = () => {
+  const { user } = useAuth()
+  const [currentUserRole, setCurrentUserRole] = useState<string | null>(null)
+  const isSalesRepViewOnly = String(currentUserRole || '').toLowerCase() === 'sales_representative'
+
   const [selectedTimeframe, setSelectedTimeframe] = useState<string>('week')
+
+  React.useEffect(() => {
+    let active = true
+    const loadRole = async () => {
+      try {
+        if (!user?.id) return
+        const { data } = await supabase
+          .from('profiles')
+          .select('role')
+          .eq('id', user.id)
+          .maybeSingle()
+        if (!active) return
+        setCurrentUserRole((data as any)?.role ? String((data as any).role) : null)
+      } catch {
+        if (!active) return
+        setCurrentUserRole(null)
+      }
+    }
+    loadRole()
+    return () => { active = false }
+  }, [user?.id])
 
   return (
     <div className="p-6">
@@ -14,6 +41,7 @@ const AIInsights: React.FC = () => {
           <select
             value={selectedTimeframe}
             onChange={(e) => setSelectedTimeframe(e.target.value)}
+            disabled={isSalesRepViewOnly}
             className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
           >
             <option value="day">Today</option>
@@ -95,9 +123,11 @@ const AIInsights: React.FC = () => {
                     <Brain className="h-4 w-4 text-gray-400" />
                     <span className="text-sm text-gray-500">Confidence: 92%</span>
                   </div>
-                  <button className="text-blue-600 hover:text-blue-700 text-sm font-medium">
-                    View Details
-                  </button>
+                  {!isSalesRepViewOnly && (
+                    <button className="text-blue-600 hover:text-blue-700 text-sm font-medium">
+                      View Details
+                    </button>
+                  )}
                 </div>
               </div>
             </div>
@@ -121,9 +151,11 @@ const AIInsights: React.FC = () => {
                     <Brain className="h-4 w-4 text-gray-400" />
                     <span className="text-sm text-gray-500">Confidence: 87%</span>
                   </div>
-                  <button className="text-blue-600 hover:text-blue-700 text-sm font-medium">
-                    View Details
-                  </button>
+                  {!isSalesRepViewOnly && (
+                    <button className="text-blue-600 hover:text-blue-700 text-sm font-medium">
+                      View Details
+                    </button>
+                  )}
                 </div>
               </div>
             </div>

@@ -3,6 +3,29 @@ import { Calculator, RefreshCw, CheckCircle } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../contexts/AuthContext'
 
+function formatStatusLabel(raw?: string | null): string {
+  const s = String(raw || '').trim()
+  if (!s) return '—'
+  const lower = s.toLowerCase()
+  if (lower === 'move_to_procurement' || lower === 'move to procurement') return 'Move to Procurement'
+  if (lower === 'ready_to_schedule' || lower === 'ready to schedule') return 'Ready to Schedule'
+  if (lower === 'on_hold' || lower === 'on hold') return 'On Hold'
+  return s
+    .replace(/_/g, ' ')
+    .split(' ')
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+    .join(' ')
+}
+
+function getStatusBadgeClass(raw?: string | null): string {
+  const st = String(raw || '').toLowerCase()
+  if (st === 'approved' || st === 'allocated') return 'bg-accent-success/10 text-accent-success border-accent-success/30'
+  if (st === 'move_to_procurement' || st === 'move to procurement' || st === 'procurement') return 'bg-amber-50 text-amber-700 border-amber-200'
+  if (st === 'on hold' || st === 'on_hold' || st === 'canceled' || st === 'cancelled') return 'bg-accent-danger/10 text-accent-danger border-accent-danger/30'
+  return 'bg-neutral-light/40 text-neutral-dark border-neutral-soft/60'
+}
+
 const SupplyChainProcurement: React.FC = () => {
   const { user } = useAuth()
   const [loading, setLoading] = useState<boolean>(false)
@@ -20,18 +43,25 @@ const SupplyChainProcurement: React.FC = () => {
   const [currentUserRole, setCurrentUserRole] = useState<string | null>(null)
 
   const procurementStatuses = useMemo(
-    () => ['Move to Procurement', 'move_to_procurement', 'procurement', 'Procurement'],
+    () => [
+      'Move to Procurement',
+      'move_to_procurement',
+      'procurement',
+      'Procurement',
+      'Ready to Schedule',
+      'ready_to_schedule',
+    ],
     []
   )
 
   const canManageProcurement = useMemo(() => {
     const r = String(currentUserRole || '').toLowerCase()
-    return r === 'admin' || r === 'procurement' || r === 'supply_chain' || r === 'supply_chain_procurement'
+    return r === 'admin' || r === 'procurement' || r === 'finance' || r === 'supply_chain'
   }, [currentUserRole])
 
   const canViewProcurement = useMemo(() => {
     const r = String(currentUserRole || '').toLowerCase()
-    return canManageProcurement || r === 'finance'
+    return canManageProcurement || r === 'supply_chain_procurement' || r === 'sales_representative'
   }, [canManageProcurement, currentUserRole])
 
   const loadUserRole = async () => {
@@ -234,27 +264,24 @@ const SupplyChainProcurement: React.FC = () => {
     if (!canManageProcurement) return
     const poId = String(po?.id || '')
     if (!poId) return
-    
     setApprovingId(poId)
     try {
       const { error } = await supabase
         .from('purchase_orders')
-        .update({ status: 'Ready to Schedule' })
+        .update({ status: 'ready_to_schedule' })
         .eq('id', poId)
-      
+
       if (error) throw error
-      
-      // Refresh the list to reflect the change
       await load()
-      
-      // If this was the selected PO, clear selection since it's no longer in procurement queue
-      if (selectedPo?.id && String(selectedPo.id) === poId) {
-        setSelectedPo(null)
-        setPoLines([])
-        setRawMaterials([])
-        setPackagingMaterials([])
-        setMissingFormulas([])
+      // keep current selection in sync
+      if (selectedPo?.id != null && String(selectedPo.id) === poId) {
+        setSelectedPo({ ...(selectedPo as any), status: 'ready_to_schedule' })
       }
+      // reset calculator panels
+      setPoLines([])
+      setRawMaterials([])
+      setPackagingMaterials([])
+      setMissingFormulas([])
     } catch (e: any) {
       setError(e?.message || 'Failed to approve PO')
     } finally {
@@ -311,7 +338,7 @@ const SupplyChainProcurement: React.FC = () => {
                 <div className="text-sm text-neutral-medium">
                   {canManageProcurement
                     ? 'Select a PO from the Procurement Queue to calculate raw materials and packaging requirements.'
-                    : 'You can view moved POs here, but only Procurement / Supply Chain team members can run calculations and approve.'}
+                    : 'You can view moved POs here, but approval and calculations are restricted.'}
                 </div>
               </div>
             </div>
@@ -363,7 +390,7 @@ const SupplyChainProcurement: React.FC = () => {
                             <div className="text-xs text-neutral-medium">Customer: {String(po.customer_name || '—')}</div>
                           </div>
                           <div className="flex flex-col items-start sm:items-end gap-1">
-                            <span className="text-xs px-2 py-1 rounded-md bg-amber-100 text-amber-800 border border-amber-200">{String(po.status || 'Unknown')}</span>
+                            <span className={`inline-flex items-center px-3 py-1.5 rounded-xl text-xs font-semibold border ${getStatusBadgeClass(po.status)}`}>{formatStatusLabel(po.status)}</span>
                             <span className="text-xs text-neutral-medium">{created}</span>
                           </div>
                         </div>
@@ -373,18 +400,31 @@ const SupplyChainProcurement: React.FC = () => {
                             Product: {String(po.product_name || '—')} • Qty: {Number(po.quantity || 0)}
                           </div>
                           {canManageProcurement ? (
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation()
-                                approvePO(po)
-                              }}
-                              disabled={approvingId === id}
-                              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-green-600 hover:bg-green-700 text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                            >
-                              <CheckCircle className="h-3.5 w-3.5" />
-                              {approvingId === id ? 'Approving...' : 'Approve for Scheduling'}
-                            </button>
+                            (() => {
+                              const st = String(po.status || '').toLowerCase()
+                              const alreadyApproved = st === 'ready_to_schedule' || st === 'ready to schedule'
+                              if (alreadyApproved) {
+                                return (
+                                  <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-accent-success/10 text-accent-success border border-accent-success/30">
+                                    <CheckCircle className="h-3.5 w-3.5" /> Approved
+                                  </span>
+                                )
+                              }
+                              return (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    approvePO(po)
+                                  }}
+                                  disabled={approvingId === id}
+                                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-green-600 hover:bg-green-700 text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                                >
+                                  <CheckCircle className="h-3.5 w-3.5" />
+                                  {approvingId === id ? 'Approving...' : 'Approve for Scheduling'}
+                                </button>
+                              )
+                            })()
                           ) : (
                             <div className="text-xs text-neutral-medium">Approval restricted</div>
                           )}

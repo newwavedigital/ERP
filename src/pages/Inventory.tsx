@@ -69,12 +69,12 @@ const Inventory: React.FC = () => {
 
   const canManageInventory = useMemo(() => {
     const r = String(currentUserRole || '').toLowerCase()
-    return r === 'admin' || r === 'warehouse' || r === 'procurement' || r === 'supply_chain' || r === 'supply_chain_procurement'
+    return r === 'admin' || r === 'warehouse' || r === 'procurement' || r === 'finance' || r === 'supply_chain'
   }, [currentUserRole])
 
   const canViewInventory = useMemo(() => {
     const r = String(currentUserRole || '').toLowerCase()
-    return canManageInventory || r === 'finance'
+    return canManageInventory || r === 'supply_chain_procurement' || r === 'sales_representative'
   }, [canManageInventory, currentUserRole])
 
   const [mainTab, setMainTab] = useState<'raw' | 'packaging' | 'finished'>('raw')
@@ -1254,9 +1254,11 @@ const Inventory: React.FC = () => {
                 </div>
                 <div className="text-neutral-dark font-semibold mb-1">No inventory records found</div>
                 <p className="text-sm text-neutral-medium mb-6 text-center">Start tracking your inventory by updating stock levels.</p>
-                <button className="inline-flex items-center gap-2 rounded-xl px-5 py-2.5 text-sm text-white bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light shadow">
-                  <Plus className="h-4 w-4" /> Update Inventory
-                </button>
+                {canManageInventory && (
+                  <button className="inline-flex items-center gap-2 rounded-xl px-5 py-2.5 text-sm text-white bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light shadow">
+                    <Plus className="h-4 w-4" /> Update Inventory
+                  </button>
+                )}
               </div>
             ) : (
               materialsLoading || materials.length === 0 ? (
@@ -1268,9 +1270,11 @@ const Inventory: React.FC = () => {
                   {!materialsLoading && (
                     <>
                       <p className="text-sm text-neutral-medium mb-6">Add a new item to track your inventory.</p>
-                      <button onClick={() => { if (mainTab==='raw') setIsAddRawOpen(true) }} className="inline-flex items-center gap-2 rounded-xl px-5 py-2.5 text-sm text-white bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light shadow">
-                        <Plus className="h-4 w-4" /> Add Your First Raw Material
-                      </button>
+                      {canManageInventory && (
+                        <button onClick={() => { if (mainTab==='raw') setIsAddRawOpen(true) }} className="inline-flex items-center gap-2 rounded-xl px-5 py-2.5 text-sm text-white bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light shadow">
+                          <Plus className="h-4 w-4" /> Add Your First Raw Material
+                        </button>
+                      )}
                     </>
                   )}
                 </div>
@@ -1369,7 +1373,7 @@ const Inventory: React.FC = () => {
                                       </button>
                                     )
                                   }
-                                  if (net <= rp) {
+                                  if (net <= rp && canManageInventory) {
                                     return (
                                       <button type="button" onClick={() => handleReplenishmentClick(m)} className="px-3 py-1.5 text-xs inline-flex items-center gap-1 rounded-lg border border-primary-light text-primary-medium hover:bg-primary-light/20">
                                         <ClipboardList className="h-4 w-4" /> Auto-Generate PR
@@ -1484,7 +1488,7 @@ const Inventory: React.FC = () => {
                                           </button>
                                         )
                                       }
-                                      if (net <= rp) {
+                                      if (net <= rp && canManageInventory) {
                                         return (
                                           <button type="button" disabled={isGenerating} onClick={() => handleReplenishmentClick(m)} className={`px-4 py-2.5 text-sm inline-flex items-center gap-2 rounded-xl border-2 border-primary-medium text-primary-medium hover:bg-primary-medium hover:text-white transition-all duration-200 font-semibold ${isGenerating ? 'opacity-60 cursor-not-allowed' : ''}`}>
                                             <ClipboardList className="h-4 w-4" /> Auto-Generate PR

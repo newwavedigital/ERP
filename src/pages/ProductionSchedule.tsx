@@ -152,7 +152,7 @@ const canManageProduction = (role: string | null) => {
 }
 
 const canManageWarehouse = (role: string | null) => {
-  return role === 'warehouse' || role === 'admin'
+  return role === 'admin'
 }
 
 const fmtDate = (d?: string | null) => {
@@ -176,6 +176,7 @@ const ProductionSchedule: React.FC = () => {
   const location = useLocation()
   const { user } = useAuth()
   const [currentUserRole, setCurrentUserRole] = useState<string | null>(null)
+  const isScheduleFromPoViewOnly = ['warehouse', 'sales_representative', 'finance', 'procurement', 'supply_chain_procurement'].includes(String(currentUserRole || '').toLowerCase())
 
   // Reference datasets
   const [customers, setCustomers] = useState<Customer[]>([]);
@@ -418,7 +419,7 @@ const ProductionSchedule: React.FC = () => {
       
       if (error) throw error;
       const raw = Array.isArray(data) ? data : []
-      const allowed = new Set(['approved', 'open', 'backordered', 'ready to schedule', 'Ready to Schedule', 'scheduled'])
+      const allowed = new Set(['approved', 'open', 'backordered', 'ready to schedule', 'ready_to_schedule', 'scheduled'])
       const filtered = raw.filter((po: any) => allowed.has(String(po?.status || '').toLowerCase()))
       setPurchaseOrders(filtered);
     } catch (e) {
@@ -457,6 +458,10 @@ const ProductionSchedule: React.FC = () => {
 
   // ───────── Create batch from PO
   const createBatchFromPo = async () => {
+    if (isScheduleFromPoViewOnly) {
+      pushToast({ type: 'error', message: 'View-only access: You cannot create batches.' });
+      return;
+    }
     if (!selectedPo || !batchGoal || !scheduledDate) {
       pushToast({ type: 'error', message: 'Please fill in all required fields' });
       return;
@@ -2418,10 +2423,10 @@ const ProductionSchedule: React.FC = () => {
                 {loading ? "Loading…" : "Reload"}
               </button>
               )}
-              {activeSection === 'schedule' && highlightPoId && (
+              {activeSection === 'schedule' && highlightPoId && !isScheduleFromPoViewOnly ? (
                 <button
-                  onClick={async()=>{
-                    try{
+                  onClick={async () => {
+                    try {
                       setCreatingFromPo(true)
                       // Determine PO type first
                       const { data: poRow, error: poErr } = await supabase
@@ -2435,20 +2440,22 @@ const ProductionSchedule: React.FC = () => {
                         const { error } = await supabase.rpc('fn_auto_create_copack_batch_for_po', { p_po_id: highlightPoId })
                         if (error) throw error
                         await loadBatches()
-                        pushToast({ type:'success', message: 'Batch created from Copack PO' })
+                        pushToast({ type: 'success', message: 'Batch created from Copack PO' })
                       } else {
                         // For non-copack POs, do not trigger any creation here until the correct RPC is confirmed
-                        pushToast({ type:'warning', message: 'Auto-create is available for Copack POs only on this button.' })
+                        pushToast({ type: 'warning', message: 'Auto-create is available for Copack POs only on this button.' })
                       }
-                    }catch(e:any){
-                      pushToast({ type:'error', message: e?.message || 'Failed to auto-create batch from PO' })
-                    }finally{ setCreatingFromPo(false) }
+                    } catch (e: any) {
+                      pushToast({ type: 'error', message: e?.message || 'Failed to auto-create batch from PO' })
+                    } finally {
+                      setCreatingFromPo(false)
+                    }
                   }}
                   className="px-6 py-3 rounded-xl bg-teal-600 hover:bg-teal-700 text-white font-semibold transition-all shadow-lg hover:shadow-xl"
                 >
                   {creatingFromPo ? 'Creating…' : 'Auto-create from PO'}
                 </button>
-              )}
+              ) : null}
               {activeSection === 'schedule' && canManageProduction(currentUserRole) && (
                 <button
                   onClick={() => setOpen(true)}
@@ -2584,7 +2591,12 @@ const ProductionSchedule: React.FC = () => {
                               po.status === 'Open' ? 'bg-blue-100 text-blue-800' :
                               'bg-yellow-100 text-yellow-800'
                             }`}>
-                              {String(po.status) === 'Ready to Schedule' ? 'Ready be Schedule' : po.status}
+                              {(() => {
+                                const st = String(po.status || '')
+                                const low = st.toLowerCase()
+                                if (low === 'ready to schedule' || low === 'ready_to_schedule') return 'Ready to Schedule'
+                                return st || '—'
+                              })()}
                             </span>
                           </div>
                           <div className="text-sm text-neutral-medium mb-1">{customerName}</div>
@@ -2645,13 +2657,15 @@ const ProductionSchedule: React.FC = () => {
                           </div>
                         </div>
                       </div>
-                      <button
-                        type="button"
-                        className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-semibold rounded-lg bg-blue-600 text-white hover:bg-blue-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 shadow-sm transition"
-                        onClick={() => handleOpenMergeModal(entry.targets)}
-                      >
-                        Merge Batches
-                      </button>
+                      {canManageProduction(currentUserRole) && (
+                        <button
+                          type="button"
+                          className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-semibold rounded-lg bg-blue-600 text-white hover:bg-blue-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 shadow-sm transition"
+                          onClick={() => handleOpenMergeModal(entry.targets)}
+                        >
+                          Merge Batches
+                        </button>
+                      )}
                     </div>
                   </div>
                 ))}
@@ -3926,6 +3940,7 @@ const ProductionSchedule: React.FC = () => {
                       type="date"
                       value={scheduledDate}
                       onChange={(e) => setScheduledDate(e.target.value)}
+                      disabled={isScheduleFromPoViewOnly}
                       className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light bg-white text-neutral-dark"
                     />
                   </div>
@@ -3934,6 +3949,7 @@ const ProductionSchedule: React.FC = () => {
                     <select
                       value={room}
                       onChange={(e) => setRoom(e.target.value)}
+                      disabled={isScheduleFromPoViewOnly}
                       className="w-full px-4 py-3 border border-neutral-soft rounded-lg bg-white focus:ring-2 focus:ring-primary-light focus:border-primary-light"
                     >
                       {roomsList.map(r => (
@@ -3952,6 +3968,7 @@ const ProductionSchedule: React.FC = () => {
                     placeholder="Enter quantity for this batch"
                     min="1"
                     max={productGoal}
+                    disabled={isScheduleFromPoViewOnly}
                     className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light bg-white text-neutral-dark"
                   />
                   <p className="text-xs text-neutral-medium mt-1">
@@ -3966,6 +3983,7 @@ const ProductionSchedule: React.FC = () => {
                     value={lot}
                     onChange={(e) => setLot(e.target.value)}
                     placeholder="Enter lot number"
+                    disabled={isScheduleFromPoViewOnly}
                     className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light bg-white text-neutral-dark"
                   />
                 </div>
@@ -3984,13 +4002,19 @@ const ProductionSchedule: React.FC = () => {
                 >
                   Close
                 </button>
-                <button
-                  onClick={createBatchFromPo}
-                  disabled={creatingFromPo || !batchGoal || !scheduledDate || Number(batchGoal) <= 0 || Number(batchGoal) > productGoal}
-                  className="px-6 py-2.5 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold shadow-md disabled:opacity-50 disabled:cursor-not-allowed transition-all"
-                >
-                  {creatingFromPo ? 'Creating Batch...' : 'Create Batch'}
-                </button>
+                {isScheduleFromPoViewOnly ? (
+                  <span className="px-4 py-2.5 rounded-xl bg-neutral-light/60 text-neutral-dark font-semibold border border-neutral-soft">
+                    View Only
+                  </span>
+                ) : (
+                  <button
+                    onClick={createBatchFromPo}
+                    disabled={creatingFromPo || !batchGoal || !scheduledDate || Number(batchGoal) <= 0 || Number(batchGoal) > productGoal}
+                    className="px-6 py-2.5 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold shadow-md disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                  >
+                    {creatingFromPo ? 'Creating Batch...' : 'Create Batch'}
+                  </button>
+                )}
               </div>
             </div>
           </div>

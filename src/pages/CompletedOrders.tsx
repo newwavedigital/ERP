@@ -1,5 +1,7 @@
 import React, { useState } from 'react'
 import { Search, Filter, CheckCircle, Eye, Download, Archive, Package, DollarSign, TrendingUp } from 'lucide-react'
+import { useAuth } from '../contexts/AuthContext'
+import { supabase } from '../lib/supabase'
 
 interface CompletedOrder {
   id: number
@@ -14,8 +16,33 @@ interface CompletedOrder {
 }
 //dfsafsafsa
 const CompletedOrders: React.FC = () => {
+  const { user } = useAuth()
+  const [currentUserRole, setCurrentUserRole] = useState<string | null>(null)
+  const isSalesRepViewOnly = String(currentUserRole || '').toLowerCase() === 'sales_representative'
+
   const [searchTerm, setSearchTerm] = useState<string>('')
   const [completedOrders] = useState<CompletedOrder[]>([])
+
+  React.useEffect(() => {
+    let active = true
+    const loadRole = async () => {
+      try {
+        if (!user?.id) return
+        const { data } = await supabase
+          .from('profiles')
+          .select('role')
+          .eq('id', user.id)
+          .maybeSingle()
+        if (!active) return
+        setCurrentUserRole((data as any)?.role ? String((data as any).role) : null)
+      } catch {
+        if (!active) return
+        setCurrentUserRole(null)
+      }
+    }
+    loadRole()
+    return () => { active = false }
+  }, [user?.id])
 
   const filteredOrders = completedOrders.filter(order =>
     order.orderNumber.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -36,10 +63,12 @@ const CompletedOrders: React.FC = () => {
               <h1 className="text-3xl font-bold text-neutral-dark mb-2">Completed Orders</h1>
               
             </div>
-            <button className="px-6 py-3 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold transition-all duration-300 shadow-lg hover:shadow-xl transform hover:-translate-y-0.5 flex items-center">
-              <Download className="h-5 w-5 mr-3" />
-              Export Report
-            </button>
+            {!isSalesRepViewOnly && (
+              <button className="px-6 py-3 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold transition-all duration-300 shadow-lg hover:shadow-xl transform hover:-translate-y-0.5 flex items-center">
+                <Download className="h-5 w-5 mr-3" />
+                Export Report
+              </button>
+            )}
           </div>
         </div>
 

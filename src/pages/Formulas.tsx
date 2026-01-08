@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { Plus, Inbox, X, Trash2 } from "lucide-react";
 import { supabase } from "../lib/supabase";
+import { useAuth } from "../contexts/AuthContext";
 type Material = { id: string; product_name: string; unit_of_measure: string };
 type Customer = { id: string; company_name: string };
 
@@ -21,6 +22,9 @@ const emptyIngredient: Ingredient = {
 interface FormulasProps { openSignal?: number; embedded?: boolean }
 
 const Formulas: React.FC<FormulasProps> = ({ openSignal, embedded = false }) => {
+  const { user } = useAuth();
+  const [currentUserRole, setCurrentUserRole] = useState<string | null>(null);
+  const isSalesRepViewOnly = String(currentUserRole || '').toLowerCase() === 'sales_representative';
   const [isAddOpen, setIsAddOpen] = useState(false);
 
   const [materials, setMaterials] = useState<Material[]>([]);
@@ -72,12 +76,33 @@ const Formulas: React.FC<FormulasProps> = ({ openSignal, embedded = false }) => 
     load();
   }, []);
 
+  useEffect(() => {
+    let active = true;
+    const loadRole = async () => {
+      try {
+        if (!user?.id) return;
+        const { data } = await supabase
+          .from('profiles')
+          .select('role')
+          .eq('id', user.id)
+          .maybeSingle();
+        if (!active) return;
+        setCurrentUserRole((data as any)?.role ? String((data as any).role) : null);
+      } catch {
+        if (!active) return;
+        setCurrentUserRole(null);
+      }
+    };
+    loadRole();
+    return () => { active = false; };
+  }, [user?.id]);
+
   // Allow parent header button to open modal
   useEffect(() => {
     if (typeof openSignal === 'number' && openSignal > 0) {
-      setIsAddOpen(true);
+      if (!isSalesRepViewOnly) setIsAddOpen(true);
     }
-  }, [openSignal]);
+  }, [openSignal, isSalesRepViewOnly]);
 
   /* ✅ 2. LOAD FORMULAS FOR DISPLAY */
   const loadFormulas = async () => {
@@ -120,6 +145,7 @@ const Formulas: React.FC<FormulasProps> = ({ openSignal, embedded = false }) => 
   /* ✅ 3. CREATE FORMULA */
   const handleCreate = async () => {
     try {
+      if (isSalesRepViewOnly) return;
       if (!form.product_name || !form.customer_id) return;
       setSaving(true);
       const { data: fdata, error: ferr } = await supabase
@@ -191,13 +217,15 @@ const Formulas: React.FC<FormulasProps> = ({ openSignal, embedded = false }) => 
               </h1>
             </div>
 
-            <button
-              onClick={() => setIsAddOpen(true)}
-              className="px-6 py-3 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold shadow-md hover:shadow-lg flex items-center"
-            >
-              <Plus className="h-5 w-5 mr-2" />
-              Add Formula
-            </button>
+            {!isSalesRepViewOnly && (
+              <button
+                onClick={() => setIsAddOpen(true)}
+                className="px-6 py-3 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold shadow-md hover:shadow-lg flex items-center"
+              >
+                <Plus className="h-5 w-5 mr-2" />
+                Add Formula
+              </button>
+            )}
           </div>
         )}
 
@@ -240,12 +268,14 @@ const Formulas: React.FC<FormulasProps> = ({ openSignal, embedded = false }) => 
             <p className="text-sm text-neutral-medium">
               Create product formulas to enable accurate production planning.
             </p>
-            <button
-              onClick={() => setIsAddOpen(true)}
-              className="mt-4 px-5 py-2.5 rounded-lg bg-primary-medium hover:bg-primary-dark text-white text-sm font-medium shadow-sm"
-            >
-              Create Your First Formula
-            </button>
+            {!isSalesRepViewOnly && (
+              <button
+                onClick={() => setIsAddOpen(true)}
+                className="mt-4 px-5 py-2.5 rounded-lg bg-primary-medium hover:bg-primary-dark text-white text-sm font-medium shadow-sm"
+              >
+                Create Your First Formula
+              </button>
+            )}
           </div>
         )}
 

@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { Plus, Minus, Search, Filter, Truck, Building2, MapPin, Phone, User, Mail, Globe, CreditCard, X, Eye, Edit, Trash2, CheckCircle2, Percent, Package, ExternalLink } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 import { useNavigate } from 'react-router-dom'
+import { useAuth } from '../contexts/AuthContext'
 
 interface Supplier {
   id: string
@@ -693,6 +694,10 @@ const ViewSupplierModal: React.FC<ViewSupplierModalProps> = ({ supplier, onClose
 }
 
 const Suppliers: React.FC = () => {
+  const { user } = useAuth()
+  const [currentUserRole, setCurrentUserRole] = useState<string | null>(null)
+  const isSalesRepViewOnly = String(currentUserRole || '').toLowerCase() === 'sales_representative'
+
   const navigate = useNavigate()
   const [searchTerm, setSearchTerm] = useState<string>('')
   const [suppliers, setSuppliers] = useState<Supplier[]>([])
@@ -752,6 +757,27 @@ const Suppliers: React.FC = () => {
   const [deleteTarget, setDeleteTarget] = useState<Supplier | null>(null)
   const [deleting, setDeleting] = useState<boolean>(false)
   const [toast, setToast] = useState<{ show: boolean; message: string }>({ show: false, message: '' })
+
+  useEffect(() => {
+    let active = true
+    const loadRole = async () => {
+      try {
+        if (!user?.id) return
+        const { data } = await supabase
+          .from('profiles')
+          .select('role')
+          .eq('id', user.id)
+          .maybeSingle()
+        if (!active) return
+        setCurrentUserRole((data as any)?.role ? String((data as any).role) : null)
+      } catch {
+        if (!active) return
+        setCurrentUserRole(null)
+      }
+    }
+    loadRole()
+    return () => { active = false }
+  }, [user?.id])
   const [addForm, setAddForm] = useState({
     company_name: '',
     contact_person: '',
@@ -946,6 +972,7 @@ const Suppliers: React.FC = () => {
   }
 
   const handleEdit = (s: Supplier) => {
+    if (isSalesRepViewOnly) return
     setEditId(s.id)
     setEditForm({
       company_name: s.name || '',
@@ -991,6 +1018,7 @@ const Suppliers: React.FC = () => {
   }
 
   const handleDelete = (s: Supplier) => {
+    if (isSalesRepViewOnly) return
     setDeleteTarget(s)
     setIsDeleteOpen(true)
   }
@@ -1004,10 +1032,12 @@ const Suppliers: React.FC = () => {
             <div>
               <h1 className="text-xl sm:text-2xl font-bold text-neutral-dark mb-1">Suppliers</h1>
             </div>
-            <button onClick={() => setIsAddOpen(true)} className="w-full sm:w-auto px-4 sm:px-6 py-2.5 sm:py-3 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold transition-all duration-300 shadow-lg hover:shadow-xl transform hover:-translate-y-0.5 flex items-center justify-center">
-              <Plus className="h-4 w-4 sm:h-5 sm:w-5 mr-2 sm:mr-3" />
-              Add Supplier
-            </button>
+            {!isSalesRepViewOnly && (
+              <button onClick={() => setIsAddOpen(true)} className="w-full sm:w-auto px-4 sm:px-6 py-2.5 sm:py-3 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold transition-all duration-300 shadow-lg hover:shadow-xl transform hover:-translate-y-0.5 flex items-center justify-center">
+                <Plus className="h-4 w-4 sm:h-5 sm:w-5 mr-2 sm:mr-3" />
+                Add Supplier
+              </button>
+            )}
           </div>
         </div>
 
@@ -1816,14 +1846,16 @@ const Suppliers: React.FC = () => {
               </div>
               <p className="text-neutral-medium mb-1">No suppliers found</p>
               <p className="text-sm text-neutral-medium">Add suppliers to manage your raw material sourcing.</p>
-              <button
-                type="button"
-                onClick={() => setIsAddOpen(true)}
-                className="mt-6 px-6 py-3 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold shadow-md flex items-center mx-auto"
-              >
-                <Plus className="h-5 w-5 mr-2" />
-                Add Your First Supplier
-              </button>
+              {!isSalesRepViewOnly && (
+                <button
+                  type="button"
+                  onClick={() => setIsAddOpen(true)}
+                  className="mt-6 px-6 py-3 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold shadow-md flex items-center mx-auto"
+                >
+                  <Plus className="h-5 w-5 mr-2" />
+                  Add Supplier
+                </button>
+              )}
             </div>
           </div>
         ) : (
@@ -1892,12 +1924,16 @@ const Suppliers: React.FC = () => {
                           <button type="button" onClick={() => handleView(supplier)} className="group/btn p-1.5 sm:p-2 text-primary-medium hover:text-white hover:bg-primary-medium rounded-lg transition-all duration-300 hover:shadow-lg hover:scale-105 border border-primary-light/30 hover:border-primary-medium">
                             <Eye className="h-3 w-3 sm:h-4 sm:w-4" />
                           </button>
-                          <button type="button" onClick={() => handleEdit(supplier)} className="group/btn p-1.5 sm:p-2 text-neutral-medium hover:text-white hover:bg-neutral-medium rounded-lg transition-all duration-300 hover:shadow-lg hover:scale-105 border border-neutral-soft hover:border-neutral-medium">
-                            <Edit className="h-3 w-3 sm:h-4 sm:w-4" />
-                          </button>
-                          <button type="button" onClick={() => handleDelete(supplier)} className="group/btn p-1.5 sm:p-2 text-red-600 hover:text-white hover:bg-red-600 rounded-lg transition-all duration-300 hover:shadow-lg hover:scale-105 border border-red-200 hover:border-red-600">
-                            <Trash2 className="h-3 w-3 sm:h-4 sm:w-4" />
-                          </button>
+                          {!isSalesRepViewOnly && (
+                            <button type="button" onClick={() => handleEdit(supplier)} className="group/btn p-1.5 sm:p-2 text-neutral-medium hover:text-white hover:bg-neutral-medium rounded-lg transition-all duration-300 hover:shadow-lg hover:scale-105 border border-neutral-soft hover:border-neutral-medium">
+                              <Edit className="h-3 w-3 sm:h-4 sm:w-4" />
+                            </button>
+                          )}
+                          {!isSalesRepViewOnly && (
+                            <button type="button" onClick={() => handleDelete(supplier)} className="group/btn p-1.5 sm:p-2 text-red-600 hover:text-white hover:bg-red-600 rounded-lg transition-all duration-300 hover:shadow-lg hover:scale-105 border border-red-200 hover:border-red-600">
+                              <Trash2 className="h-3 w-3 sm:h-4 sm:w-4" />
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>

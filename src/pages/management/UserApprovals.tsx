@@ -25,6 +25,20 @@ const UserApprovals: React.FC<UserApprovalsProps> = ({ embedded }) => {
   const [searchTerm, setSearchTerm] = useState('')
   const [statusFilter, setStatusFilter] = useState<'all' | 'pending' | 'approved' | 'rejected'>('all')
   const [updating, setUpdating] = useState<string | null>(null)
+  const [updatingRole, setUpdatingRole] = useState<string | null>(null)
+  const [roleDrafts, setRoleDrafts] = useState<Record<string, string>>({})
+  const [roleConfirm, setRoleConfirm] = useState<{ userId: string; fromRole: string; toRole: string } | null>(null)
+
+  // Available roles for assignment
+  const availableRoles = [
+    'client',
+    'admin', 
+    'finance',
+    'production_manager',
+    'supply_chain_procurement',
+    'warehouse',
+    'sales_representative'
+  ]
 
   // Load users from profiles table
   const loadUsers = async () => {
@@ -42,6 +56,30 @@ const UserApprovals: React.FC<UserApprovalsProps> = ({ embedded }) => {
     } finally {
       setLoading(false)
     }
+  }
+
+  const confirmRoleChange = async () => {
+    if (!roleConfirm) return
+    const { userId, fromRole, toRole } = roleConfirm
+    try {
+      await updateUserRole(userId, toRole)
+      setRoleDrafts((prev) => {
+        const next = { ...prev }
+        delete next[userId]
+        return next
+      })
+    } catch {
+      setRoleDrafts((prev) => ({ ...prev, [userId]: fromRole }))
+    } finally {
+      setRoleConfirm(null)
+    }
+  }
+
+  const cancelRoleChange = () => {
+    if (!roleConfirm) return
+    const { userId, fromRole } = roleConfirm
+    setRoleDrafts((prev) => ({ ...prev, [userId]: fromRole }))
+    setRoleConfirm(null)
   }
 
   // Update user approval status
@@ -68,6 +106,33 @@ const UserApprovals: React.FC<UserApprovalsProps> = ({ embedded }) => {
       console.error('Error updating approval status:', error)
     } finally {
       setUpdating(null)
+    }
+  }
+
+  // Update user role
+  const updateUserRole = async (userId: string, role: string) => {
+    try {
+      setUpdatingRole(userId)
+      const { error } = await supabase
+        .from('profiles')
+        .update({ 
+          role: role,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', userId)
+
+      if (error) throw error
+
+      // Update local state
+      setUsers(prev => prev.map(user => 
+        user.id === userId 
+          ? { ...user, role: role, updated_at: new Date().toISOString() }
+          : user
+      ))
+    } catch (error) {
+      console.error('Error updating user role:', error)
+    } finally {
+      setUpdatingRole(null)
     }
   }
 
@@ -117,6 +182,20 @@ const UserApprovals: React.FC<UserApprovalsProps> = ({ embedded }) => {
 
   const getStatusCount = (status: string) => {
     return visibleUsers.filter(user => user.approval_status === status).length
+  }
+
+  const formatRoleName = (role: string) => {
+    const r = String(role || '')
+      .toLowerCase()
+      .trim()
+
+    const mapped = r === 'finance' ? 'procurement' : r
+
+    return mapped
+      .split('_')
+      .filter(Boolean)
+      .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+      .join(' ')
   }
 
   return (
@@ -272,7 +351,28 @@ const UserApprovals: React.FC<UserApprovalsProps> = ({ embedded }) => {
                       <span className="text-sm text-neutral-dark">{user.company || 'N/A'}</span>
                     </td>
                     <td className="px-6 py-4">
-                      <span className="text-sm text-neutral-dark">{user.role || 'N/A'}</span>
+                      <div className="flex items-center gap-2">
+                        <select
+                          value={roleDrafts[user.id] ?? (user.role || 'client')}
+                          onChange={(e) => {
+                            const fromRole = String(user.role || 'client')
+                            const toRole = e.target.value
+                            setRoleDrafts((prev) => ({ ...prev, [user.id]: toRole }))
+                            setRoleConfirm({ userId: user.id, fromRole, toRole })
+                          }}
+                          disabled={updatingRole === user.id}
+                          className="text-sm border border-neutral-soft rounded-lg px-3 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-primary-medium focus:border-transparent disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          {availableRoles.map(role => (
+                            <option key={role} value={role}>
+                              {formatRoleName(role)}
+                            </option>
+                          ))}
+                        </select>
+                        {updatingRole === user.id && (
+                          <div className="w-4 h-4 border-2 border-primary-medium border-t-transparent rounded-full animate-spin"></div>
+                        )}
+                      </div>
                     </td>
                     <td className="px-6 py-4">
                       {getStatusBadge(user.approval_status)}
@@ -332,6 +432,39 @@ const UserApprovals: React.FC<UserApprovalsProps> = ({ embedded }) => {
       {!loading && filteredUsers.length > 0 && (
         <div className="mt-6 text-center text-sm text-neutral-medium">
           Showing {filteredUsers.length} of {visibleUsers.length} users
+        </div>
+      )}
+
+      {roleConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/50" onClick={cancelRoleChange}></div>
+          <div className="relative z-10 w-full max-w-md bg-white rounded-2xl shadow-2xl border border-neutral-soft/30 overflow-hidden">
+            <div className="px-6 py-4 border-b border-neutral-soft/30">
+              <div className="text-lg font-semibold text-neutral-dark">Confirm Role Change</div>
+            </div>
+            <div className="px-6 py-5 text-sm text-neutral-medium">
+              Change role from <span className="font-semibold text-neutral-dark">{formatRoleName(roleConfirm.fromRole)}</span> to{' '}
+              <span className="font-semibold text-neutral-dark">{formatRoleName(roleConfirm.toRole)}</span>?
+            </div>
+            <div className="px-6 py-4 border-t border-neutral-soft/30 flex items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={cancelRoleChange}
+                disabled={updatingRole === roleConfirm.userId}
+                className="px-4 py-2 rounded-lg border border-neutral-soft text-neutral-dark hover:bg-neutral-light disabled:opacity-50"
+              >
+                No
+              </button>
+              <button
+                type="button"
+                onClick={confirmRoleChange}
+                disabled={updatingRole === roleConfirm.userId}
+                className="px-4 py-2 rounded-lg bg-primary-medium text-white hover:bg-primary-dark disabled:opacity-50"
+              >
+                Yes
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

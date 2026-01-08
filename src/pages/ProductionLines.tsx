@@ -141,13 +141,13 @@ export default function ProductionLines({ embedded = false, refreshSignal = 0, o
   const canManageProductionLines = useMemo(() => {
     if (!currentUserRole) return false
     const r = String(currentUserRole).toLowerCase()
-    return r === 'admin' || r === 'production_manager' || r === 'warehouse'
+    return r === 'admin' || r === 'production_manager'
   }, [currentUserRole])
 
   const canViewProductionLines = useMemo(() => {
     if (!currentUserRole) return false
     const r = String(currentUserRole).toLowerCase()
-    return canManageProductionLines || r === 'finance' || r === 'procurement' || r === 'supply_chain'
+    return canManageProductionLines || r === 'finance' || r === 'procurement' || r === 'supply_chain' || r === 'warehouse' || r === 'sales_representative'
   }, [canManageProductionLines, currentUserRole])
 
   const [rows, setRows] = useState<ProductionLine[]>([]);

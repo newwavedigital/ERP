@@ -1,6 +1,7 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useEffect, useRef, useState, useMemo } from 'react'
 import { Plus, Search, Filter, Users, User, Mail, Phone, Globe, BadgeCheck, Eye, Edit, Trash2, Building2, MapPin, FileText, CheckCircle2, Package } from 'lucide-react'
 import { supabase } from '../lib/supabase'
+import { useAuth } from '../contexts/AuthContext'
 
 // Tab Components
 const ProductsTab: React.FC<{ onboardingId: string | null }> = ({ onboardingId }) => {
@@ -405,6 +406,20 @@ const DocumentsTab: React.FC<{ onboardingId: string | null }> = ({ onboardingId 
 }
 
 const Customers: React.FC = () => {
+  const { user } = useAuth()
+  const [currentUserRole, setCurrentUserRole] = useState<string | null>(null)
+  const [roleLoading, setRoleLoading] = useState<boolean>(false)
+
+  const canManageCustomers = useMemo(() => {
+    const r = String(currentUserRole || '').toLowerCase()
+    return r === 'admin' || r === 'procurement' || r === 'finance' || r === 'supply_chain' || r === 'sales_representative'
+  }, [currentUserRole])
+
+  const canViewCustomers = useMemo(() => {
+    const r = String(currentUserRole || '').toLowerCase()
+    return canManageCustomers || r === 'supply_chain_procurement'
+  }, [canManageCustomers, currentUserRole])
+
   const [searchTerm, setSearchTerm] = useState<string>('')
   const [isAddOpen, setIsAddOpen] = useState<boolean>(false)
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false)
@@ -458,6 +473,32 @@ const Customers: React.FC = () => {
   // Products for UI-only multi-select in Add Customer modal
   const [allProducts, setAllProducts] = useState<Array<{ id: string; name: string }>>([])
   const [selectedProductIds, setSelectedProductIds] = useState<string[]>([])
+
+  // Load user role
+  const loadUserRole = async () => {
+    if (!user?.id) {
+      setCurrentUserRole(null)
+      return
+    }
+    setRoleLoading(true)
+    try {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('role')
+        .eq('id', user.id)
+        .single()
+      if (error) throw error
+      setCurrentUserRole(data?.role ? String(data.role) : null)
+    } catch (e) {
+      setCurrentUserRole(null)
+    } finally {
+      setRoleLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    loadUserRole()
+  }, [user?.id])
 
   const refresh = async () => {
     try {
@@ -578,13 +619,20 @@ const Customers: React.FC = () => {
             <div>
               <h1 className="text-xl sm:text-2xl font-bold text-neutral-dark mb-1">Customers</h1>
             </div>
-            <button 
-              onClick={() => { setIsAddOpen(true); setSelectedProductIds([]) }}
-              className="w-full sm:w-auto px-4 sm:px-6 py-2.5 sm:py-3 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold transition-all duration-300 shadow-lg hover:shadow-xl transform hover:-translate-y-0.5 flex items-center justify-center"
-            >
-              <Plus className="h-4 w-4 sm:h-5 sm:w-5 mr-2 sm:mr-3" />
-              Add Customer
-            </button>
+            {canManageCustomers && (
+              <button 
+                onClick={() => { setIsAddOpen(true); setSelectedProductIds([]) }}
+                className="w-full sm:w-auto px-4 sm:px-6 py-2.5 sm:py-3 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold transition-all duration-300 shadow-lg hover:shadow-xl transform hover:-translate-y-0.5 flex items-center justify-center"
+              >
+                <Plus className="h-4 w-4 sm:h-5 sm:w-5 mr-2 sm:mr-3" />
+                Add Customer
+              </button>
+            )}
+            {!canViewCustomers && !roleLoading && (
+              <div className="text-sm text-neutral-medium">
+                Access restricted to authorized roles only.
+              </div>
+            )}
           </div>
         </div>
 
@@ -1389,12 +1437,16 @@ const Customers: React.FC = () => {
                         <button type="button" onClick={() => handleView(c)} className="group/btn p-1.5 sm:p-2 text-primary-medium hover:text-white hover:bg-primary-medium rounded-lg transition-all duration-300 hover:shadow-lg hover:scale-105 border border-primary-light/30 hover:border-primary-medium">
                           <Eye className="h-3 w-3 sm:h-4 sm:w-4" />
                         </button>
-                        <button type="button" onClick={() => handleEdit(c)} className="group/btn p-1.5 sm:p-2 text-neutral-medium hover:text-white hover:bg-neutral-medium rounded-lg transition-all duration-300 hover:shadow-lg hover:scale-105 border border-neutral-soft hover:border-neutral-medium">
-                          <Edit className="h-3 w-3 sm:h-4 sm:w-4" />
-                        </button>
-                        <button type="button" onClick={() => handleDelete(c)} className="group/btn p-1.5 sm:p-2 text-accent-danger hover:text-white hover:bg-accent-danger rounded-lg transition-all duration-300 hover:shadow-lg hover:scale-105 border border-accent-danger/30 hover:border-accent-danger">
-                          <Trash2 className="h-3 w-3 sm:h-4 sm:w-4" />
-                        </button>
+                        {canManageCustomers && (
+                          <button type="button" onClick={() => handleEdit(c)} className="group/btn p-1.5 sm:p-2 text-neutral-medium hover:text-white hover:bg-neutral-medium rounded-lg transition-all duration-300 hover:shadow-lg hover:scale-105 border border-neutral-soft hover:border-neutral-medium">
+                            <Edit className="h-3 w-3 sm:h-4 sm:w-4" />
+                          </button>
+                        )}
+                        {canManageCustomers && (
+                          <button type="button" onClick={() => handleDelete(c)} className="group/btn p-1.5 sm:p-2 text-accent-danger hover:text-white hover:bg-accent-danger rounded-lg transition-all duration-300 hover:shadow-lg hover:scale-105 border border-accent-danger/30 hover:border-accent-danger">
+                            <Trash2 className="h-3 w-3 sm:h-4 sm:w-4" />
+                          </button>
+                        )}
                       </div>
                     </td>
                   </tr>

@@ -1,13 +1,40 @@
-import React, { useState, useRef } from 'react'
+import React, { useState, useRef, useEffect } from 'react'
 import { Search, Filter, Library, Upload, FileText, Tag, Eye, Trash2 } from 'lucide-react'
+import { useAuth } from '../contexts/AuthContext'
+import { supabase } from '../lib/supabase'
 
 const ContentLibrary: React.FC = () => {
+  const { user } = useAuth()
+  const [currentUserRole, setCurrentUserRole] = useState<string | null>(null)
+  const isSalesRepViewOnly = String(currentUserRole || '').toLowerCase() === 'sales_representative'
+
   const [searchTerm, setSearchTerm] = useState<string>('')
   const [tag, setTag] = useState<string>('')
   const [description, setDescription] = useState<string>('')
   const [files, setFiles] = useState<File[]>([])
   const [isDragging, setIsDragging] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    let active = true
+    const loadRole = async () => {
+      try {
+        if (!user?.id) return
+        const { data } = await supabase
+          .from('profiles')
+          .select('role')
+          .eq('id', user.id)
+          .maybeSingle()
+        if (!active) return
+        setCurrentUserRole((data as any)?.role ? String((data as any).role) : null)
+      } catch {
+        if (!active) return
+        setCurrentUserRole(null)
+      }
+    }
+    loadRole()
+    return () => { active = false }
+  }, [user?.id])
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-neutral-light/30 to-neutral-soft/20">
@@ -35,6 +62,7 @@ const ContentLibrary: React.FC = () => {
             multiple
             className="hidden"
             onChange={(e) => {
+              if (isSalesRepViewOnly) return
               const list = Array.from(e.target.files || [])
               setFiles((prev) => [...prev, ...list])
               if (e.currentTarget) e.currentTarget.value = ''
@@ -49,14 +77,17 @@ const ContentLibrary: React.FC = () => {
                 : 'border-neutral-soft hover:border-primary-light hover:bg-neutral-light/40'
             }`}
             onDragOver={(e) => {
+              if (isSalesRepViewOnly) return
               e.preventDefault()
               setIsDragging(true)
             }}
             onDragLeave={(e) => {
+              if (isSalesRepViewOnly) return
               e.preventDefault()
               setIsDragging(false)
             }}
             onDrop={(e) => {
+              if (isSalesRepViewOnly) return
               e.preventDefault()
               setIsDragging(false)
               const dropped = Array.from(e.dataTransfer?.files || [])
@@ -67,10 +98,11 @@ const ContentLibrary: React.FC = () => {
               })
               if (accepted.length) setFiles((prev) => [...prev, ...accepted])
             }}
-            onClick={() => fileInputRef.current?.click()}
+            onClick={() => { if (!isSalesRepViewOnly) fileInputRef.current?.click() }}
             role="button"
             tabIndex={0}
             onKeyDown={(e) => {
+              if (isSalesRepViewOnly) return
               if (e.key === 'Enter' || e.key === ' ') fileInputRef.current?.click()
             }}
           >
@@ -126,12 +158,14 @@ const ContentLibrary: React.FC = () => {
           )}
 
           <div className="mt-6">
-            <button
-              onClick={() => { /* placeholder submit */ alert('This is a UI-only demo. Wire to backend to upload.')}}
-              className="px-5 py-3 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold shadow-sm hover:shadow-md"
-            >
-              Upload File
-            </button>
+            {!isSalesRepViewOnly && (
+              <button
+                onClick={() => { /* placeholder submit */ alert('This is a UI-only demo. Wire to backend to upload.')}}
+                className="px-5 py-3 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold shadow-sm hover:shadow-md"
+              >
+                Upload File
+              </button>
+            )}
           </div>
         </div>
 
@@ -185,9 +219,11 @@ const ContentLibrary: React.FC = () => {
                 <Library className="h-8 w-8 text-primary-medium" />
               </div>
               <p className="text-neutral-medium mb-4">No files found</p>
-              <button onClick={() => fileInputRef.current?.click()} className="px-6 py-3 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold shadow-md">
-                Upload Your First File
-              </button>
+              {!isSalesRepViewOnly && (
+                <button onClick={() => fileInputRef.current?.click()} className="px-6 py-3 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold shadow-md">
+                  Upload Your First File
+                </button>
+              )}
             </div>
           </div>
         ) : (
@@ -267,9 +303,11 @@ const ContentLibrary: React.FC = () => {
                           <button type="button" className="group/btn p-3 text-primary-medium hover:text-white hover:bg-primary-medium rounded-xl transition-all duration-300 hover:shadow-lg hover:scale-105 border border-primary-light/30 hover:border-primary-medium">
                             <Eye className="h-5 w-5" />
                           </button>
-                          <button type="button" onClick={() => setFiles((prev) => prev.filter((_, i) => i !== idx))} className="group/btn p-3 text-accent-danger hover:text-white hover:bg-accent-danger rounded-xl transition-all duration-300 hover:shadow-lg hover:scale-105 border border-accent-danger/30 hover:border-accent-danger">
-                            <Trash2 className="h-5 w-5" />
-                          </button>
+                          {!isSalesRepViewOnly && (
+                            <button type="button" onClick={() => setFiles((prev) => prev.filter((_, i) => i !== idx))} className="group/btn p-3 text-accent-danger hover:text-white hover:bg-accent-danger rounded-xl transition-all duration-300 hover:shadow-lg hover:scale-105 border border-accent-danger/30 hover:border-accent-danger">
+                              <Trash2 className="h-5 w-5" />
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>

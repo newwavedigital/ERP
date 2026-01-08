@@ -50,6 +50,16 @@ const Layout: React.FC = () => {
     { first_name: '', last_name: '', company: '' }
   )
 
+  const formatRoleName = (role: any) => {
+    const r = String(role || '').toLowerCase().trim()
+    const mapped = r === 'finance' ? 'procurement' : r
+    return mapped
+      .split('_')
+      .filter(Boolean)
+      .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+      .join(' ')
+  }
+
   // Bootstrap/fetch profile once user is known and stable
   useEffect(() => {
     let active = true
@@ -294,8 +304,65 @@ const Layout: React.FC = () => {
               const role = String(profile?.role || '').toLowerCase()
               let filteredItems = navigationItems
               
-              // Filter items based on permissions for clients
-              if (role !== 'admin' && !initializing && !loading && profile) {
+              // Filter items based on role-specific access
+              if (role === 'procurement' || role === 'finance') {
+                // Procurement and Finance roles can only see specific pages
+                const allowedPages = [
+                  'Supply Chain & Procurement',
+                  'Inventory', 
+                  'Production Schedule', // view-only
+                  'Purchase Orders',
+                  'Customers',
+                  'Suppliers', // vendors
+                  // Note: Shipping not in current navigationItems, would need to be added
+                ]
+                filteredItems = navigationItems.filter((item) => 
+                  allowedPages.includes(item.name)
+                )
+              } else if (role === 'supply_chain_procurement') {
+                // Supply Chain – Procurement (view-only)
+                const allowedPages = [
+                  'Supply Chain & Procurement',
+                  'Inventory',
+                  'Production Schedule',
+                  'Purchase Orders',
+                  'Customers',
+                  'Suppliers',
+                ]
+                filteredItems = navigationItems.filter((item) => allowedPages.includes(item.name))
+              } else if (role === 'warehouse') {
+                // Warehouse – Inventory, Production Schedule (view-only), Purchase Orders
+                const allowedPages = [
+                  'Inventory',
+                  'Production Schedule',
+                  'Purchase Orders',
+                  // Note: Shipping not in current navigationItems, would need to be added
+                ]
+                filteredItems = navigationItems.filter((item) => allowedPages.includes(item.name))
+              } else if (role === 'production_manager') {
+                // Production – Production Schedule, Purchase Orders
+                const allowedPages = [
+                  'Production Schedule',
+                  'Purchase Orders',
+                ]
+                filteredItems = navigationItems.filter((item) => allowedPages.includes(item.name))
+              } else if (role === 'sales_representative') {
+                const allowedPages = [
+                  'Dashboard',
+                  'Production Schedule',
+                  'Purchase Orders',
+                  'Completed Orders',
+                  'Supply Chain & Procurement',
+                  'Inventory',
+                  'Products',
+                  'Suppliers',
+                  'Customers',
+                  'Content Library',
+                  'AI Insights',
+                ]
+                filteredItems = navigationItems.filter((item) => allowedPages.includes(item.name))
+              } else if (role !== 'admin' && !initializing && !loading && profile) {
+                // Other non-admin roles use tool_permissions
                 let perms: Record<string, boolean> = {}
                 const raw = (profile?.tool_permissions as any) ?? {}
                 if (typeof raw === 'string') {
@@ -442,7 +509,65 @@ const Layout: React.FC = () => {
               const role = String(profile?.role || '').toLowerCase()
               let filteredItems = navigationItems
               
-              if (role !== 'admin' && !initializing && !loading && profile) {
+              // Filter items based on role-specific access
+              if (role === 'procurement' || role === 'finance') {
+                // Procurement and Finance roles can only see specific pages
+                const allowedPages = [
+                  'Supply Chain & Procurement',
+                  'Inventory', 
+                  'Production Schedule', // view-only
+                  'Purchase Orders',
+                  'Customers',
+                  'Suppliers', // vendors
+                  // Note: Shipping not in current navigationItems, would need to be added
+                ]
+                filteredItems = navigationItems.filter((item) => 
+                  allowedPages.includes(item.name)
+                )
+              } else if (role === 'supply_chain_procurement') {
+                // Supply Chain – Procurement (view-only)
+                const allowedPages = [
+                  'Supply Chain & Procurement',
+                  'Inventory',
+                  'Production Schedule',
+                  'Purchase Orders',
+                  'Customers',
+                  'Suppliers',
+                ]
+                filteredItems = navigationItems.filter((item) => allowedPages.includes(item.name))
+              } else if (role === 'warehouse') {
+                // Warehouse – Inventory, Production Schedule (view-only), Purchase Orders
+                const allowedPages = [
+                  'Inventory',
+                  'Production Schedule',
+                  'Purchase Orders',
+                  // Note: Shipping not in current navigationItems, would need to be added
+                ]
+                filteredItems = navigationItems.filter((item) => allowedPages.includes(item.name))
+              } else if (role === 'production_manager') {
+                // Production – Production Schedule, Purchase Orders
+                const allowedPages = [
+                  'Production Schedule',
+                  'Purchase Orders',
+                ]
+                filteredItems = navigationItems.filter((item) => allowedPages.includes(item.name))
+              } else if (role === 'sales_representative') {
+                const allowedPages = [
+                  'Dashboard',
+                  'Production Schedule',
+                  'Purchase Orders',
+                  'Completed Orders',
+                  'Supply Chain & Procurement',
+                  'Inventory',
+                  'Products',
+                  'Suppliers',
+                  'Customers',
+                  'Content Library',
+                  'AI Insights',
+                ]
+                filteredItems = navigationItems.filter((item) => allowedPages.includes(item.name))
+              } else if (role !== 'admin' && !initializing && !loading && profile) {
+                // Other non-admin roles use tool_permissions
                 let perms: Record<string, boolean> = {}
                 const raw = (profile?.tool_permissions as any) ?? {}
                 if (typeof raw === 'string') {
@@ -605,18 +730,14 @@ const Layout: React.FC = () => {
                           {loading ? 'U' : getInitials(profile?.first_name, profile?.last_name)}
                         </span>
                       </div>
-                      <div className="absolute -bottom-0.5 -right-0.5 sm:-bottom-1 sm:-right-1 w-2.5 h-2.5 sm:w-3.5 sm:h-3.5 bg-accent-success border-2 border-white rounded-full shadow-sm">
-                        <div className="w-full h-full bg-accent-success rounded-full animate-pulse"></div>
-                      </div>
                     </div>
                     <div className="min-w-0 hidden md:block">
                       <p className="text-sm font-bold text-neutral-dark truncate group-hover:text-primary-dark transition-colors">
                         {loading ? 'Loading...' : profile ? `${profile.first_name} ${profile.last_name}` : 'Admin User'}
                       </p>
                       <div className="flex items-center space-x-2">
-                        <div className="w-2 h-2 bg-accent-success rounded-full animate-pulse"></div>
                         <p className="text-xs font-medium text-neutral-medium truncate">
-                          {loading ? 'Connecting...' : profile ? `${profile.role} • Online` : 'Admin • Online'}
+                          {loading ? 'Connecting...' : profile ? `${formatRoleName(profile.role)} • Online` : 'Admin • Online'}
                         </p>
                       </div>
                     </div>

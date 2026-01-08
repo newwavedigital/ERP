@@ -1,6 +1,8 @@
 import React from 'react'
 import { Package, AlertTriangle, Truck, LucideIcon } from 'lucide-react'
 import { Link } from 'react-router-dom'
+import { useAuth } from '../contexts/AuthContext'
+import { supabase } from '../lib/supabase'
 
 interface MetricItem {
   title: string
@@ -12,6 +14,31 @@ interface MetricItem {
 }
 
 const Dashboard: React.FC = () => {
+  const { user } = useAuth()
+  const [currentUserRole, setCurrentUserRole] = React.useState<string | null>(null)
+  const isSalesRepViewOnly = String(currentUserRole || '').toLowerCase() === 'sales_representative'
+
+  React.useEffect(() => {
+    let active = true
+    const loadRole = async () => {
+      try {
+        if (!user?.id) return
+        const { data } = await supabase
+          .from('profiles')
+          .select('role')
+          .eq('id', user.id)
+          .maybeSingle()
+        if (!active) return
+        setCurrentUserRole((data as any)?.role ? String((data as any).role) : null)
+      } catch {
+        if (!active) return
+        setCurrentUserRole(null)
+      }
+    }
+    loadRole()
+    return () => { active = false }
+  }, [user?.id])
+
   const metrics: MetricItem[] = [
     {
       title: 'Active Purchase Orders',
@@ -83,12 +110,14 @@ const Dashboard: React.FC = () => {
               <Package className="h-8 w-8 text-neutral-medium" />
             </div>
             <p className="text-neutral-medium text-center mb-4">No upcoming production scheduled</p>
-            <Link
-              to="/production-schedule"
-              className="text-primary-dark hover:text-primary-medium text-sm font-medium transition-colors duration-200"
-            >
-              Create Production Schedule
-            </Link>
+            {!isSalesRepViewOnly && (
+              <Link
+                to="/production-schedule"
+                className="text-primary-dark hover:text-primary-medium text-sm font-medium transition-colors duration-200"
+              >
+                Create Production Schedule
+              </Link>
+            )}
           </div>
         </div>
       </div>

@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react'
-import { Calculator, RefreshCw, CheckCircle } from 'lucide-react'
+import { Calculator, RefreshCw, CheckCircle, Truck } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../contexts/AuthContext'
+import ShippingTab from './SupplyChainProcurement/ShippingTab'
 
 function formatStatusLabel(raw?: string | null): string {
   const s = String(raw || '').trim()
@@ -28,6 +29,7 @@ function getStatusBadgeClass(raw?: string | null): string {
 
 const SupplyChainProcurement: React.FC = () => {
   const { user } = useAuth()
+  const [activeTab, setActiveTab] = useState<'procurement' | 'shipping'>('procurement')
   const [loading, setLoading] = useState<boolean>(false)
   const [error, setError] = useState<string | null>(null)
   const [orders, setOrders] = useState<any[]>([])
@@ -321,212 +323,249 @@ const SupplyChainProcurement: React.FC = () => {
           </div>
         </div>
 
-        {error && (
-          <div className="bg-white rounded-xl shadow-md border border-red-200 p-3 sm:p-4 mb-3">
-            <div className="text-sm text-red-700">{error}</div>
-          </div>
-        )}
-
-        {!selectedPo && (
-          <div className="bg-white rounded-xl shadow-md border border-neutral-soft/20 p-3 sm:p-4 lg:p-6 mb-3 lg:mb-4">
-            <div className="flex items-start gap-3">
-              <div className="w-10 h-10 rounded-xl bg-primary-light/20 flex items-center justify-center">
-                <Calculator className="h-5 w-5 text-primary-medium" />
-              </div>
-              <div className="min-w-0">
-                <div className="text-sm font-semibold text-neutral-dark">Materials Calculator</div>
-                <div className="text-sm text-neutral-medium">
-                  {canManageProcurement
-                    ? 'Select a PO from the Procurement Queue to calculate raw materials and packaging requirements.'
-                    : 'You can view moved POs here, but approval and calculations are restricted.'}
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {!canViewProcurement && !roleLoading && (
-          <div className="bg-white rounded-xl shadow-md border border-neutral-soft/20 p-3 sm:p-4 lg:p-6 mb-3 lg:mb-4">
-            <div className="text-sm text-neutral-medium">
-              You can view moved POs here, but only Finance / Procurement / Supply Chain team members can access this page.
-            </div>
-          </div>
-        )}
-
-        <div className="bg-white rounded-xl shadow-md border border-neutral-soft/20 overflow-hidden">
-          <div className="px-3 sm:px-4 lg:px-6 py-2 sm:py-3 border-b border-neutral-soft/40 bg-neutral-light/30 flex items-center justify-between">
-            <div className="text-sm font-semibold text-neutral-dark">Procurement Queue</div>
-            <div className="text-xs text-neutral-medium">{orders.length} PO(s)</div>
-          </div>
-
-          <div className="p-3 sm:p-4 lg:p-6">
-            {loading ? (
-              <div className="text-sm text-neutral-medium">Loading…</div>
-            ) : orders.length === 0 ? (
-              <div className="text-sm text-neutral-medium">No purchase orders are currently marked "Move to Procurement".</div>
-            ) : (
-              <div className="space-y-2">
-                {orders.map((po: any) => {
-                  const id = String(po.id ?? '')
-                  const created = po.created_at ? new Date(po.created_at).toLocaleDateString() : '—'
-                  const poNumber = String(po.po_number ?? po.number ?? id.slice(0, 8))
-                  const isSelected = selectedPo?.id != null && String(selectedPo.id) === id
-                  return (
-                    <div
-                      key={id}
-                      role={canManageProcurement ? 'button' : undefined}
-                      tabIndex={canManageProcurement ? 0 : undefined}
-                      onClick={() => {
-                        if (!canManageProcurement) return
-                        setSelectedPo(po)
-                        loadCalculator(po)
-                      }}
-                      className={`w-full text-left rounded-xl border border-neutral-soft/40 transition-colors p-3 sm:p-4 ${isSelected ? 'bg-primary-light/10 border-primary-light' : 'bg-white'} ${canManageProcurement ? 'hover:bg-neutral-light/20 cursor-pointer' : ''}`}
-                    >
-                      <div className="flex flex-col gap-3">
-                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                          <div className="flex flex-col gap-1">
-                            <div className="text-sm font-semibold text-neutral-dark">PO #{poNumber}</div>
-                            <div className="text-xs text-neutral-medium">Customer: {String(po.customer_name || '—')}</div>
-                          </div>
-                          <div className="flex flex-col items-start sm:items-end gap-1">
-                            <span className={`inline-flex items-center px-3 py-1.5 rounded-xl text-xs font-semibold border ${getStatusBadgeClass(po.status)}`}>{formatStatusLabel(po.status)}</span>
-                            <span className="text-xs text-neutral-medium">{created}</span>
-                          </div>
-                        </div>
-                        
-                        <div className="flex items-center justify-between pt-2 border-t border-neutral-soft/40">
-                          <div className="text-xs text-neutral-medium">
-                            Product: {String(po.product_name || '—')} • Qty: {Number(po.quantity || 0)}
-                          </div>
-                          {canManageProcurement ? (
-                            (() => {
-                              const st = String(po.status || '').toLowerCase()
-                              const alreadyApproved = st === 'ready_to_schedule' || st === 'ready to schedule'
-                              if (alreadyApproved) {
-                                return (
-                                  <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-accent-success/10 text-accent-success border border-accent-success/30">
-                                    <CheckCircle className="h-3.5 w-3.5" /> Approved
-                                  </span>
-                                )
-                              }
-                              return (
-                                <button
-                                  type="button"
-                                  onClick={(e) => {
-                                    e.stopPropagation()
-                                    approvePO(po)
-                                  }}
-                                  disabled={approvingId === id}
-                                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-green-600 hover:bg-green-700 text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                                >
-                                  <CheckCircle className="h-3.5 w-3.5" />
-                                  {approvingId === id ? 'Approving...' : 'Approve for Scheduling'}
-                                </button>
-                              )
-                            })()
-                          ) : (
-                            <div className="text-xs text-neutral-medium">Approval restricted</div>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  )
-                })}
-              </div>
-            )}
+        {/* Tab Navigation */}
+        <div className="bg-white rounded-xl shadow-md border border-neutral-soft/20 mb-3 lg:mb-4 overflow-hidden">
+          <div className="flex border-b border-neutral-soft/20">
+            <button
+              onClick={() => setActiveTab('procurement')}
+              className={`flex items-center gap-2 px-4 py-3 text-sm font-medium transition-colors ${
+                activeTab === 'procurement'
+                  ? 'bg-primary-light/10 text-primary-dark border-b-2 border-primary-medium'
+                  : 'text-neutral-medium hover:text-neutral-dark hover:bg-neutral-light/20'
+              }`}
+            >
+              <Calculator className="h-4 w-4" />
+              Procurement
+            </button>
+            <button
+              onClick={() => setActiveTab('shipping')}
+              className={`flex items-center gap-2 px-4 py-3 text-sm font-medium transition-colors ${
+                activeTab === 'shipping'
+                  ? 'bg-primary-light/10 text-primary-dark border-b-2 border-primary-medium'
+                  : 'text-neutral-medium hover:text-neutral-dark hover:bg-neutral-light/20'
+              }`}
+            >
+              <Truck className="h-4 w-4" />
+              Shipping
+            </button>
           </div>
         </div>
 
-        {selectedPo && canManageProcurement && (
-          <div className="bg-white rounded-xl shadow-md border border-neutral-soft/20 overflow-hidden mt-3 lg:mt-4">
-            <div className="px-3 sm:px-4 lg:px-6 py-2 sm:py-3 border-b border-neutral-soft/40 bg-neutral-light/30 flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Calculator className="h-4 w-4 text-primary-medium" />
-                <div className="text-sm font-semibold text-neutral-dark">Materials Calculator</div>
+        {/* Tab Content */}
+        {activeTab === 'procurement' && (
+          <>
+            {error && (
+              <div className="bg-white rounded-xl shadow-md border border-red-200 p-3 sm:p-4 mb-3">
+                <div className="text-sm text-red-700">{error}</div>
               </div>
-              <div className="text-xs text-neutral-medium">PO {String(selectedPo.po_number ?? selectedPo.number ?? String(selectedPo.id).slice(0, 8))}</div>
+            )}
+
+            {!selectedPo && (
+              <div className="bg-white rounded-xl shadow-md border border-neutral-soft/20 p-3 sm:p-4 lg:p-6 mb-3 lg:mb-4">
+                <div className="flex items-start gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-primary-light/20 flex items-center justify-center">
+                    <Calculator className="h-5 w-5 text-primary-medium" />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="text-sm font-semibold text-neutral-dark">Materials Calculator</div>
+                    <div className="text-sm text-neutral-medium">
+                      {canManageProcurement
+                        ? 'Select a PO from the Procurement Queue to calculate raw materials and packaging requirements.'
+                        : 'You can view moved POs here, but approval and calculations are restricted.'}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {!canViewProcurement && !roleLoading && (
+              <div className="bg-white rounded-xl shadow-md border border-neutral-soft/20 p-3 sm:p-4 lg:p-6 mb-3 lg:mb-4">
+                <div className="text-sm text-neutral-medium">
+                  You can view moved POs here, but only Finance / Procurement / Supply Chain team members can access this page.
+                </div>
+              </div>
+            )}
+
+            <div className="bg-white rounded-xl shadow-md border border-neutral-soft/20 overflow-hidden">
+              <div className="px-3 sm:px-4 lg:px-6 py-2 sm:py-3 border-b border-neutral-soft/40 bg-neutral-light/30 flex items-center justify-between">
+                <div className="text-sm font-semibold text-neutral-dark">Procurement Queue</div>
+                <div className="text-xs text-neutral-medium">{orders.length} PO(s)</div>
+              </div>
+
+              <div className="p-3 sm:p-4 lg:p-6">
+                {loading ? (
+                  <div className="text-sm text-neutral-medium">Loading…</div>
+                ) : orders.length === 0 ? (
+                  <div className="text-sm text-neutral-medium">No purchase orders are currently marked "Move to Procurement".</div>
+                ) : (
+                  <div className="space-y-2">
+                    {orders.map((po: any) => {
+                      const id = String(po.id ?? '')
+                      const created = po.created_at ? new Date(po.created_at).toLocaleDateString() : '—'
+                      const poNumber = String(po.po_number ?? po.number ?? id.slice(0, 8))
+                      const isSelected = selectedPo?.id != null && String(selectedPo.id) === id
+                      return (
+                        <div
+                          key={id}
+                          role={canManageProcurement ? 'button' : undefined}
+                          tabIndex={canManageProcurement ? 0 : undefined}
+                          onClick={() => {
+                            if (!canManageProcurement) return
+                            setSelectedPo(po)
+                            loadCalculator(po)
+                          }}
+                          className={`w-full text-left rounded-xl border border-neutral-soft/40 transition-colors p-3 sm:p-4 ${isSelected ? 'bg-primary-light/10 border-primary-light' : 'bg-white'} ${canManageProcurement ? 'hover:bg-neutral-light/20 cursor-pointer' : ''}`}
+                        >
+                          <div className="flex flex-col gap-3">
+                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                              <div className="flex flex-col gap-1">
+                                <div className="text-sm font-semibold text-neutral-dark">PO #{poNumber}</div>
+                                <div className="text-xs text-neutral-medium">Customer: {String(po.customer_name || '—')}</div>
+                              </div>
+                              <div className="flex flex-col items-start sm:items-end gap-1">
+                                <span className={`inline-flex items-center px-3 py-1.5 rounded-xl text-xs font-semibold border ${getStatusBadgeClass(po.status)}`}>{formatStatusLabel(po.status)}</span>
+                                <span className="text-xs text-neutral-medium">{created}</span>
+                              </div>
+                            </div>
+                            
+                            <div className="flex items-center justify-between pt-2 border-t border-neutral-soft/40">
+                              <div className="text-xs text-neutral-medium">
+                                Product: {String(po.product_name || '—')} • Qty: {Number(po.quantity || 0)}
+                              </div>
+                              {canManageProcurement ? (
+                                (() => {
+                                  const st = String(po.status || '').toLowerCase()
+                                  const alreadyApproved = st === 'ready_to_schedule' || st === 'ready to schedule'
+                                  if (alreadyApproved) {
+                                    return (
+                                      <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-accent-success/10 text-accent-success border border-accent-success/30">
+                                        <CheckCircle className="h-3.5 w-3.5" /> Approved
+                                      </span>
+                                    )
+                                  }
+                                  return (
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation()
+                                        approvePO(po)
+                                      }}
+                                      disabled={approvingId === id}
+                                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-green-600 hover:bg-green-700 text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                                    >
+                                      <CheckCircle className="h-3.5 w-3.5" />
+                                      {approvingId === id ? 'Approving...' : 'Approve for Scheduling'}
+                                    </button>
+                                  )
+                                })()
+                              ) : (
+                                <div className="text-xs text-neutral-medium">Approval restricted</div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
             </div>
 
-            <div className="p-3 sm:p-4 lg:p-6">
-              {calcLoading ? (
-                <div className="text-sm text-neutral-medium">Calculating…</div>
-              ) : calcError ? (
-                <div className="text-sm text-red-700">{calcError}</div>
-              ) : (
-                <div className="space-y-4">
-                  {poLines.length > 0 && (
-                    <div className="rounded-xl border border-neutral-soft/40 bg-white overflow-hidden">
-                      <div className="px-3 sm:px-4 py-2 border-b border-neutral-soft/40 bg-neutral-light/20 text-xs font-semibold text-neutral-dark">PO Line Items</div>
-                      <div className="p-3 sm:p-4">
-                        <div className="space-y-2">
-                          {poLines.map((ln) => (
-                            <div key={ln.id} className="flex items-center justify-between gap-3">
-                              <div className="text-sm text-neutral-dark truncate">{ln.product_name || '—'}</div>
-                              <div className="text-sm font-semibold text-neutral-dark">{ln.quantity}</div>
+            {selectedPo && canManageProcurement && (
+              <div className="bg-white rounded-xl shadow-md border border-neutral-soft/20 overflow-hidden mt-3 lg:mt-4">
+                <div className="px-3 sm:px-4 lg:px-6 py-2 sm:py-3 border-b border-neutral-soft/40 bg-neutral-light/30 flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Calculator className="h-4 w-4 text-primary-medium" />
+                    <div className="text-sm font-semibold text-neutral-dark">Materials Calculator</div>
+                  </div>
+                  <div className="text-xs text-neutral-medium">PO {String(selectedPo.po_number ?? selectedPo.number ?? String(selectedPo.id).slice(0, 8))}</div>
+                </div>
+
+                <div className="p-3 sm:p-4 lg:p-6">
+                  {calcLoading ? (
+                    <div className="text-sm text-neutral-medium">Calculating…</div>
+                  ) : calcError ? (
+                    <div className="text-sm text-red-700">{calcError}</div>
+                  ) : (
+                    <div className="space-y-4">
+                      {poLines.length > 0 && (
+                        <div className="rounded-xl border border-neutral-soft/40 bg-white overflow-hidden">
+                          <div className="px-3 sm:px-4 py-2 border-b border-neutral-soft/40 bg-neutral-light/20 text-xs font-semibold text-neutral-dark">PO Line Items</div>
+                          <div className="p-3 sm:p-4">
+                            <div className="space-y-2">
+                              {poLines.map((ln) => (
+                                <div key={ln.id} className="flex items-center justify-between gap-3">
+                                  <div className="text-sm text-neutral-dark truncate">{ln.product_name || '—'}</div>
+                                  <div className="text-sm font-semibold text-neutral-dark">{ln.quantity}</div>
+                                </div>
+                              ))}
                             </div>
-                          ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {missingFormulas.length > 0 && (
+                        <div className="rounded-xl border border-amber-200 bg-amber-50/40 p-3 sm:p-4">
+                          <div className="text-sm font-semibold text-amber-800 mb-2">Missing Formula</div>
+                          <div className="space-y-1">
+                            {missingFormulas.map((m, i) => (
+                              <div key={i} className="text-xs text-amber-800">{m.product_name} (qty {m.quantity})</div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 lg:gap-4">
+                        <div className="rounded-xl border border-neutral-soft/40 bg-white overflow-hidden">
+                          <div className="px-3 sm:px-4 py-2 border-b border-neutral-soft/40 bg-neutral-light/20 text-xs font-semibold text-neutral-dark">Raw Materials Required</div>
+                          <div className="p-3 sm:p-4">
+                            {rawMaterials.length === 0 ? (
+                              <div className="text-sm text-neutral-medium">No raw materials calculated.</div>
+                            ) : (
+                              <div className="space-y-2">
+                                {rawMaterials.map((m) => (
+                                  <div key={m.material_id} className="flex items-center justify-between gap-3">
+                                    <div className="text-sm text-neutral-dark truncate">{m.material_name}</div>
+                                    <div className="text-sm font-semibold text-neutral-dark">
+                                      {Number(m.required_qty || 0).toFixed(3)}{m.uom ? ` ${m.uom}` : ''}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="rounded-xl border border-neutral-soft/40 bg-white overflow-hidden">
+                          <div className="px-3 sm:px-4 py-2 border-b border-neutral-soft/40 bg-neutral-light/20 text-xs font-semibold text-neutral-dark">Packaging Required</div>
+                          <div className="p-3 sm:p-4">
+                            {packagingMaterials.length === 0 ? (
+                              <div className="text-sm text-neutral-medium">No packaging calculated.</div>
+                            ) : (
+                              <div className="space-y-2">
+                                {packagingMaterials.map((m) => (
+                                  <div key={m.material_id} className="flex items-center justify-between gap-3">
+                                    <div className="text-sm text-neutral-dark truncate">{m.material_name}</div>
+                                    <div className="text-sm font-semibold text-neutral-dark">
+                                      {Number(m.required_qty || 0).toFixed(3)}{m.uom ? ` ${m.uom}` : ''}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
                         </div>
                       </div>
                     </div>
                   )}
-
-                  {missingFormulas.length > 0 && (
-                    <div className="rounded-xl border border-amber-200 bg-amber-50/40 p-3 sm:p-4">
-                      <div className="text-sm font-semibold text-amber-800 mb-2">Missing Formula</div>
-                      <div className="space-y-1">
-                        {missingFormulas.map((m, i) => (
-                          <div key={i} className="text-xs text-amber-800">{m.product_name} (qty {m.quantity})</div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 lg:gap-4">
-                    <div className="rounded-xl border border-neutral-soft/40 bg-white overflow-hidden">
-                      <div className="px-3 sm:px-4 py-2 border-b border-neutral-soft/40 bg-neutral-light/20 text-xs font-semibold text-neutral-dark">Raw Materials Required</div>
-                      <div className="p-3 sm:p-4">
-                        {rawMaterials.length === 0 ? (
-                          <div className="text-sm text-neutral-medium">No raw materials calculated.</div>
-                        ) : (
-                          <div className="space-y-2">
-                            {rawMaterials.map((m) => (
-                              <div key={m.material_id} className="flex items-center justify-between gap-3">
-                                <div className="text-sm text-neutral-dark truncate">{m.material_name}</div>
-                                <div className="text-sm font-semibold text-neutral-dark">
-                                  {Number(m.required_qty || 0).toFixed(3)}{m.uom ? ` ${m.uom}` : ''}
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="rounded-xl border border-neutral-soft/40 bg-white overflow-hidden">
-                      <div className="px-3 sm:px-4 py-2 border-b border-neutral-soft/40 bg-neutral-light/20 text-xs font-semibold text-neutral-dark">Packaging Required</div>
-                      <div className="p-3 sm:p-4">
-                        {packagingMaterials.length === 0 ? (
-                          <div className="text-sm text-neutral-medium">No packaging calculated.</div>
-                        ) : (
-                          <div className="space-y-2">
-                            {packagingMaterials.map((m) => (
-                              <div key={m.material_id} className="flex items-center justify-between gap-3">
-                                <div className="text-sm text-neutral-dark truncate">{m.material_name}</div>
-                                <div className="text-sm font-semibold text-neutral-dark">
-                                  {Number(m.required_qty || 0).toFixed(3)}{m.uom ? ` ${m.uom}` : ''}
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  </div>
                 </div>
-              )}
-            </div>
-          </div>
+              </div>
+            )}
+          </>
+        )}
+
+        {activeTab === 'shipping' && (
+          <ShippingTab />
         )}
       </div>
     </div>

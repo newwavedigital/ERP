@@ -301,6 +301,16 @@ const Layout: React.FC = () => {
           <div className={`${collapsed ? 'px-2' : 'px-3'}`}>
             {/* Render flat navigation items */}
             {(() => {
+              if (initializing || loading || !profile) {
+                return (
+                  <div className="space-y-2 animate-pulse">
+                    <div className={`h-10 ${collapsed ? 'w-10 mx-auto' : 'w-full'} bg-neutral-light/70 rounded-lg`} />
+                    <div className={`h-10 ${collapsed ? 'w-10 mx-auto' : 'w-full'} bg-neutral-light/70 rounded-lg`} />
+                    <div className={`h-10 ${collapsed ? 'w-10 mx-auto' : 'w-full'} bg-neutral-light/70 rounded-lg`} />
+                  </div>
+                )
+              }
+
               const role = String(profile?.role || '').toLowerCase()
               let filteredItems = navigationItems
               
@@ -506,6 +516,16 @@ const Layout: React.FC = () => {
         <nav className="flex-1 py-3 overflow-y-auto">
           <div className="px-3">
             {(() => {
+              if (initializing || loading || !profile) {
+                return (
+                  <div className="space-y-2 animate-pulse">
+                    <div className="h-10 w-full bg-neutral-light/70 rounded-lg" />
+                    <div className="h-10 w-full bg-neutral-light/70 rounded-lg" />
+                    <div className="h-10 w-full bg-neutral-light/70 rounded-lg" />
+                  </div>
+                )
+              }
+
               const role = String(profile?.role || '').toLowerCase()
               let filteredItems = navigationItems
               

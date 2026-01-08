@@ -507,7 +507,7 @@ const ProductionSchedule: React.FC = () => {
       } catch {}
 
       // Create batch with PO reference
-      const { error: createErr } = await supabase
+      const { data: createdBatch, error: createErr } = await supabase
         .from('production_batches')
         .insert({
           product_sku: selectedPo.product_name,
@@ -525,14 +525,55 @@ const ProductionSchedule: React.FC = () => {
           samples_sent: samplesSent || null,
           completed_qty: Number(completedQty) || 0
         })
-        ;
+        .select('id')
+        .maybeSingle();
 
       if (createErr) throw createErr;
+
+      const createdBatchId = createdBatch?.id ? String(createdBatch.id) : null
+      if (createdBatchId && resolvedFormulaId) {
+        try {
+          const { data: fiRows, error: fiErr } = await supabase
+            .from('formula_items')
+            .select('material_id, qty_per_unit, uom')
+            .eq('formula_id', resolvedFormulaId)
+
+          if (fiErr) throw fiErr
+
+          const reqRows = (fiRows || [])
+            .map((it: any) => {
+              const materialId = String(it?.material_id || '')
+              const perUnit = Number(it?.qty_per_unit || 0)
+              const uom = String(it?.uom || '')
+              if (!materialId || !uom || !(perUnit > 0)) return null
+              return {
+                batch_id: createdBatchId,
+                material_id: materialId,
+                qty_required: Number(batchQty) * perUnit,
+                uom,
+              }
+            })
+            .filter(Boolean) as Array<{ batch_id: string; material_id: string; qty_required: number; uom: string }>
+
+          if (reqRows.length > 0) {
+            const { error: reqErr } = await supabase
+              .from('production_requirements')
+              .insert(reqRows)
+            if (reqErr) throw reqErr
+          } else {
+            pushToast({ type: 'warning', message: 'Batch created, but no formula items found to generate requirements.' })
+          }
+        } catch (e: any) {
+          pushToast({ type: 'warning', message: e?.message || 'Batch created, but failed to generate requirements.' })
+        }
+      } else if (createdBatchId && !resolvedFormulaId) {
+        pushToast({ type: 'warning', message: 'Batch created, but no formula was found to generate requirements.' })
+      }
 
       try {
         const { error: poUpdateErr } = await supabase
           .from('purchase_orders')
-          .update({ status: 'Scheduled' })
+          .update({ status: 'scheduled' })
           .eq('id', selectedPo.id)
         if (poUpdateErr) throw poUpdateErr
       } catch (e: any) {
@@ -549,7 +590,14 @@ const ProductionSchedule: React.FC = () => {
       await loadPurchaseOrders();
       pushToast({ type: 'success', message: 'Production batch created from PO' });
 
-      // Keep modal open for additional scheduling
+      setScheduleFromPoOpen(false)
+      setSelectedPo(null)
+      setScheduledDate('')
+      setRoom('Main Room')
+      setLot('')
+      setSamplesReceived('No')
+      setSamplesSent('')
+      setCompletedQty('0')
     } catch (e: any) {
       console.error('Create batch from PO error:', e);
       pushToast({ type: 'error', message: e?.message || 'Failed to create batch from PO' });

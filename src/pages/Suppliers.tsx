@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { Plus, Minus, Search, Filter, Truck, Building2, MapPin, Phone, User, Mail, Globe, CreditCard, X, Eye, Edit, Trash2, CheckCircle2, Percent, Package, ExternalLink } from 'lucide-react'
+import { Plus, Minus, Search, Filter, Truck, Building2, MapPin, Phone, User, Mail, Globe, CreditCard, X, Eye, Edit, Trash2, CheckCircle2, Percent, Package, ExternalLink, BadgeCheck, FileText } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
@@ -703,6 +703,7 @@ const Suppliers: React.FC = () => {
   const [suppliers, setSuppliers] = useState<Supplier[]>([])
   const [isAddOpen, setIsAddOpen] = useState<boolean>(false)
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false)
+  const [addError, setAddError] = useState<string | null>(null)
   const [ingredients, setIngredients] = useState<any[]>([])
   const [packaging, setPackaging] = useState<any[]>([])
   const [loadingInventory, setLoadingInventory] = useState<boolean>(false)
@@ -780,12 +781,12 @@ const Suppliers: React.FC = () => {
   }, [user?.id])
   const [addForm, setAddForm] = useState({
     company_name: '',
+    category: 'Raw Materials',
     contact_person: '',
     email: '',
     phone: '',
     website: '',
     payment_terms: '',
-    address: '',
     materials_supplied: '',
     dba: '',
     physical_address: '',
@@ -1057,22 +1058,40 @@ const Suppliers: React.FC = () => {
         {isAddOpen && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
             <div className="absolute inset-0 bg-black/50" onClick={() => !isSubmitting && setIsAddOpen(false)}></div>
-            <div className="relative z-10 w-full max-w-5xl h-[80vh] bg-white rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden flex flex-col">
-              <div className="flex items-center justify-between px-8 py-6 bg-gradient-to-r from-neutral-light to-neutral-light/80 border-b border-neutral-soft/50">
-                <div>
-                  <h2 className="text-2xl font-semibold text-neutral-dark">Add New Supplier</h2>
-                  <p className="text-sm text-neutral-medium mt-1">Create a new supplier profile</p>
+            <div className="relative z-10 w-full max-w-6xl h-[90vh] bg-white rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden flex flex-col">
+              <div className="bg-gradient-to-r from-primary-dark via-primary-medium to-primary-light px-8 py-6">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-4">
+                    <div className="w-12 h-12 bg-white/20 rounded-2xl flex items-center justify-center backdrop-blur-sm">
+                      <Truck className="h-6 w-6 text-white" />
+                    </div>
+                    <div>
+                      <h2 className="text-2xl font-bold text-white">Supplier Registration</h2>
+                      <p className="text-white/90 text-sm mt-1">Complete supplier profile and business information</p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => !isSubmitting && setIsAddOpen(false)}
+                    className="p-3 text-white/90 hover:text-white hover:bg-white/20 rounded-xl transition-all duration-200 hover:shadow-sm"
+                  >
+                    <X className="h-5 w-5" />
+                  </button>
                 </div>
-                <button onClick={() => !isSubmitting && setIsAddOpen(false)} className="p-3 text-neutral-medium hover:text-neutral-dark hover:bg-white/60 rounded-xl transition-all duration-200 hover:shadow-sm">
-                  <X className="h-5 w-5" />
-                </button>
               </div>
+
+              {addError && (
+                <div className="mx-8 mt-6 p-4 rounded-xl border border-accent-danger/30 bg-accent-danger/10 text-accent-danger">
+                  {addError}
+                </div>
+              )}
               <div className="flex-1 overflow-y-auto">
                 <form
                   onSubmit={async (e) => {
                     e.preventDefault()
                     if (isSubmitting) return
                     setIsSubmitting(true)
+                    setAddError(null)
                     try {
                       // Map to your suppliers table columns
                       const payload: any = {
@@ -1082,8 +1101,9 @@ const Suppliers: React.FC = () => {
                         phone: addForm.phone || null,
                         website: addForm.website || null,
                         payment_terms: addForm.payment_terms || null,
-                        address: addForm.address || null,
+                        address: addForm.physical_address || null,
                         materials_supplied: addForm.materials_supplied || null,
+                        category: addForm.category,
                         dba: addForm.dba || null,
                         physical_address: addForm.physical_address || null,
                         mailing_address: addForm.mailing_address || null,
@@ -1114,6 +1134,8 @@ const Suppliers: React.FC = () => {
                         purchase_approval_documents_received: addForm.purchase_approval_documents_received,
                         purchase_approval_determination: addForm.purchase_approval_determination || null,
                         approved_by: addForm.approved_by || null,
+                        status: 'Active',
+                        rating: 0,
                       }
                       const { error } = await supabase.from('suppliers').insert(payload)
                       if (error) throw error
@@ -1121,12 +1143,12 @@ const Suppliers: React.FC = () => {
                       setIsAddOpen(false)
                       setAddForm({
                         company_name: '',
+                        category: 'Raw Materials',
                         contact_person: '',
                         email: '',
                         phone: '',
                         website: '',
                         payment_terms: '',
-                        address: '',
                         materials_supplied: '',
                         dba: '',
                         physical_address: '',
@@ -1163,634 +1185,551 @@ const Suppliers: React.FC = () => {
                       })
                       setToast({ show: true, message: 'Supplier added successfully' })
                     } catch (err: any) {
+                      setAddError(err?.message || 'Failed to submit registration')
                       console.error('Failed to add supplier', err?.message || err, err)
                     } finally {
                       setIsSubmitting(false)
                     }
                   }}
-                  className="p-6 space-y-8 bg-gradient-to-br from-neutral-light/20 to-white"
+                  className="p-8 space-y-8"
                 >
-                  {/* Header Section */}
-                  <div className="text-center pb-6 border-b border-neutral-soft/30">
-                    <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-primary-medium/10 text-primary-medium text-xs font-semibold mb-2">
-                      <span className="w-1.5 h-1.5 rounded-full bg-primary-medium"></span>
-                      Supplier Registration
+                  <div className="bg-white rounded-2xl shadow-sm border border-neutral-soft/20 overflow-hidden">
+                    <div className="px-6 py-4 bg-gradient-to-r from-primary-dark/5 via-primary-medium/5 to-primary-light/5 border-b border-neutral-soft/30">
+                      <h3 className="text-base font-semibold text-neutral-dark flex items-center">
+                        <Building2 className="h-5 w-5 mr-2 text-primary-medium" />
+                        Company Information
+                      </h3>
                     </div>
-                    <p className="text-sm text-neutral-medium mt-1">Complete all required fields to register a new supplier</p>
-                    <div className="mt-3 text-xs text-neutral-medium">
-                      Fields marked with <span className="text-red-500">*</span> are required
-                    </div>
-                  </div>
-
-                  {/* Supplier Information */}
-                  <div className="bg-white/70 rounded-xl border border-neutral-soft/20 p-6 space-y-4">
-                    <h4 className="text-base font-semibold text-neutral-dark border-b border-neutral-soft/30 pb-2">Supplier Information</h4>
-                    
-                    <div className="grid grid-cols-1 md:grid-cols-[200px_1fr] gap-4 items-center">
-                      <label className="text-sm font-medium text-neutral-dark">Company Name<span className="text-red-500 ml-1">*</span></label>
-                      <input
-                        type="text"
-                        required
-                        value={addForm.company_name}
-                        onChange={(e) => setAddForm({ ...addForm, company_name: e.target.value })}
-                        className="w-full px-4 py-2.5 border border-neutral-soft/60 rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-medium bg-white text-neutral-dark placeholder-neutral-medium/70 hover:border-neutral-medium transition-all"
-                        placeholder="Enter company name"
-                      />
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-[200px_1fr] gap-4 items-center">
-                      <label className="text-sm font-medium text-neutral-dark">DBA</label>
-                      <input
-                        type="text"
-                        value={addForm.dba}
-                        onChange={(e) => setAddForm({ ...addForm, dba: e.target.value })}
-                        className="w-full px-4 py-2.5 border border-neutral-soft/60 rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-medium bg-white text-neutral-dark placeholder-neutral-medium/70 hover:border-neutral-medium transition-all"
-                        placeholder="Doing business as"
-                      />
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-[200px_1fr] gap-4 items-center">
-                      <label className="text-sm font-medium text-neutral-dark">Contact Person</label>
-                      <input
-                        type="text"
-                        value={addForm.contact_person}
-                        onChange={(e) => setAddForm({ ...addForm, contact_person: e.target.value })}
-                        className="w-full px-4 py-2.5 border border-neutral-soft/60 rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-medium bg-white text-neutral-dark placeholder-neutral-medium/70 hover:border-neutral-medium transition-all"
-                        placeholder="Primary contact name"
-                      />
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-[200px_1fr] gap-4 items-center">
-                      <label className="text-sm font-medium text-neutral-dark">Email</label>
-                      <input
-                        type="email"
-                        value={addForm.email}
-                        onChange={(e) => setAddForm({ ...addForm, email: e.target.value })}
-                        className="w-full px-4 py-2.5 border border-neutral-soft/60 rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-medium bg-white text-neutral-dark placeholder-neutral-medium/70 hover:border-neutral-medium transition-all"
-                        placeholder="contact@company.com"
-                      />
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-[200px_1fr] gap-4 items-center">
-                      <label className="text-sm font-medium text-neutral-dark">Phone</label>
-                      <input
-                        type="text"
-                        value={addForm.phone}
-                        onChange={(e) => setAddForm({ ...addForm, phone: e.target.value })}
-                        className="w-full px-4 py-2.5 border border-neutral-soft/60 rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-medium bg-white text-neutral-dark placeholder-neutral-medium/70 hover:border-neutral-medium transition-all"
-                        placeholder="(555) 123-4567"
-                      />
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-[200px_1fr] gap-4 items-center">
-                      <label className="text-sm font-medium text-neutral-dark">Website</label>
-                      <input
-                        type="url"
-                        value={addForm.website}
-                        onChange={(e) => setAddForm({ ...addForm, website: e.target.value })}
-                        className="w-full px-4 py-2.5 border border-neutral-soft/60 rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-medium bg-white text-neutral-dark placeholder-neutral-medium/70 hover:border-neutral-medium transition-all"
-                        placeholder="https://company.com"
-                      />
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-[200px_1fr] gap-4 items-center">
-                      <label className="text-sm font-medium text-neutral-dark">Payment Terms</label>
-                      <select
-                        value={addForm.payment_terms}
-                        onChange={(e) => setAddForm({ ...addForm, payment_terms: e.target.value })}
-                        className="w-full px-3 py-2 border border-neutral-soft/40 rounded-md focus:border-primary-medium bg-white text-neutral-dark focus:outline-none transition-colors"
-                      >
-                        <option value="">Select Payment Terms</option>
-                        <option>50% Deposits 50% Upon Completion</option>
-                        <option>100% Upfront</option>
-                        <option>Net 15</option>
-                        <option>Net 30</option>
-                      </select>
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-[200px_1fr] gap-4 items-start">
-                      <label className="text-sm font-medium text-neutral-dark pt-2">Address</label>
-                      <textarea
-                        value={addForm.address}
-                        onChange={(e) => setAddForm({ ...addForm, address: e.target.value })}
-                        className="w-full min-h-[70px] px-4 py-2.5 border border-neutral-soft/60 rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-medium bg-white text-neutral-dark placeholder-neutral-medium/70 hover:border-neutral-medium transition-all resize-none"
-                        placeholder="Business address"
-                      />
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-[200px_1fr] gap-4 items-start">
-                      <label className="text-sm font-medium text-neutral-dark pt-2">Physical Address</label>
-                      <textarea
-                        value={addForm.physical_address}
-                        onChange={(e) => setAddForm({ ...addForm, physical_address: e.target.value })}
-                        className="w-full min-h-[70px] px-4 py-2.5 border border-neutral-soft/60 rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-medium bg-white text-neutral-dark placeholder-neutral-medium/70 hover:border-neutral-medium transition-all resize-none"
-                        placeholder="Physical location"
-                      />
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-[200px_1fr] gap-4 items-start">
-                      <label className="text-sm font-medium text-neutral-dark pt-2">Mailing Address</label>
-                      <textarea
-                        value={addForm.mailing_address}
-                        onChange={(e) => setAddForm({ ...addForm, mailing_address: e.target.value })}
-                        className="w-full min-h-[70px] px-4 py-2.5 border border-neutral-soft/60 rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-medium bg-white text-neutral-dark placeholder-neutral-medium/70 hover:border-neutral-medium transition-all resize-none"
-                        placeholder="Mailing address (if different)"
-                      />
-                    </div>
-                  </div>
-
-                  {/* Materials Supplied */}
-                  <div className="bg-white/70 rounded-xl border border-neutral-soft/20 p-6 space-y-4">
-                    <h4 className="text-base font-semibold text-neutral-dark border-b border-neutral-soft/30 pb-2">Materials & Services</h4>
-                    
-                    <div className="grid grid-cols-1 md:grid-cols-[200px_1fr] gap-4 items-start">
-                      <label className="text-sm font-medium text-neutral-dark pt-2">Materials Supplied</label>
-                      <textarea
-                        value={addForm.materials_supplied}
-                        onChange={(e) => setAddForm({ ...addForm, materials_supplied: e.target.value })}
-                        className="w-full min-h-[80px] px-4 py-2.5 border border-neutral-soft/60 rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-medium bg-white text-neutral-dark placeholder-neutral-medium/70 hover:border-neutral-medium transition-all resize-none"
-                        placeholder="List materials and services provided"
-                      />
-                    </div>
-
-                    {/* Ingredients Field */}
-                    <div className="grid grid-cols-1 md:grid-cols-[200px_1fr] gap-4 items-start">
-                      <label className="text-sm font-medium text-neutral-dark pt-2">Ingredients</label>
-                      <div className="space-y-3">
-                        <div>
-                          <button
-                            type="button"
-                            onClick={() => setShowIngredientsList((v) => !v)}
-                            className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg border border-neutral-soft/60 bg-white text-neutral-dark hover:bg-neutral-light/40 transition-all text-sm font-medium"
-                          >
-                            {showIngredientsList ? <Minus className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
-                            {showIngredientsList ? 'Hide Ingredients' : 'Add Ingredients'}
-                          </button>
+                    <div className="p-6 space-y-6">
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div className="space-y-2">
+                          <label className="flex items-center text-sm font-semibold text-neutral-dark">
+                            <Building2 className="h-4 w-4 mr-2 text-primary-medium" />
+                            Company Name<span className="text-accent-danger ml-1">*</span>
+                          </label>
+                          <input
+                            type="text"
+                            required
+                            value={addForm.company_name}
+                            onChange={(e) => setAddForm({ ...addForm, company_name: e.target.value })}
+                            placeholder="e.g., ABC Supplies Corp."
+                            className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium"
+                          />
                         </div>
 
-                        {showIngredientsList && (
-                          <div className="border border-neutral-soft/60 rounded-lg p-3 bg-white space-y-3">
-                            <div className="max-h-40 overflow-y-auto">
-                              {loadingInventory ? (
-                                <div className="text-sm text-neutral-medium">Loading ingredients...</div>
-                              ) : ingredients.length === 0 ? (
-                                <div className="text-sm text-neutral-medium">No ingredients found</div>
-                              ) : (
-                                <div className="space-y-2">
-                                  {ingredients.map((ingredient) => (
-                                    <label key={ingredient.id} className="flex items-center space-x-2 cursor-pointer hover:bg-neutral-light/20 p-1 rounded">
-                                      <input
-                                        type="checkbox"
-                                        checked={addForm.selected_ingredients.includes(ingredient.id)}
-                                        onChange={() => handleIngredientToggle(ingredient.id)}
-                                        className="h-4 w-4 text-primary-medium focus:ring-primary-light border-neutral-soft rounded"
-                                      />
-                                      <span className="text-sm text-neutral-dark">{ingredient.product_name}</span>
-                                      {ingredient.category && (
-                                        <span className="text-xs text-neutral-medium bg-neutral-light/40 px-2 py-0.5 rounded">
-                                          {ingredient.category}
-                                        </span>
-                                      )}
-                                    </label>
-                                  ))}
-                                </div>
-                              )}
-                            </div>
-
-                            <button
-                              type="button"
-                              onClick={handleNavigateToInventory}
-                              className="inline-flex items-center gap-2 text-sm text-primary-medium hover:text-primary-dark transition-colors"
-                            >
-                              <Plus className="h-4 w-4" />
-                              <span>Add New Ingredient</span>
-                              <ExternalLink className="h-3 w-3" />
-                            </button>
-                          </div>
-                        )}
+                        <div className="space-y-2">
+                          <label className="flex items-center text-sm font-semibold text-neutral-dark">
+                            <Building2 className="h-4 w-4 mr-2 text-primary-medium" />
+                            DBA (Doing Business As)
+                          </label>
+                          <input
+                            type="text"
+                            value={addForm.dba}
+                            onChange={(e) => setAddForm({ ...addForm, dba: e.target.value })}
+                            placeholder="Trade name if different"
+                            className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium"
+                          />
+                        </div>
                       </div>
-                    </div>
 
-                    {/* Packaging Field */}
-                    <div className="grid grid-cols-1 md:grid-cols-[200px_1fr] gap-4 items-start">
-                      <label className="text-sm font-medium text-neutral-dark pt-2">Packaging</label>
-                      <div className="space-y-3">
-                        <div>
-                          <button
-                            type="button"
-                            onClick={() => setShowPackagingList((v) => !v)}
-                            className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg border border-neutral-soft/60 bg-white text-neutral-dark hover:bg-neutral-light/40 transition-all text-sm font-medium"
-                          >
-                            {showPackagingList ? <Minus className="h-4 w-4" /> : <Package className="h-4 w-4" />}
-                            {showPackagingList ? 'Hide Packaging' : 'Add Packaging'}
-                          </button>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div className="space-y-2">
+                          <label className="flex items-center text-sm font-semibold text-neutral-dark">
+                            <User className="h-4 w-4 mr-2 text-primary-medium" />
+                            Contact Person
+                          </label>
+                          <input
+                            type="text"
+                            value={addForm.contact_person}
+                            onChange={(e) => setAddForm({ ...addForm, contact_person: e.target.value })}
+                            placeholder="e.g., Jane Smith"
+                            className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium"
+                          />
                         </div>
 
-                        {showPackagingList && (
-                          <div className="border border-neutral-soft/60 rounded-lg p-3 bg-white space-y-3">
-                            <div className="max-h-40 overflow-y-auto">
-                              {loadingInventory ? (
-                                <div className="text-sm text-neutral-medium">Loading packaging...</div>
-                              ) : packaging.length === 0 ? (
-                                <div className="text-sm text-neutral-medium">No packaging found</div>
-                              ) : (
-                                <div className="space-y-2">
-                                  {packaging.map((pack) => (
-                                    <label key={pack.id} className="flex items-center space-x-2 cursor-pointer hover:bg-neutral-light/20 p-1 rounded">
-                                      <input
-                                        type="checkbox"
-                                        checked={addForm.selected_packaging.includes(pack.id)}
-                                        onChange={() => handlePackagingToggle(pack.id)}
-                                        className="h-4 w-4 text-primary-medium focus:ring-primary-light border-neutral-soft rounded"
-                                      />
-                                      <span className="text-sm text-neutral-dark">{pack.product_name}</span>
-                                      {pack.category && (
-                                        <span className="text-xs text-neutral-medium bg-neutral-light/40 px-2 py-0.5 rounded">
-                                          {pack.category}
-                                        </span>
-                                      )}
-                                    </label>
-                                  ))}
-                                </div>
-                              )}
-                            </div>
+                        <div className="space-y-2">
+                          <label className="flex items-center text-sm font-semibold text-neutral-dark">
+                            <Mail className="h-4 w-4 mr-2 text-primary-medium" />
+                            Email
+                          </label>
+                          <input
+                            type="email"
+                            value={addForm.email}
+                            onChange={(e) => setAddForm({ ...addForm, email: e.target.value })}
+                            placeholder="jane@supplier.com"
+                            className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium"
+                          />
+                        </div>
+                      </div>
 
-                            <button
-                              type="button"
-                              onClick={handleNavigateToInventory}
-                              className="inline-flex items-center gap-2 text-sm text-primary-medium hover:text-primary-dark transition-colors"
-                            >
-                              <Package className="h-4 w-4" />
-                              <span>Add New Packaging</span>
-                              <ExternalLink className="h-3 w-3" />
-                            </button>
-                          </div>
-                        )}
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div className="space-y-2">
+                          <label className="flex items-center text-sm font-semibold text-neutral-dark">
+                            <Phone className="h-4 w-4 mr-2 text-primary-medium" />
+                            Phone
+                          </label>
+                          <input
+                            type="text"
+                            value={addForm.phone}
+                            onChange={(e) => setAddForm({ ...addForm, phone: e.target.value })}
+                            placeholder="+1 555 000 0000"
+                            className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium"
+                          />
+                        </div>
+
+                        <div className="space-y-2">
+                          <label className="flex items-center text-sm font-semibold text-neutral-dark">
+                            <Globe className="h-4 w-4 mr-2 text-primary-medium" />
+                            Website
+                          </label>
+                          <input
+                            type="url"
+                            value={addForm.website}
+                            onChange={(e) => setAddForm({ ...addForm, website: e.target.value })}
+                            placeholder="https://supplier.com"
+                            className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium"
+                          />
+                        </div>
                       </div>
                     </div>
                   </div>
 
-                  {/* Payment Terms Details */}
-                  <div className="bg-white/70 rounded-xl border border-neutral-soft/20 p-6 space-y-4">
-                    <h4 className="text-base font-semibold text-neutral-dark border-b border-neutral-soft/30 pb-2">Payment Terms Details</h4>
-                    
-                    <div className="grid grid-cols-1 md:grid-cols-[200px_1fr] gap-4 items-start">
-                      <label className="text-sm font-medium text-neutral-dark pt-1">NET Terms</label>
-                      <div className="flex flex-wrap gap-3">
-                        <label className="flex items-center gap-2 px-4 py-2 bg-neutral-light/30 rounded-lg border border-neutral-soft/30">
-                          <input
-                            type="checkbox"
-                            checked={addForm.payment_terms_net30}
-                            onChange={(e) => setAddForm({ ...addForm, payment_terms_net30: e.target.checked })}
-                            className="h-4 w-4 text-primary-medium focus:ring-primary-light border-neutral-soft rounded"
-                          />
-                          <span className="text-sm font-medium text-neutral-dark">NET30</span>
+                  <div className="bg-white rounded-2xl shadow-sm border border-neutral-soft/20 overflow-hidden">
+                    <div className="px-6 py-4 bg-gradient-to-r from-primary-dark/5 via-primary-medium/5 to-primary-light/5 border-b border-neutral-soft/30">
+                      <h3 className="text-base font-semibold text-neutral-dark flex items-center">
+                        <MapPin className="h-5 w-5 mr-2 text-primary-medium" />
+                        Address Information
+                      </h3>
+                    </div>
+                    <div className="p-6 space-y-6">
+                      <div className="space-y-2">
+                        <label className="flex items-center text-sm font-semibold text-neutral-dark">
+                          <MapPin className="h-4 w-4 mr-2 text-primary-medium" />
+                          Physical Address
                         </label>
-                        <label className="flex items-center gap-2 px-4 py-2 bg-neutral-light/30 rounded-lg border border-neutral-soft/30">
-                          <input
-                            type="checkbox"
-                            checked={addForm.payment_terms_net60}
-                            onChange={(e) => setAddForm({ ...addForm, payment_terms_net60: e.target.checked })}
-                            className="h-4 w-4 text-primary-medium focus:ring-primary-light border-neutral-soft rounded"
-                          />
-                          <span className="text-sm font-medium text-neutral-dark">NET60</span>
+                        <textarea
+                          value={addForm.physical_address}
+                          onChange={(e) => setAddForm({ ...addForm, physical_address: e.target.value })}
+                          placeholder="Street, City, State, ZIP, Country"
+                          rows={3}
+                          className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium resize-none hover:border-neutral-medium"
+                        />
+                      </div>
+
+                      <div className="space-y-2">
+                        <label className="flex items-center text-sm font-semibold text-neutral-dark">
+                          <Mail className="h-4 w-4 mr-2 text-primary-medium" />
+                          Mailing Address (if different)
                         </label>
-                        <label className="flex items-center gap-2 px-4 py-2 bg-neutral-light/30 rounded-lg border border-neutral-soft/30">
-                          <input
-                            type="checkbox"
-                            checked={addForm.payment_terms_net90}
-                            onChange={(e) => setAddForm({ ...addForm, payment_terms_net90: e.target.checked })}
-                            className="h-4 w-4 text-primary-medium focus:ring-primary-light border-neutral-soft rounded"
-                          />
-                          <span className="text-sm font-medium text-neutral-dark">NET90</span>
-                        </label>
+                        <textarea
+                          value={addForm.mailing_address}
+                          onChange={(e) => setAddForm({ ...addForm, mailing_address: e.target.value })}
+                          placeholder="Leave blank if same as physical address"
+                          rows={3}
+                          className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium resize-none hover:border-neutral-medium"
+                        />
                       </div>
                     </div>
+                  </div>
 
-                    <div className="grid grid-cols-1 md:grid-cols-[200px_1fr] gap-4 items-center">
-                      <label className="text-sm font-medium text-neutral-dark">Early Payment Discount</label>
-                      <div className="grid grid-cols-2 gap-3">
-                        <div className="flex items-center gap-2">
+                  <div className="bg-white rounded-2xl shadow-sm border border-neutral-soft/20 overflow-hidden">
+                    <div className="px-6 py-4 bg-gradient-to-r from-primary-dark/5 via-primary-medium/5 to-primary-light/5 border-b border-neutral-soft/30">
+                      <h3 className="text-base font-semibold text-neutral-dark flex items-center">
+                        <Truck className="h-5 w-5 mr-2 text-primary-medium" />
+                        Business Details & Materials
+                      </h3>
+                    </div>
+                    <div className="p-6 space-y-6">
+                      <div className="space-y-2">
+                        <label className="flex items-center text-sm font-semibold text-neutral-dark">
+                          <Truck className="h-4 w-4 mr-2 text-primary-medium" />
+                          Materials/Products Supplied
+                        </label>
+                        <textarea
+                          value={addForm.materials_supplied}
+                          onChange={(e) => setAddForm({ ...addForm, materials_supplied: e.target.value })}
+                          placeholder="Describe the materials, products, or services you supply..."
+                          rows={4}
+                          className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium resize-none hover:border-neutral-medium"
+                        />
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div className="space-y-2">
+                          <label className="flex items-center text-sm font-semibold text-neutral-dark">
+                            <FileText className="h-4 w-4 mr-2 text-primary-medium" />
+                            Category
+                          </label>
+                          <select
+                            value={addForm.category}
+                            onChange={(e) => setAddForm({ ...addForm, category: e.target.value })}
+                            className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark hover:border-neutral-medium"
+                          >
+                            <option value="Raw Materials">Raw Materials</option>
+                            <option value="Packaging">Packaging</option>
+                            <option value="Equipment">Equipment</option>
+                            <option value="Services">Services</option>
+                            <option value="Ingredients">Ingredients</option>
+                            <option value="Other">Other</option>
+                          </select>
+                        </div>
+
+                        <div className="space-y-2">
+                          <label className="flex items-center text-sm font-semibold text-neutral-dark">
+                            <BadgeCheck className="h-4 w-4 mr-2 text-primary-medium" />
+                            GFSI Certification
+                          </label>
+                          <label className="flex items-center gap-2 px-4 py-3 border border-neutral-soft rounded-lg hover:bg-neutral-light/30 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={addForm.gfsi_certification_held}
+                              onChange={(e) => setAddForm({ ...addForm, gfsi_certification_held: e.target.checked })}
+                              className="h-4 w-4"
+                            />
+                            <span className="text-sm">GFSI Certification Held</span>
+                          </label>
+                        </div>
+                      </div>
+
+                      {addForm.gfsi_certification_held && (
+                        <div className="space-y-2">
+                          <label className="flex items-center text-sm font-semibold text-neutral-dark">
+                            <BadgeCheck className="h-4 w-4 mr-2 text-primary-medium" />
+                            GFSI Certification Name
+                          </label>
+                          <input
+                            type="text"
+                            value={addForm.gfsi_cert_name}
+                            onChange={(e) => setAddForm({ ...addForm, gfsi_cert_name: e.target.value })}
+                            placeholder="e.g., SQF, BRC, FSSC 22000"
+                            className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium"
+                          />
+                        </div>
+                      )}
+
+                      <div className="space-y-2">
+                        <label className="text-sm font-semibold text-neutral-dark">Ingredients</label>
+                        <div className="space-y-3">
+                          <div>
+                            <button
+                              type="button"
+                              onClick={() => setShowIngredientsList((v) => !v)}
+                              className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg border border-neutral-soft bg-white text-neutral-dark hover:bg-neutral-light/30 transition-all text-sm font-semibold"
+                            >
+                              {showIngredientsList ? <Minus className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
+                              {showIngredientsList ? 'Hide Ingredients' : 'Add Ingredients'}
+                            </button>
+                          </div>
+
+                          {showIngredientsList && (
+                            <div className="border border-neutral-soft rounded-lg p-3 bg-white space-y-3">
+                              <div className="max-h-40 overflow-y-auto">
+                                {loadingInventory ? (
+                                  <div className="text-sm text-neutral-medium">Loading ingredients...</div>
+                                ) : ingredients.length === 0 ? (
+                                  <div className="text-sm text-neutral-medium">No ingredients found</div>
+                                ) : (
+                                  <div className="space-y-2">
+                                    {ingredients.map((ingredient) => (
+                                      <label key={ingredient.id} className="flex items-center space-x-2 cursor-pointer hover:bg-neutral-light/20 p-1 rounded">
+                                        <input
+                                          type="checkbox"
+                                          checked={addForm.selected_ingredients.includes(ingredient.id)}
+                                          onChange={() => handleIngredientToggle(ingredient.id)}
+                                          className="h-4 w-4 text-primary-medium focus:ring-primary-light border-neutral-soft rounded"
+                                        />
+                                        <span className="text-sm text-neutral-dark">{ingredient.product_name}</span>
+                                        {ingredient.category && (
+                                          <span className="text-xs text-neutral-medium bg-neutral-light/40 px-2 py-0.5 rounded">
+                                            {ingredient.category}
+                                          </span>
+                                        )}
+                                      </label>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+
+                              <button
+                                type="button"
+                                onClick={handleNavigateToInventory}
+                                className="inline-flex items-center gap-2 text-sm text-primary-medium hover:text-primary-dark transition-colors"
+                              >
+                                <Plus className="h-4 w-4" />
+                                <span>Add New Ingredient</span>
+                                <ExternalLink className="h-3 w-3" />
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="space-y-2">
+                        <label className="text-sm font-semibold text-neutral-dark">Packaging</label>
+                        <div className="space-y-3">
+                          <div>
+                            <button
+                              type="button"
+                              onClick={() => setShowPackagingList((v) => !v)}
+                              className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg border border-neutral-soft bg-white text-neutral-dark hover:bg-neutral-light/30 transition-all text-sm font-semibold"
+                            >
+                              {showPackagingList ? <Minus className="h-4 w-4" /> : <Package className="h-4 w-4" />}
+                              {showPackagingList ? 'Hide Packaging' : 'Add Packaging'}
+                            </button>
+                          </div>
+
+                          {showPackagingList && (
+                            <div className="border border-neutral-soft rounded-lg p-3 bg-white space-y-3">
+                              <div className="max-h-40 overflow-y-auto">
+                                {loadingInventory ? (
+                                  <div className="text-sm text-neutral-medium">Loading packaging...</div>
+                                ) : packaging.length === 0 ? (
+                                  <div className="text-sm text-neutral-medium">No packaging found</div>
+                                ) : (
+                                  <div className="space-y-2">
+                                    {packaging.map((pack) => (
+                                      <label key={pack.id} className="flex items-center space-x-2 cursor-pointer hover:bg-neutral-light/20 p-1 rounded">
+                                        <input
+                                          type="checkbox"
+                                          checked={addForm.selected_packaging.includes(pack.id)}
+                                          onChange={() => handlePackagingToggle(pack.id)}
+                                          className="h-4 w-4 text-primary-medium focus:ring-primary-light border-neutral-soft rounded"
+                                        />
+                                        <span className="text-sm text-neutral-dark">{pack.product_name}</span>
+                                        {pack.category && (
+                                          <span className="text-xs text-neutral-medium bg-neutral-light/40 px-2 py-0.5 rounded">
+                                            {pack.category}
+                                          </span>
+                                        )}
+                                      </label>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+
+                              <button
+                                type="button"
+                                onClick={handleNavigateToInventory}
+                                className="inline-flex items-center gap-2 text-sm text-primary-medium hover:text-primary-dark transition-colors"
+                              >
+                                <Package className="h-4 w-4" />
+                                <span>Add New Packaging</span>
+                                <ExternalLink className="h-3 w-3" />
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="bg-white rounded-2xl shadow-sm border border-neutral-soft/20 overflow-hidden">
+                    <div className="px-6 py-4 bg-gradient-to-r from-primary-dark/5 via-primary-medium/5 to-primary-light/5 border-b border-neutral-soft/30">
+                      <h3 className="text-base font-semibold text-neutral-dark flex items-center">
+                        <CreditCard className="h-5 w-5 mr-2 text-primary-medium" />
+                        Payment Terms
+                      </h3>
+                    </div>
+                    <div className="p-6 space-y-6">
+                      <div className="space-y-2">
+                        <label className="flex items-center text-sm font-semibold text-neutral-dark">
+                          <CreditCard className="h-4 w-4 mr-2 text-primary-medium" />
+                          General Payment Terms
+                        </label>
+                        <input
+                          type="text"
+                          value={addForm.payment_terms}
+                          onChange={(e) => setAddForm({ ...addForm, payment_terms: e.target.value })}
+                          placeholder="e.g., NET 30, NET 60, Due on Receipt"
+                          className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium"
+                        />
+                      </div>
+
+                      <div className="space-y-3">
+                        <label className="text-sm font-semibold text-neutral-dark">NET Terms</label>
+                        <div className="flex flex-wrap gap-4">
+                          <label className="flex items-center gap-2">
+                            <input
+                              type="checkbox"
+                              checked={addForm.payment_terms_net30}
+                              onChange={(e) => setAddForm({ ...addForm, payment_terms_net30: e.target.checked })}
+                              className="h-4 w-4"
+                            />
+                            <span className="text-sm">NET 30 Days</span>
+                          </label>
+                          <label className="flex items-center gap-2">
+                            <input
+                              type="checkbox"
+                              checked={addForm.payment_terms_net60}
+                              onChange={(e) => setAddForm({ ...addForm, payment_terms_net60: e.target.checked })}
+                              className="h-4 w-4"
+                            />
+                            <span className="text-sm">NET 60 Days</span>
+                          </label>
+                          <label className="flex items-center gap-2">
+                            <input
+                              type="checkbox"
+                              checked={addForm.payment_terms_net90}
+                              onChange={(e) => setAddForm({ ...addForm, payment_terms_net90: e.target.checked })}
+                              className="h-4 w-4"
+                            />
+                            <span className="text-sm">NET 90 Days</span>
+                          </label>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div className="space-y-2">
+                          <label className="flex items-center text-sm font-semibold text-neutral-dark">
+                            <Percent className="h-4 w-4 mr-2 text-primary-medium" />
+                            Early Payment Discount (%)
+                          </label>
                           <input
                             type="number"
-                            step="0.01"
+                            step="0.1"
                             value={addForm.payment_terms_discount_percent}
                             onChange={(e) => setAddForm({ ...addForm, payment_terms_discount_percent: e.target.value })}
-                            className="w-full px-4 py-2.5 border border-neutral-soft/60 rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-medium bg-white text-neutral-dark placeholder-neutral-medium/70 hover:border-neutral-medium transition-all"
-                            placeholder="2.00"
+                            placeholder="e.g., 2"
+                            className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium"
                           />
-                          <span className="text-sm font-medium text-neutral-medium">%</span>
                         </div>
-                        <div className="flex items-center gap-2">
+
+                        <div className="space-y-2">
+                          <label className="flex items-center text-sm font-semibold text-neutral-dark">
+                            <FileText className="h-4 w-4 mr-2 text-primary-medium" />
+                            Discount Days
+                          </label>
                           <input
                             type="number"
                             value={addForm.payment_terms_discount_days}
                             onChange={(e) => setAddForm({ ...addForm, payment_terms_discount_days: e.target.value })}
-                            className="w-full px-4 py-2.5 border border-neutral-soft/60 rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-medium bg-white text-neutral-dark placeholder-neutral-medium/70 hover:border-neutral-medium transition-all"
-                            placeholder="10"
+                            placeholder="e.g., 10"
+                            className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium"
                           />
-                          <span className="text-sm font-medium text-neutral-medium">Days</span>
                         </div>
                       </div>
                     </div>
                   </div>
 
-                  {/* Account Representative */}
-                  <div className="bg-white/70 rounded-xl border border-neutral-soft/20 p-6 space-y-4">
-                    <h4 className="text-base font-semibold text-neutral-dark border-b border-neutral-soft/30 pb-2">Account Representative</h4>
-                    
-                    <div className="grid grid-cols-1 md:grid-cols-[200px_1fr] gap-4 items-center">
-                      <label className="text-sm font-medium text-neutral-dark">Name</label>
-                      <input
-                        type="text"
-                        value={addForm.account_rep_name}
-                        onChange={(e) => setAddForm({ ...addForm, account_rep_name: e.target.value })}
-                        className="w-full px-4 py-2.5 border border-neutral-soft/60 rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-medium bg-white text-neutral-dark placeholder-neutral-medium/70 hover:border-neutral-medium transition-all"
-                        placeholder="Representative name"
-                      />
+                  <div className="bg-white rounded-2xl shadow-sm border border-neutral-soft/20 overflow-hidden">
+                    <div className="px-6 py-4 bg-gradient-to-r from-primary-dark/5 via-primary-medium/5 to-primary-light/5 border-b border-neutral-soft/30">
+                      <h3 className="text-base font-semibold text-neutral-dark flex items-center">
+                        <User className="h-5 w-5 mr-2 text-primary-medium" />
+                        Representatives & Contacts
+                      </h3>
                     </div>
+                    <div className="p-6 space-y-8">
+                      <div className="space-y-4">
+                        <h4 className="text-sm font-bold text-primary-dark uppercase tracking-wider">Account Representative</h4>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          <input type="text" value={addForm.account_rep_name} onChange={(e) => setAddForm({ ...addForm, account_rep_name: e.target.value })} placeholder="Name" className="px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light" />
+                          <input type="email" value={addForm.account_rep_email} onChange={(e) => setAddForm({ ...addForm, account_rep_email: e.target.value })} placeholder="Email" className="px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light" />
+                          <input type="text" value={addForm.account_rep_office_phone} onChange={(e) => setAddForm({ ...addForm, account_rep_office_phone: e.target.value })} placeholder="Office Phone" className="px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light" />
+                          <input type="text" value={addForm.account_rep_cell_phone} onChange={(e) => setAddForm({ ...addForm, account_rep_cell_phone: e.target.value })} placeholder="Cell Phone" className="px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light" />
+                        </div>
+                      </div>
 
-                    <div className="grid grid-cols-1 md:grid-cols-[200px_1fr] gap-4 items-center">
-                      <label className="text-sm font-medium text-neutral-dark">Email</label>
-                      <input
-                        type="email"
-                        value={addForm.account_rep_email}
-                        onChange={(e) => setAddForm({ ...addForm, account_rep_email: e.target.value })}
-                        className="w-full px-4 py-2.5 border border-neutral-soft/60 rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-medium bg-white text-neutral-dark placeholder-neutral-medium/70 hover:border-neutral-medium transition-all"
-                        placeholder="rep@company.com"
-                      />
-                    </div>
+                      <div className="space-y-4">
+                        <h4 className="text-sm font-bold text-primary-dark uppercase tracking-wider">Accounts Payable Representative</h4>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          <input type="text" value={addForm.ap_rep_name} onChange={(e) => setAddForm({ ...addForm, ap_rep_name: e.target.value })} placeholder="Name" className="px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light" />
+                          <input type="email" value={addForm.ap_rep_email} onChange={(e) => setAddForm({ ...addForm, ap_rep_email: e.target.value })} placeholder="Email" className="px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light" />
+                          <input type="text" value={addForm.ap_rep_office_phone} onChange={(e) => setAddForm({ ...addForm, ap_rep_office_phone: e.target.value })} placeholder="Office Phone" className="px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light" />
+                          <input type="text" value={addForm.ap_rep_cell_phone} onChange={(e) => setAddForm({ ...addForm, ap_rep_cell_phone: e.target.value })} placeholder="Cell Phone" className="px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light" />
+                        </div>
+                      </div>
 
-                    <div className="grid grid-cols-1 md:grid-cols-[200px_1fr] gap-4 items-center">
-                      <label className="text-sm font-medium text-neutral-dark">Office Phone</label>
-                      <input
-                        type="text"
-                        value={addForm.account_rep_office_phone}
-                        onChange={(e) => setAddForm({ ...addForm, account_rep_office_phone: e.target.value })}
-                        className="w-full px-4 py-2.5 border border-neutral-soft/60 rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-medium bg-white text-neutral-dark placeholder-neutral-medium/70 hover:border-neutral-medium transition-all"
-                        placeholder="(555) 123-4567"
-                      />
-                    </div>
+                      <div className="space-y-4">
+                        <h4 className="text-sm font-bold text-primary-dark uppercase tracking-wider">Quality Assurance Representative</h4>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          <input type="text" value={addForm.qa_rep_name} onChange={(e) => setAddForm({ ...addForm, qa_rep_name: e.target.value })} placeholder="Name" className="px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light" />
+                          <input type="email" value={addForm.qa_rep_email} onChange={(e) => setAddForm({ ...addForm, qa_rep_email: e.target.value })} placeholder="Email" className="px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light" />
+                          <input type="text" value={addForm.qa_rep_office_phone} onChange={(e) => setAddForm({ ...addForm, qa_rep_office_phone: e.target.value })} placeholder="Office Phone" className="px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light" />
+                          <input type="text" value={addForm.qa_rep_cell_phone} onChange={(e) => setAddForm({ ...addForm, qa_rep_cell_phone: e.target.value })} placeholder="Cell Phone" className="px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light" />
+                        </div>
+                      </div>
 
-                    <div className="grid grid-cols-1 md:grid-cols-[200px_1fr] gap-4 items-center">
-                      <label className="text-sm font-medium text-neutral-dark">Cell Phone</label>
-                      <input
-                        type="text"
-                        value={addForm.account_rep_cell_phone}
-                        onChange={(e) => setAddForm({ ...addForm, account_rep_cell_phone: e.target.value })}
-                        className="w-full px-4 py-2.5 border border-neutral-soft/60 rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-medium bg-white text-neutral-dark placeholder-neutral-medium/70 hover:border-neutral-medium transition-all"
-                        placeholder="(555) 987-6543"
-                      />
-                    </div>
-                  </div>
-
-                  {/* GFSI Certification */}
-                  <div className="bg-white/70 rounded-xl border border-neutral-soft/20 p-6 space-y-4">
-                    <h4 className="text-base font-semibold text-neutral-dark border-b border-neutral-soft/30 pb-2">GFSI Certification</h4>
-                    
-                    <div className="grid grid-cols-1 md:grid-cols-[200px_1fr] gap-4 items-center">
-                      <label className="text-sm font-medium text-neutral-dark">GFSI Certification Held</label>
-                      <label className="flex items-center gap-2 w-fit">
-                        <input
-                          type="checkbox"
-                          checked={addForm.gfsi_certification_held}
-                          onChange={(e) => setAddForm({ ...addForm, gfsi_certification_held: e.target.checked })}
-                          className="h-4 w-4 text-accent-success focus:ring-accent-success/30 border-neutral-soft rounded"
-                        />
-                        <span className="text-sm font-medium text-neutral-dark">Yes, we hold GFSI certification</span>
-                      </label>
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-[200px_1fr] gap-4 items-center">
-                      <label className="text-sm font-medium text-neutral-dark">Certification Name</label>
-                      <input
-                        type="text"
-                        value={addForm.gfsi_cert_name}
-                        onChange={(e) => setAddForm({ ...addForm, gfsi_cert_name: e.target.value })}
-                        className="w-full px-4 py-2.5 border border-neutral-soft/60 rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-medium bg-white text-neutral-dark placeholder-neutral-medium/70 hover:border-neutral-medium transition-all disabled:opacity-50 disabled:bg-neutral-light/30"
-                        placeholder="BRC, SQF, IFS, etc."
-                        disabled={!addForm.gfsi_certification_held}
-                      />
+                      <div className="space-y-4">
+                        <h4 className="text-sm font-bold text-red-700 uppercase tracking-wider">Emergency Contact</h4>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          <input type="text" value={addForm.emergency_contact_name} onChange={(e) => setAddForm({ ...addForm, emergency_contact_name: e.target.value })} placeholder="Name" className="px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light" />
+                          <input type="email" value={addForm.emergency_contact_email} onChange={(e) => setAddForm({ ...addForm, emergency_contact_email: e.target.value })} placeholder="Email" className="px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light" />
+                          <input type="text" value={addForm.emergency_contact_office_phone} onChange={(e) => setAddForm({ ...addForm, emergency_contact_office_phone: e.target.value })} placeholder="Office Phone" className="px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light" />
+                          <input type="text" value={addForm.emergency_contact_cell_phone} onChange={(e) => setAddForm({ ...addForm, emergency_contact_cell_phone: e.target.value })} placeholder="Cell Phone" className="px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light" />
+                        </div>
+                      </div>
                     </div>
                   </div>
 
-                  {/* Accounts Payable Representative */}
-                  <div className="bg-white/70 rounded-xl border border-neutral-soft/20 p-6 space-y-4">
-                    <h4 className="text-base font-semibold text-neutral-dark border-b border-neutral-soft/30 pb-2">Accounts Payable Representative</h4>
-                    
-                    <div className="grid grid-cols-1 md:grid-cols-[200px_1fr] gap-4 items-center">
-                      <label className="text-sm font-medium text-neutral-dark">Name</label>
-                      <input
-                        type="text"
-                        value={addForm.ap_rep_name}
-                        onChange={(e) => setAddForm({ ...addForm, ap_rep_name: e.target.value })}
-                        className="w-full px-4 py-2.5 border border-neutral-soft/60 rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-medium bg-white text-neutral-dark placeholder-neutral-medium/70 hover:border-neutral-medium transition-all"
-                        placeholder="AP representative name"
-                      />
+                  <div className="bg-white rounded-2xl shadow-sm border border-neutral-soft/20 overflow-hidden">
+                    <div className="px-6 py-4 bg-gradient-to-r from-primary-dark/5 via-primary-medium/5 to-primary-light/5 border-b border-neutral-soft/30">
+                      <h3 className="text-base font-semibold text-neutral-dark flex items-center">
+                        <CheckCircle2 className="h-5 w-5 mr-2 text-primary-medium" />
+                        Purchase Approval
+                      </h3>
                     </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-[200px_1fr] gap-4 items-center">
-                      <label className="text-sm font-medium text-neutral-dark">Email</label>
-                      <input
-                        type="email"
-                        value={addForm.ap_rep_email}
-                        onChange={(e) => setAddForm({ ...addForm, ap_rep_email: e.target.value })}
-                        className="w-full px-4 py-2.5 border border-neutral-soft/60 rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-medium bg-white text-neutral-dark placeholder-neutral-medium/70 hover:border-neutral-medium transition-all"
-                        placeholder="ap@company.com"
-                      />
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-[200px_1fr] gap-4 items-center">
-                      <label className="text-sm font-medium text-neutral-dark">Office Phone</label>
-                      <input
-                        type="text"
-                        value={addForm.ap_rep_office_phone}
-                        onChange={(e) => setAddForm({ ...addForm, ap_rep_office_phone: e.target.value })}
-                        className="w-full px-4 py-2.5 border border-neutral-soft/60 rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-medium bg-white text-neutral-dark placeholder-neutral-medium/70 hover:border-neutral-medium transition-all"
-                        placeholder="(555) 123-4567"
-                      />
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-[200px_1fr] gap-4 items-center">
-                      <label className="text-sm font-medium text-neutral-dark">Cell Phone</label>
-                      <input
-                        type="text"
-                        value={addForm.ap_rep_cell_phone}
-                        onChange={(e) => setAddForm({ ...addForm, ap_rep_cell_phone: e.target.value })}
-                        className="w-full px-4 py-2.5 border border-neutral-soft/60 rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-medium bg-white text-neutral-dark placeholder-neutral-medium/70 hover:border-neutral-medium transition-all"
-                        placeholder="(555) 987-6543"
-                      />
-                    </div>
-                  </div>
-
-                  {/* Quality Assurance Representative */}
-                  <div className="bg-white/70 rounded-xl border border-neutral-soft/20 p-6 space-y-4">
-                    <h4 className="text-base font-semibold text-neutral-dark border-b border-neutral-soft/30 pb-2">Quality Assurance Representative</h4>
-                    
-                    <div className="grid grid-cols-1 md:grid-cols-[200px_1fr] gap-4 items-center">
-                      <label className="text-sm font-medium text-neutral-dark">Name</label>
-                      <input
-                        type="text"
-                        value={addForm.qa_rep_name}
-                        onChange={(e) => setAddForm({ ...addForm, qa_rep_name: e.target.value })}
-                        className="w-full px-4 py-2.5 border border-neutral-soft/60 rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-medium bg-white text-neutral-dark placeholder-neutral-medium/70 hover:border-neutral-medium transition-all"
-                        placeholder="QA representative name"
-                      />
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-[200px_1fr] gap-4 items-center">
-                      <label className="text-sm font-medium text-neutral-dark">Email</label>
-                      <input
-                        type="email"
-                        value={addForm.qa_rep_email}
-                        onChange={(e) => setAddForm({ ...addForm, qa_rep_email: e.target.value })}
-                        className="w-full px-4 py-2.5 border border-neutral-soft/60 rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-medium bg-white text-neutral-dark placeholder-neutral-medium/70 hover:border-neutral-medium transition-all"
-                        placeholder="qa@company.com"
-                      />
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-[200px_1fr] gap-4 items-center">
-                      <label className="text-sm font-medium text-neutral-dark">Office Phone</label>
-                      <input
-                        type="text"
-                        value={addForm.qa_rep_office_phone}
-                        onChange={(e) => setAddForm({ ...addForm, qa_rep_office_phone: e.target.value })}
-                        className="w-full px-4 py-2.5 border border-neutral-soft/60 rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-medium bg-white text-neutral-dark placeholder-neutral-medium/70 hover:border-neutral-medium transition-all"
-                        placeholder="(555) 123-4567"
-                      />
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-[200px_1fr] gap-4 items-center">
-                      <label className="text-sm font-medium text-neutral-dark">Cell Phone</label>
-                      <input
-                        type="text"
-                        value={addForm.qa_rep_cell_phone}
-                        onChange={(e) => setAddForm({ ...addForm, qa_rep_cell_phone: e.target.value })}
-                        className="w-full px-4 py-2.5 border border-neutral-soft/60 rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-medium bg-white text-neutral-dark placeholder-neutral-medium/70 hover:border-neutral-medium transition-all"
-                        placeholder="(555) 987-6543"
-                      />
-                    </div>
-                  </div>
-
-                  {/* Emergency Contact */}
-                  <div className="bg-red-50/70 rounded-xl border border-red-200/40 p-6 space-y-4">
-                    <h4 className="text-base font-semibold text-neutral-dark border-b border-red-200/50 pb-2">Emergency Contact</h4>
-                    
-                    <div className="grid grid-cols-1 md:grid-cols-[200px_1fr] gap-4 items-center">
-                      <label className="text-sm font-medium text-neutral-dark">Name</label>
-                      <input
-                        type="text"
-                        value={addForm.emergency_contact_name}
-                        onChange={(e) => setAddForm({ ...addForm, emergency_contact_name: e.target.value })}
-                        className="w-full px-4 py-2.5 border border-red-200/80 rounded-lg focus:ring-2 focus:ring-red-200 focus:border-red-400 bg-white text-neutral-dark placeholder-neutral-medium/70 hover:border-red-300 transition-all"
-                        placeholder="Emergency contact name"
-                      />
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-[200px_1fr] gap-4 items-center">
-                      <label className="text-sm font-medium text-neutral-dark">Email</label>
-                      <input
-                        type="email"
-                        value={addForm.emergency_contact_email}
-                        onChange={(e) => setAddForm({ ...addForm, emergency_contact_email: e.target.value })}
-                        className="w-full px-4 py-2.5 border border-red-200/80 rounded-lg focus:ring-2 focus:ring-red-200 focus:border-red-400 bg-white text-neutral-dark placeholder-neutral-medium/70 hover:border-red-300 transition-all"
-                        placeholder="emergency@company.com"
-                      />
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-[200px_1fr] gap-4 items-center">
-                      <label className="text-sm font-medium text-neutral-dark">Office Phone</label>
-                      <input
-                        type="text"
-                        value={addForm.emergency_contact_office_phone}
-                        onChange={(e) => setAddForm({ ...addForm, emergency_contact_office_phone: e.target.value })}
-                        className="w-full px-4 py-2.5 border border-red-200/80 rounded-lg focus:ring-2 focus:ring-red-200 focus:border-red-400 bg-white text-neutral-dark placeholder-neutral-medium/70 hover:border-red-300 transition-all"
-                        placeholder="(555) 123-4567"
-                      />
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-[200px_1fr] gap-4 items-center">
-                      <label className="text-sm font-medium text-neutral-dark">Cell Phone</label>
-                      <input
-                        type="text"
-                        value={addForm.emergency_contact_cell_phone}
-                        onChange={(e) => setAddForm({ ...addForm, emergency_contact_cell_phone: e.target.value })}
-                        className="w-full px-4 py-2.5 border border-red-200/80 rounded-lg focus:ring-2 focus:ring-red-200 focus:border-red-400 bg-white text-neutral-dark placeholder-neutral-medium/70 hover:border-red-300 transition-all"
-                        placeholder="(555) 987-6543"
-                      />
-                    </div>
-                  </div>
-
-                  {/* Purchase Approval */}
-                  <div className="bg-white/70 rounded-xl border border-neutral-soft/20 p-6 space-y-4">
-                    <h4 className="text-base font-semibold text-neutral-dark border-b border-neutral-soft/30 pb-2">Purchase Approval</h4>
-                    
-                    <div className="grid grid-cols-1 md:grid-cols-[200px_1fr] gap-4 items-start">
-                      <label className="text-sm font-medium text-neutral-dark pt-1">Approval Requirements</label>
-                      <div className="space-y-3">
+                    <div className="p-6 space-y-6">
+                      <div className="flex flex-wrap gap-6">
                         <label className="flex items-center gap-2">
                           <input
                             type="checkbox"
                             checked={addForm.purchase_approval_required}
                             onChange={(e) => setAddForm({ ...addForm, purchase_approval_required: e.target.checked })}
-                            className="h-4 w-4 text-primary-dark focus:ring-primary-light border-neutral-soft rounded"
+                            className="h-4 w-4"
                           />
-                          <span className="text-sm font-medium text-neutral-dark">Purchase Approval Required</span>
+                          <span className="text-sm">Purchase Approval Required</span>
                         </label>
                         <label className="flex items-center gap-2">
                           <input
                             type="checkbox"
                             checked={addForm.purchase_approval_documents_received}
                             onChange={(e) => setAddForm({ ...addForm, purchase_approval_documents_received: e.target.checked })}
-                            className="h-4 w-4 text-primary-dark focus:ring-primary-light border-neutral-soft rounded"
+                            className="h-4 w-4"
                           />
-                          <span className="text-sm font-medium text-neutral-dark">Documents Received</span>
+                          <span className="text-sm">Documents Received</span>
                         </label>
                       </div>
-                    </div>
 
-                    <div className="grid grid-cols-1 md:grid-cols-[200px_1fr] gap-4 items-center">
-                      <label className="text-sm font-medium text-neutral-dark">Determination</label>
-                      <select
-                        value={addForm.purchase_approval_determination}
-                        onChange={(e) => setAddForm({ ...addForm, purchase_approval_determination: e.target.value })}
-                        className="w-full px-3 py-2 border border-neutral-soft/40 rounded-md focus:border-primary-medium bg-white text-neutral-dark focus:outline-none transition-colors"
-                      >
-                        <option value="">Select Determination</option>
-                        <option value="APPROVED">APPROVED</option>
-                        <option value="APPROVED WITH CONTINGENCIES">APPROVED WITH CONTINGENCIES</option>
-                        <option value="NOT APPROVED">NOT APPROVED</option>
-                        <option value="REJECTED">REJECTED</option>
-                      </select>
-                    </div>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div className="space-y-2">
+                          <label className="text-sm font-semibold text-neutral-dark">Determination</label>
+                          <input
+                            type="text"
+                            value={addForm.purchase_approval_determination}
+                            onChange={(e) => setAddForm({ ...addForm, purchase_approval_determination: e.target.value })}
+                            placeholder="Approval determination"
+                            className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium"
+                          />
+                        </div>
 
-                    <div className="grid grid-cols-1 md:grid-cols-[200px_1fr] gap-4 items-center">
-                      <label className="text-sm font-medium text-neutral-dark">Approved By</label>
-                      <input
-                        type="text"
-                        value={addForm.approved_by}
-                        onChange={(e) => setAddForm({ ...addForm, approved_by: e.target.value })}
-                        className="w-full px-4 py-2.5 border border-neutral-soft/60 rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-medium bg-white text-neutral-dark placeholder-neutral-medium/70 hover:border-neutral-medium transition-all"
-                        placeholder="Name of approver"
-                      />
+                        <div className="space-y-2">
+                          <label className="text-sm font-semibold text-neutral-dark">Approved By</label>
+                          <input
+                            type="text"
+                            value={addForm.approved_by}
+                            onChange={(e) => setAddForm({ ...addForm, approved_by: e.target.value })}
+                            placeholder="Approver name"
+                            className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium"
+                          />
+                        </div>
+                      </div>
                     </div>
                   </div>
 
-                  {/* Submit Button */}
-                  <div className="flex items-center justify-center pt-6">
+                  <div className="flex justify-end gap-4 pt-4">
+                    <button
+                      type="button"
+                      onClick={() => !isSubmitting && setIsAddOpen(false)}
+                      className="px-6 py-3 rounded-xl border border-neutral-soft text-neutral-dark hover:bg-neutral-light/60 transition-all font-semibold"
+                    >
+                      Cancel
+                    </button>
                     <button
                       type="submit"
-                      className="px-8 py-3 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold shadow-lg hover:shadow-xl transition-all duration-200 disabled:opacity-60 disabled:cursor-not-allowed min-w-[200px]"
-                      disabled={isSubmitting}
+                      disabled={isSubmitting || !addForm.company_name}
+                      className="px-8 py-3 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium text-white font-semibold hover:shadow-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                     >
-                      {isSubmitting ? (
-                        <div className="flex items-center gap-2">
-                          <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
-                          Adding Supplier...
-                        </div>
-                      ) : (
-                        'Add Supplier'
-                      )}
+                      {isSubmitting ? 'Submitting...' : 'Submit Registration'}
                     </button>
                   </div>
                 </form>

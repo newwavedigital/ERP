@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { Calculator, RefreshCw, CheckCircle, Truck } from 'lucide-react'
+import { useLocation } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../contexts/AuthContext'
 import ShippingTab from './SupplyChainProcurement/ShippingTab'
@@ -10,6 +11,7 @@ function formatStatusLabel(raw?: string | null): string {
   const lower = s.toLowerCase()
   if (lower === 'move_to_procurement' || lower === 'move to procurement') return 'Move to Procurement'
   if (lower === 'ready_to_schedule' || lower === 'ready to schedule') return 'Ready to Schedule'
+  if (lower === 'ready_to_ship' || lower === 'ready to ship') return 'Completed'
   if (lower === 'on_hold' || lower === 'on hold') return 'On Hold'
   return s
     .replace(/_/g, ' ')
@@ -29,7 +31,15 @@ function getStatusBadgeClass(raw?: string | null): string {
 
 const SupplyChainProcurement: React.FC = () => {
   const { user } = useAuth()
-  const [activeTab, setActiveTab] = useState<'procurement' | 'shipping'>('procurement')
+  const location = useLocation()
+  const [activeTab, setActiveTab] = useState<'procurement' | 'shipping'>(() => {
+    try {
+      const sp = new URLSearchParams(String(window?.location?.search || ''))
+      return sp.get('tab') === 'shipping' ? 'shipping' : 'procurement'
+    } catch {
+      return 'procurement'
+    }
+  })
   const [loading, setLoading] = useState<boolean>(false)
   const [error, setError] = useState<string | null>(null)
   const [orders, setOrders] = useState<any[]>([])
@@ -54,6 +64,23 @@ const SupplyChainProcurement: React.FC = () => {
       'Procurement',
       'Ready to Schedule',
       'ready_to_schedule',
+      'scheduled',
+      'Scheduled',
+      'in_progress',
+      'In Progress',
+      'qa_hold',
+      'QA Hold',
+      'ready_to_ship',
+      'Ready to Ship',
+      'ready to ship',
+      'allocated',
+      'Allocated',
+      'partial',
+      'Partial',
+      'partially_shipped',
+      'Partially Shipped',
+      'completed',
+      'Completed',
     ],
     []
   )
@@ -65,7 +92,7 @@ const SupplyChainProcurement: React.FC = () => {
 
   const canViewProcurement = useMemo(() => {
     const r = String(currentUserRole || '').toLowerCase()
-    return canManageProcurement || r === 'supply_chain_procurement' || r === 'sales_representative'
+    return canManageProcurement || r === 'supply_chain_procurement' || r === 'sales_representative' || r === 'warehouse'
   }, [canManageProcurement, currentUserRole])
 
   const loadUserRole = async () => {
@@ -87,6 +114,38 @@ const SupplyChainProcurement: React.FC = () => {
       setError(e?.message || 'Failed to load user role')
     } finally {
       setRoleLoading(false)
+    }
+  }
+
+  const canShipWarehouse = useMemo(() => String(currentUserRole || '').toLowerCase() === 'warehouse', [currentUserRole])
+  const isWarehouseRole = useMemo(() => String(currentUserRole || '').toLowerCase() === 'warehouse', [currentUserRole])
+
+  const markReadyToShip = async (poId: string) => {
+    const { error } = await supabase.rpc('fn_mark_ready_to_ship', { p_po_id: poId })
+    if (error) throw error
+  }
+
+  const shipPO = async (poId: string) => {
+    const { error } = await supabase.rpc('fn_ship_po', { p_po_id: poId })
+    if (error) throw error
+  }
+
+  const shipPartialPO = async (poId: string) => {
+    const { error } = await supabase.rpc('fn_ship_po_partial', { p_po_id: poId })
+    if (error) throw error
+  }
+
+  const handleShippingAction = async (action: 'ready_to_ship' | 'ship' | 'partial_ship', poId: string) => {
+    try {
+      setError(null)
+      if (action === 'ready_to_ship') await markReadyToShip(poId)
+      if (action === 'ship') await shipPO(poId)
+      if (action === 'partial_ship') await shipPartialPO(poId)
+      await loadShippingOrders()
+      await load()
+    } catch (e: any) {
+      console.error('Shipping action failed:', e)
+      setError(e?.message || 'Shipping action failed')
     }
   }
 
@@ -131,11 +190,22 @@ const SupplyChainProcurement: React.FC = () => {
       const { data, error: qErr } = await supabase
         .from('purchase_orders')
         .select('*')
-        .eq('status', 'completed')
         .order('created_at', { ascending: false })
 
       if (qErr) throw qErr
-      setShippingOrders((data as any[]) || [])
+      const raw = Array.isArray(data) ? data : []
+      const allowed = new Set([
+        'completed',
+        'ready_to_ship',
+        'ready to ship',
+        'allocated',
+        'partial',
+        'partially_shipped',
+        'shipped',
+        'submitted',
+      ])
+      const filtered = raw.filter((po: any) => allowed.has(String(po?.status || '').toLowerCase().trim()))
+      setShippingOrders(filtered)
     } catch (e: any) {
       console.error('Failed to load shipping orders:', e)
       setShippingOrders([])
@@ -328,6 +398,28 @@ const SupplyChainProcurement: React.FC = () => {
     // Intentionally no realtime subscription added here to avoid changing existing backend behavior.
   }, [roleLoading])
 
+  useEffect(() => {
+    try {
+      const sp = new URLSearchParams(String(location.search || ''))
+      const tab = sp.get('tab')
+      if (tab === 'shipping') setActiveTab('shipping')
+      if (tab === 'procurement') setActiveTab('procurement')
+    } catch {}
+  }, [location.search])
+
+  useEffect(() => {
+    if (isWarehouseRole) setActiveTab('shipping')
+  }, [isWarehouseRole])
+
+  useEffect(() => {
+    if (roleLoading) return
+    if (activeTab === 'shipping') {
+      loadShippingOrders()
+    } else {
+      load()
+    }
+  }, [activeTab, roleLoading])
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-neutral-light/30 to-neutral-soft/20">
       <div className="p-2 sm:p-4 lg:p-6">
@@ -341,7 +433,7 @@ const SupplyChainProcurement: React.FC = () => {
 
             <button
               type="button"
-              onClick={load}
+              onClick={() => { load(); loadShippingOrders(); }}
               disabled={loading || roleLoading}
               className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-4 py-2 rounded-xl border border-neutral-soft bg-white hover:bg-neutral-light/40 text-neutral-dark transition-all disabled:opacity-60"
             >
@@ -354,17 +446,19 @@ const SupplyChainProcurement: React.FC = () => {
         {/* Tab Navigation */}
         <div className="bg-white rounded-xl shadow-md border border-neutral-soft/20 mb-3 lg:mb-4 overflow-hidden">
           <div className="flex border-b border-neutral-soft/20">
-            <button
-              onClick={() => setActiveTab('procurement')}
-              className={`flex items-center gap-2 px-4 py-3 text-sm font-medium transition-colors ${
-                activeTab === 'procurement'
-                  ? 'bg-primary-light/10 text-primary-dark border-b-2 border-primary-medium'
-                  : 'text-neutral-medium hover:text-neutral-dark hover:bg-neutral-light/20'
-              }`}
-            >
-              <Calculator className="h-4 w-4" />
-              Procurement
-            </button>
+            {!isWarehouseRole && (
+              <button
+                onClick={() => setActiveTab('procurement')}
+                className={`flex items-center gap-2 px-4 py-3 text-sm font-medium transition-colors ${
+                  activeTab === 'procurement'
+                    ? 'bg-primary-light/10 text-primary-dark border-b-2 border-primary-medium'
+                    : 'text-neutral-medium hover:text-neutral-dark hover:bg-neutral-light/20'
+                }`}
+              >
+                <Calculator className="h-4 w-4" />
+                Procurement
+              </button>
+            )}
             <button
               onClick={() => setActiveTab('shipping')}
               className={`flex items-center gap-2 px-4 py-3 text-sm font-medium transition-colors ${
@@ -380,7 +474,7 @@ const SupplyChainProcurement: React.FC = () => {
         </div>
 
         {/* Tab Content */}
-        {activeTab === 'procurement' && (
+        {activeTab === 'procurement' && !isWarehouseRole && (
           <>
             {error && (
               <div className="bg-white rounded-xl shadow-md border border-red-200 p-3 sm:p-4 mb-3">
@@ -464,6 +558,7 @@ const SupplyChainProcurement: React.FC = () => {
                                 (() => {
                                   const st = String(po.status || '').toLowerCase()
                                   const alreadyApproved = st === 'ready_to_schedule' || st === 'ready to schedule'
+                                  const isProcurementStage = st === 'move_to_procurement' || st === 'move to procurement' || st === 'procurement'
                                   if (alreadyApproved) {
                                     return (
                                       <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-accent-success/10 text-accent-success border border-accent-success/30">
@@ -471,6 +566,7 @@ const SupplyChainProcurement: React.FC = () => {
                                       </span>
                                     )
                                   }
+                                  if (!isProcurementStage) return null
                                   return (
                                     <button
                                       type="button"
@@ -599,6 +695,10 @@ const SupplyChainProcurement: React.FC = () => {
             canViewProcurement={canViewProcurement}
             formatStatusLabel={formatStatusLabel}
             getStatusBadgeClass={getStatusBadgeClass}
+            canShipWarehouse={canShipWarehouse}
+            onReadyToShip={(poId: string) => handleShippingAction('ready_to_ship', poId)}
+            onPartialShip={(poId: string) => handleShippingAction('partial_ship', poId)}
+            onShipOrder={(poId: string) => handleShippingAction('ship', poId)}
           />
         )}
       </div>

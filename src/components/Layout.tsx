@@ -343,10 +343,10 @@ const Layout: React.FC = () => {
               } else if (role === 'warehouse') {
                 // Warehouse – Inventory, Production Schedule (view-only), Purchase Orders
                 const allowedPages = [
+                  'Supply Chain & Procurement',
                   'Inventory',
                   'Production Schedule',
                   'Purchase Orders',
-                  // Note: Shipping not in current navigationItems, would need to be added
                 ]
                 filteredItems = navigationItems.filter((item) => allowedPages.includes(item.name))
               } else if (role === 'production_manager') {
@@ -558,10 +558,10 @@ const Layout: React.FC = () => {
               } else if (role === 'warehouse') {
                 // Warehouse – Inventory, Production Schedule (view-only), Purchase Orders
                 const allowedPages = [
+                  'Supply Chain & Procurement',
                   'Inventory',
                   'Production Schedule',
                   'Purchase Orders',
-                  // Note: Shipping not in current navigationItems, would need to be added
                 ]
                 filteredItems = navigationItems.filter((item) => allowedPages.includes(item.name))
               } else if (role === 'production_manager') {

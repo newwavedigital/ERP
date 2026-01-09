@@ -1,246 +1,641 @@
 import React, { useEffect, useRef, useState, useMemo } from 'react'
-import { Plus, Search, Filter, Users, User, Mail, Phone, Globe, BadgeCheck, Eye, Edit, Trash2, Building2, MapPin, FileText, CheckCircle2, Package } from 'lucide-react'
+import { Plus, Search, Filter, Users, User, Mail, Phone, Globe, BadgeCheck, Eye, Edit, Trash2, Building2, MapPin, FileText, CheckCircle2, Package, Box, Leaf, AlertTriangle, FlaskConical, FileUp } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../contexts/AuthContext'
 
 // Tab Components
 const ProductsTab: React.FC<{ onboardingId: string | null }> = ({ onboardingId }) => {
   const [newProduct, setNewProduct] = useState({ product_name: '', formula_source: 'existing', specifications: '', trial_date: '' })
+  const [products, setProducts] = useState<
+    Array<{
+      id: string
+      pending: boolean
+      product_name: string
+      formula_source: string
+      specifications: string
+      trial_date: string
+    }>
+  >([])
+  const syncingProductIdsRef = useRef<Set<string>>(new Set())
+
+  useEffect(() => {
+    if (!onboardingId) return
+    ;(async () => {
+      try {
+        const { data, error } = await supabase
+          .from('onboarding_products')
+          .select('id, product_name, formula_source, specifications, trial_date')
+          .eq('onboarding_id', onboardingId)
+          .order('id', { ascending: true })
+        if (error) throw error
+        setProducts((prev) => {
+          const pending = prev.filter((p) => p.pending)
+          const fetched = (data ?? []).map((r: any) => ({
+            id: String(r.id),
+            pending: false,
+            product_name: String(r.product_name || ''),
+            formula_source: String(r.formula_source || 'existing'),
+            specifications: String(r.specifications || ''),
+            trial_date: String(r.trial_date || ''),
+          }))
+          const byId = new Map<string, (typeof fetched)[number]>()
+          for (const p of pending) byId.set(p.id, p)
+          for (const p of fetched) byId.set(p.id, p)
+          return Array.from(byId.values())
+        })
+      } catch (e) {
+        // ignore; allow local-only usage
+      }
+    })()
+  }, [onboardingId])
+
+  useEffect(() => {
+    if (!onboardingId) return
+    const pending = products.filter((p) => p.pending && !syncingProductIdsRef.current.has(p.id))
+    if (pending.length === 0) return
+    ;(async () => {
+      for (const p of pending) {
+        syncingProductIdsRef.current.add(p.id)
+        try {
+          const { data, error } = await supabase
+            .from('onboarding_products')
+            .insert({
+              onboarding_id: onboardingId,
+              product_name: p.product_name,
+              formula_source: p.formula_source,
+              specifications: p.specifications,
+              trial_date: p.trial_date,
+            })
+            .select('id, product_name, formula_source, specifications, trial_date')
+            .single()
+          if (error) throw error
+          if (data?.id) {
+            setProducts((prev) => {
+              const realId = String(data.id)
+              const withoutExistingReal = prev.filter((x) => x.id !== realId || x.id === p.id)
+              return withoutExistingReal.map((x) =>
+                x.id === p.id
+                  ? {
+                      id: realId,
+                      pending: false,
+                      product_name: String(data.product_name || ''),
+                      formula_source: String(data.formula_source || 'existing'),
+                      specifications: String(data.specifications || ''),
+                      trial_date: String(data.trial_date || ''),
+                    }
+                  : x
+              )
+            })
+          }
+        } catch (e) {
+          // keep pending; user can still submit later
+          syncingProductIdsRef.current.delete(p.id)
+        }
+      }
+    })()
+  }, [onboardingId, products])
 
   return (
-    <div className="space-y-6">
-      <div className="bg-white rounded-xl p-6 border border-neutral-soft/20">
-        <h3 className="text-lg font-semibold text-neutral-dark mb-4">Products & Specifications</h3>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-          <div>
-            <label className="block text-sm font-medium text-neutral-dark mb-2">Product Name</label>
-            <input
-              type="text"
-              value={newProduct.product_name}
-              onChange={(e) => setNewProduct({ ...newProduct, product_name: e.target.value })}
-              className="w-full px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light"
-              placeholder="Enter product name"
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-neutral-dark mb-2">Formula Source</label>
-            <select
-              value={newProduct.formula_source}
-              onChange={(e) => setNewProduct({ ...newProduct, formula_source: e.target.value })}
-              className="w-full px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light"
-            >
-              <option value="existing">Existing Formula</option>
-              <option value="customer">Customer Formula</option>
-            </select>
-          </div>
-        </div>
-        <div className="mb-4">
-          <label className="block text-sm font-medium text-neutral-dark mb-2">Specifications</label>
-          <textarea
-            value={newProduct.specifications}
-            onChange={(e) => setNewProduct({ ...newProduct, specifications: e.target.value })}
-            className="w-full px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light"
-            rows={3}
-            placeholder="Product specifications"
-          />
-        </div>
-        <div className="mb-4">
-          <label className="block text-sm font-medium text-neutral-dark mb-2">Trial Date</label>
-          <input
-            type="date"
-            value={newProduct.trial_date}
-            onChange={(e) => setNewProduct({ ...newProduct, trial_date: e.target.value })}
-            className="w-full px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light"
-          />
-        </div>
-        <button
-          onClick={async () => {
-            if (!onboardingId || !newProduct.product_name) return
-            try {
-              await supabase.from('onboarding_products').insert({
-                onboarding_id: onboardingId,
-                ...newProduct
-              })
-              setNewProduct({ product_name: '', formula_source: 'existing', specifications: '', trial_date: '' })
-            } catch (e) {
-              console.error('Failed to add product:', e)
-            }
-          }}
-          className="px-4 py-2 bg-primary-medium text-white rounded-lg hover:bg-primary-dark transition-all"
+    <div className="space-y-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <input
+          type="text"
+          value={newProduct.product_name}
+          onChange={(e) => setNewProduct({ ...newProduct, product_name: e.target.value })}
+          placeholder="Product Name"
+          className="px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light"
+        />
+        <select
+          value={newProduct.formula_source}
+          onChange={(e) => setNewProduct({ ...newProduct, formula_source: e.target.value })}
+          className="px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light"
         >
-          Add Product
-        </button>
+          <option value="existing">Existing Formula</option>
+          <option value="customer">Customer Formula</option>
+        </select>
       </div>
+      <textarea
+        value={newProduct.specifications}
+        onChange={(e) => setNewProduct({ ...newProduct, specifications: e.target.value })}
+        placeholder="Product specifications"
+        rows={2}
+        className="w-full px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light"
+      />
+      <input
+        type="date"
+        value={newProduct.trial_date}
+        onChange={(e) => setNewProduct({ ...newProduct, trial_date: e.target.value })}
+        className="px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light"
+      />
+      <button
+        type="button"
+        onClick={async () => {
+          if (!newProduct.product_name) return
+          try {
+            if (!onboardingId) {
+              const tempId = `temp_${Date.now()}_${Math.random().toString(16).slice(2)}`
+              setProducts((prev) => [
+                ...prev,
+                {
+                  id: tempId,
+                  pending: true,
+                  product_name: newProduct.product_name,
+                  formula_source: newProduct.formula_source,
+                  specifications: newProduct.specifications,
+                  trial_date: newProduct.trial_date,
+                },
+              ])
+            } else {
+              const { data, error } = await supabase
+                .from('onboarding_products')
+                .insert({
+                  onboarding_id: onboardingId,
+                  ...newProduct,
+                })
+                .select('id, product_name, formula_source, specifications, trial_date')
+                .single()
+              if (error) throw error
+              if (data?.id) {
+                setProducts((prev) => [
+                  ...prev,
+                  {
+                    id: String(data.id),
+                    pending: false,
+                    product_name: String(data.product_name || ''),
+                    formula_source: String(data.formula_source || 'existing'),
+                    specifications: String(data.specifications || ''),
+                    trial_date: String(data.trial_date || ''),
+                  },
+                ])
+              }
+            }
+            setNewProduct({ product_name: '', formula_source: 'existing', specifications: '', trial_date: '' })
+          } catch (e) {
+            console.error('Failed to add product:', e)
+          }
+        }}
+        className="px-4 py-2 bg-primary-medium text-white rounded-lg hover:bg-primary-dark transition-all"
+      >
+        Add Product
+      </button>
+
+      {products.length > 0 && (
+        <div className="mt-4 space-y-2">
+          {products.map((p) => (
+            <div key={p.id} className="p-3 bg-neutral-light/30 rounded-lg flex justify-between items-center">
+              <span className="font-medium">{p.product_name}</span>
+              <button
+                type="button"
+                onClick={async () => {
+                  try {
+                    if (p.pending) {
+                      setProducts((prev) => prev.filter((x) => x.id !== p.id))
+                      return
+                    }
+                    await supabase.from('onboarding_products').delete().eq('id', p.id)
+                    setProducts((prev) => prev.filter((x) => x.id !== p.id))
+                  } catch (e) {
+                    console.error('Failed to remove product:', e)
+                  }
+                }}
+                className="text-accent-danger hover:underline text-sm"
+              >
+                Remove
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
 
 const PackagingTab: React.FC<{ onboardingId: string | null }> = ({ onboardingId }) => {
   const [newPackaging, setNewPackaging] = useState({ packaging_type: '', size: '', case_pack_qty: '', label_orientation: '', artwork_required: false, provided_by_customer: false, notes: '' })
+  const [packaging, setPackaging] = useState<
+    Array<{
+      id: string
+      pending: boolean
+      packaging_type: string
+      size: string
+      case_pack_qty: string
+      label_orientation: string
+      artwork_required: boolean
+      provided_by_customer: boolean
+      notes: string
+    }>
+  >([])
+  const syncingPackagingIdsRef = useRef<Set<string>>(new Set())
+
+  useEffect(() => {
+    if (!onboardingId) return
+    ;(async () => {
+      try {
+        const { data, error } = await supabase
+          .from('onboarding_packaging')
+          .select('id, packaging_type, size, case_pack_qty, label_orientation, artwork_required, provided_by_customer, notes')
+          .eq('onboarding_id', onboardingId)
+          .order('id', { ascending: true })
+        if (error) throw error
+        setPackaging((prev) => {
+          const pending = prev.filter((p) => p.pending)
+          const fetched = (data ?? []).map((r: any) => ({
+            id: String(r.id),
+            pending: false,
+            packaging_type: String(r.packaging_type || ''),
+            size: String(r.size || ''),
+            case_pack_qty: r.case_pack_qty == null ? '' : String(r.case_pack_qty),
+            label_orientation: String(r.label_orientation || ''),
+            artwork_required: Boolean(r.artwork_required),
+            provided_by_customer: Boolean(r.provided_by_customer),
+            notes: String(r.notes || ''),
+          }))
+          return [...pending, ...fetched]
+        })
+      } catch (e) {
+        // ignore; allow local-only usage
+      }
+    })()
+  }, [onboardingId])
+
+  useEffect(() => {
+    if (!onboardingId) return
+    const pending = packaging.filter((p) => p.pending && !syncingPackagingIdsRef.current.has(p.id))
+    if (pending.length === 0) return
+    ;(async () => {
+      for (const p of pending) {
+        syncingPackagingIdsRef.current.add(p.id)
+        try {
+          const { data, error } = await supabase
+            .from('onboarding_packaging')
+            .insert({
+              onboarding_id: onboardingId,
+              packaging_type: p.packaging_type,
+              size: p.size,
+              case_pack_qty: parseInt(p.case_pack_qty) || null,
+              label_orientation: p.label_orientation,
+              artwork_required: p.artwork_required,
+              provided_by_customer: p.provided_by_customer,
+              notes: p.notes,
+            })
+            .select('id, packaging_type, size, case_pack_qty, label_orientation, artwork_required, provided_by_customer, notes')
+            .single()
+          if (error) throw error
+          if (data?.id) {
+            setPackaging((prev) =>
+              prev.map((x) =>
+                x.id === p.id
+                  ? {
+                      id: String(data.id),
+                      pending: false,
+                      packaging_type: String(data.packaging_type || ''),
+                      size: String(data.size || ''),
+                      case_pack_qty: data.case_pack_qty == null ? '' : String(data.case_pack_qty),
+                      label_orientation: String(data.label_orientation || ''),
+                      artwork_required: Boolean(data.artwork_required),
+                      provided_by_customer: Boolean(data.provided_by_customer),
+                      notes: String(data.notes || ''),
+                    }
+                  : x
+              )
+            )
+          }
+        } catch (e) {
+          // keep pending
+          syncingPackagingIdsRef.current.delete(p.id)
+        }
+      }
+    })()
+  }, [onboardingId, packaging])
 
   return (
-    <div className="space-y-6">
-      <div className="bg-white rounded-xl p-6 border border-neutral-soft/20">
-        <h3 className="text-lg font-semibold text-neutral-dark mb-4">Packaging Configuration</h3>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
-          <div>
-            <label className="block text-sm font-medium text-neutral-dark mb-2">Packaging Type</label>
-            <input
-              type="text"
-              value={newPackaging.packaging_type}
-              onChange={(e) => setNewPackaging({ ...newPackaging, packaging_type: e.target.value })}
-              className="w-full px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light"
-              placeholder="Treat Bag, Jar, Box, etc."
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-neutral-dark mb-2">Size</label>
-            <input
-              type="text"
-              value={newPackaging.size}
-              onChange={(e) => setNewPackaging({ ...newPackaging, size: e.target.value })}
-              className="w-full px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light"
-              placeholder="1oz, 2oz, etc."
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-neutral-dark mb-2">Case Pack Qty</label>
-            <input
-              type="number"
-              value={newPackaging.case_pack_qty}
-              onChange={(e) => setNewPackaging({ ...newPackaging, case_pack_qty: e.target.value })}
-              className="w-full px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light"
-              placeholder="24"
-            />
-          </div>
-        </div>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-          <div>
-            <label className="block text-sm font-medium text-neutral-dark mb-2">Label Orientation</label>
-            <select
-              value={newPackaging.label_orientation}
-              onChange={(e) => setNewPackaging({ ...newPackaging, label_orientation: e.target.value })}
-              className="w-full px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light"
-            >
-              <option value="">Select orientation</option>
-              <option value="Right side up">Right side up</option>
-              <option value="Upside down">Upside down</option>
-            </select>
-          </div>
-          <div className="flex items-end">
-            <label className="flex items-center gap-2">
-              <input
-                type="checkbox"
-                checked={newPackaging.provided_by_customer}
-                onChange={(e) => setNewPackaging({ ...newPackaging, provided_by_customer: e.target.checked })}
-                className="h-4 w-4 text-primary-dark focus:ring-primary-light border-neutral-soft rounded"
-              />
-              <span className="text-sm font-medium text-neutral-dark">Packaging/Labels provided by customer</span>
-            </label>
-          </div>
-        </div>
-        <div className="flex items-center gap-4 mb-4">
-          <label className="flex items-center gap-2">
-            <input
-              type="checkbox"
-              checked={newPackaging.artwork_required}
-              onChange={(e) => setNewPackaging({ ...newPackaging, artwork_required: e.target.checked })}
-              className="h-4 w-4 text-primary-dark focus:ring-primary-light border-neutral-soft rounded"
-            />
-            <span className="text-sm font-medium text-neutral-dark">Artwork Required</span>
-          </label>
-        </div>
-        <div className="mb-4">
-          <label className="block text-sm font-medium text-neutral-dark mb-2">Notes</label>
-          <textarea
-            value={newPackaging.notes}
-            onChange={(e) => setNewPackaging({ ...newPackaging, notes: e.target.value })}
-            className="w-full px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light"
-            rows={3}
-            placeholder="Other special packaging instructions"
-          />
-        </div>
-        <button
-          onClick={async () => {
-            if (!onboardingId || !newPackaging.packaging_type) return
-            try {
-              await supabase.from('onboarding_packaging').insert({
-                onboarding_id: onboardingId,
-                ...newPackaging,
-                case_pack_qty: parseInt(newPackaging.case_pack_qty) || null
-              })
-              setNewPackaging({ packaging_type: '', size: '', case_pack_qty: '', label_orientation: '', artwork_required: false, provided_by_customer: false, notes: '' })
-            } catch (e) {
-              console.error('Failed to add packaging:', e)
-            }
-          }}
-          className="px-4 py-2 bg-primary-medium text-white rounded-lg hover:bg-primary-dark transition-all"
-        >
-          Add Packaging
-        </button>
+    <div className="space-y-4">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <input 
+          type="text" 
+          value={newPackaging.packaging_type} 
+          onChange={(e) => setNewPackaging({ ...newPackaging, packaging_type: e.target.value })} 
+          placeholder="Packaging Type" 
+          className="px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light" 
+        />
+        <input 
+          type="text" 
+          value={newPackaging.size} 
+          onChange={(e) => setNewPackaging({ ...newPackaging, size: e.target.value })} 
+          placeholder="Size" 
+          className="px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light" 
+        />
+        <input 
+          type="number" 
+          value={newPackaging.case_pack_qty} 
+          onChange={(e) => setNewPackaging({ ...newPackaging, case_pack_qty: e.target.value })} 
+          placeholder="Case Pack Qty" 
+          className="px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light" 
+        />
       </div>
+      <select 
+        value={newPackaging.label_orientation} 
+        onChange={(e) => setNewPackaging({ ...newPackaging, label_orientation: e.target.value })} 
+        className="w-full px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light"
+      >
+        <option value="">Select label orientation</option>
+        <option value="Right side up">Right side up</option>
+        <option value="Upside down">Upside down</option>
+      </select>
+      <div className="flex gap-4">
+        <label className="flex items-center gap-2">
+          <input 
+            type="checkbox" 
+            checked={newPackaging.artwork_required} 
+            onChange={(e) => setNewPackaging({ ...newPackaging, artwork_required: e.target.checked })} 
+            className="h-4 w-4" 
+          />
+          <span className="text-sm">Artwork Required</span>
+        </label>
+        <label className="flex items-center gap-2">
+          <input 
+            type="checkbox" 
+            checked={newPackaging.provided_by_customer} 
+            onChange={(e) => setNewPackaging({ ...newPackaging, provided_by_customer: e.target.checked })} 
+            className="h-4 w-4" 
+          />
+          <span className="text-sm">Provided by Customer</span>
+        </label>
+      </div>
+      <textarea 
+        value={newPackaging.notes} 
+        onChange={(e) => setNewPackaging({ ...newPackaging, notes: e.target.value })} 
+        placeholder="Notes" 
+        rows={2} 
+        className="w-full px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light" 
+      />
+      <button 
+        type="button"
+        onClick={async () => {
+          if (!newPackaging.packaging_type) return
+          try {
+            if (!onboardingId) {
+              const tempId = `temp_${Date.now()}_${Math.random().toString(16).slice(2)}`
+              setPackaging((prev) => [
+                ...prev,
+                {
+                  id: tempId,
+                  pending: true,
+                  ...newPackaging,
+                },
+              ])
+            } else {
+              const { data, error } = await supabase
+                .from('onboarding_packaging')
+                .insert({
+                  onboarding_id: onboardingId,
+                  ...newPackaging,
+                  case_pack_qty: parseInt(newPackaging.case_pack_qty) || null,
+                })
+                .select('id, packaging_type, size, case_pack_qty, label_orientation, artwork_required, provided_by_customer, notes')
+                .single()
+              if (error) throw error
+              if (data?.id) {
+                setPackaging((prev) => [
+                  ...prev,
+                  {
+                    id: String(data.id),
+                    pending: false,
+                    packaging_type: String(data.packaging_type || ''),
+                    size: String(data.size || ''),
+                    case_pack_qty: data.case_pack_qty == null ? '' : String(data.case_pack_qty),
+                    label_orientation: String(data.label_orientation || ''),
+                    artwork_required: Boolean(data.artwork_required),
+                    provided_by_customer: Boolean(data.provided_by_customer),
+                    notes: String(data.notes || ''),
+                  },
+                ])
+              }
+            }
+            setNewPackaging({ packaging_type: '', size: '', case_pack_qty: '', label_orientation: '', artwork_required: false, provided_by_customer: false, notes: '' })
+          } catch (e) {
+            console.error('Failed to add packaging:', e)
+          }
+        }}
+        className="px-4 py-2 bg-primary-medium text-white rounded-lg hover:bg-primary-dark transition-all"
+      >
+        Add Packaging
+      </button>
+
+      {packaging.length > 0 && (
+        <div className="mt-4 space-y-2">
+          {packaging.map((p) => (
+            <div key={p.id} className="p-3 bg-neutral-light/30 rounded-lg flex justify-between items-center">
+              <span className="font-medium">
+                {p.packaging_type}
+                {p.size ? ` - ${p.size}` : ''}
+              </span>
+              <button
+                type="button"
+                onClick={async () => {
+                  try {
+                    if (p.pending) {
+                      setPackaging((prev) => prev.filter((x) => x.id !== p.id))
+                      return
+                    }
+                    await supabase.from('onboarding_packaging').delete().eq('id', p.id)
+                    setPackaging((prev) => prev.filter((x) => x.id !== p.id))
+                  } catch (e) {
+                    console.error('Failed to remove packaging:', e)
+                  }
+                }}
+                className="text-accent-danger hover:underline text-sm"
+              >
+                Remove
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
 
 const IngredientsTab: React.FC<{ onboardingId: string | null }> = ({ onboardingId }) => {
   const [newIngredient, setNewIngredient] = useState({ ingredient_name: '', vendor_name: '', provided_by_customer: false })
+  const [ingredients, setIngredients] = useState<
+    Array<{ id: string; pending: boolean; ingredient_name: string; vendor_name: string; provided_by_customer: boolean }>
+  >([])
+  const syncingIngredientIdsRef = useRef<Set<string>>(new Set())
+
+  useEffect(() => {
+    if (!onboardingId) return
+    ;(async () => {
+      try {
+        const { data, error } = await supabase
+          .from('onboarding_ingredients')
+          .select('id, ingredient_name, vendor_name, provided_by_customer')
+          .eq('onboarding_id', onboardingId)
+          .order('id', { ascending: true })
+        if (error) throw error
+        setIngredients((prev) => {
+          const pending = prev.filter((p) => p.pending)
+          const fetched = (data ?? []).map((r: any) => ({
+            id: String(r.id),
+            pending: false,
+            ingredient_name: String(r.ingredient_name || ''),
+            vendor_name: String(r.vendor_name || ''),
+            provided_by_customer: Boolean(r.provided_by_customer),
+          }))
+          return [...pending, ...fetched]
+        })
+      } catch (e) {
+        // ignore; allow local-only usage
+      }
+    })()
+  }, [onboardingId])
+
+  useEffect(() => {
+    if (!onboardingId) return
+    const pending = ingredients.filter((p) => p.pending && !syncingIngredientIdsRef.current.has(p.id))
+    if (pending.length === 0) return
+    ;(async () => {
+      for (const ing of pending) {
+        syncingIngredientIdsRef.current.add(ing.id)
+        try {
+          const { data, error } = await supabase
+            .from('onboarding_ingredients')
+            .insert({
+              onboarding_id: onboardingId,
+              ingredient_name: ing.ingredient_name,
+              vendor_name: ing.vendor_name,
+              provided_by_customer: ing.provided_by_customer,
+            })
+            .select('id, ingredient_name, vendor_name, provided_by_customer')
+            .single()
+          if (error) throw error
+          if (data?.id) {
+            setIngredients((prev) =>
+              prev.map((x) =>
+                x.id === ing.id
+                  ? {
+                      id: String(data.id),
+                      pending: false,
+                      ingredient_name: String(data.ingredient_name || ''),
+                      vendor_name: String(data.vendor_name || ''),
+                      provided_by_customer: Boolean(data.provided_by_customer),
+                    }
+                  : x
+              )
+            )
+          }
+        } catch (e) {
+          // keep pending
+          syncingIngredientIdsRef.current.delete(ing.id)
+        }
+      }
+    })()
+  }, [onboardingId, ingredients])
 
   return (
-    <div className="space-y-6">
-      <div className="bg-white rounded-xl p-6 border border-neutral-soft/20">
-        <h3 className="text-lg font-semibold text-neutral-dark mb-4">Ingredients & Vendors</h3>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-          <div>
-            <label className="block text-sm font-medium text-neutral-dark mb-2">Ingredient Name</label>
-            <input
-              type="text"
-              value={newIngredient.ingredient_name}
-              onChange={(e) => setNewIngredient({ ...newIngredient, ingredient_name: e.target.value })}
-              className="w-full px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light"
-              placeholder="Peanut Butter, Sugar, etc."
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-neutral-dark mb-2">Vendor Name</label>
-            <input
-              type="text"
-              value={newIngredient.vendor_name}
-              onChange={(e) => setNewIngredient({ ...newIngredient, vendor_name: e.target.value })}
-              className="w-full px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light"
-              placeholder="Vendor company name"
-            />
-          </div>
-        </div>
-        <div className="flex items-center gap-4 mb-4">
-          <label className="flex items-center gap-2">
-            <input
-              type="checkbox"
-              checked={newIngredient.provided_by_customer}
-              onChange={(e) => setNewIngredient({ ...newIngredient, provided_by_customer: e.target.checked })}
-              className="h-4 w-4 text-primary-dark focus:ring-primary-light border-neutral-soft rounded"
-            />
-            <span className="text-sm font-medium text-neutral-dark">Provided by Customer</span>
-          </label>
-        </div>
-        <button
-          onClick={async () => {
-            if (!onboardingId || !newIngredient.ingredient_name) return
-            try {
-              await supabase.from('onboarding_ingredients').insert({
-                onboarding_id: onboardingId,
-                ...newIngredient
-              })
-              setNewIngredient({ ingredient_name: '', vendor_name: '', provided_by_customer: false })
-            } catch (e) {
-              console.error('Failed to add ingredient:', e)
-            }
-          }}
-          className="px-4 py-2 bg-primary-medium text-white rounded-lg hover:bg-primary-dark transition-all"
-        >
-          Add Ingredient
-        </button>
+    <div className="space-y-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <input 
+          type="text" 
+          value={newIngredient.ingredient_name} 
+          onChange={(e) => setNewIngredient({ ...newIngredient, ingredient_name: e.target.value })} 
+          placeholder="Ingredient Name" 
+          className="px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light" 
+        />
+        <input 
+          type="text" 
+          value={newIngredient.vendor_name} 
+          onChange={(e) => setNewIngredient({ ...newIngredient, vendor_name: e.target.value })} 
+          placeholder="Vendor Name" 
+          className="px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light" 
+        />
       </div>
+      <label className="flex items-center gap-2">
+        <input 
+          type="checkbox" 
+          checked={newIngredient.provided_by_customer} 
+          onChange={(e) => setNewIngredient({ ...newIngredient, provided_by_customer: e.target.checked })} 
+          className="h-4 w-4" 
+        />
+        <span className="text-sm">Provided by Customer</span>
+      </label>
+      <button 
+        type="button"
+        onClick={async () => {
+          if (!newIngredient.ingredient_name) return
+          try {
+            if (!onboardingId) {
+              const tempId = `temp_${Date.now()}_${Math.random().toString(16).slice(2)}`
+              setIngredients((prev) => [
+                ...prev,
+                {
+                  id: tempId,
+                  pending: true,
+                  ingredient_name: newIngredient.ingredient_name,
+                  vendor_name: newIngredient.vendor_name,
+                  provided_by_customer: newIngredient.provided_by_customer,
+                },
+              ])
+            } else {
+              const { data, error } = await supabase
+                .from('onboarding_ingredients')
+                .insert({
+                  onboarding_id: onboardingId,
+                  ...newIngredient,
+                })
+                .select('id, ingredient_name, vendor_name, provided_by_customer')
+                .single()
+              if (error) throw error
+              if (data?.id) {
+                setIngredients((prev) => [
+                  ...prev,
+                  {
+                    id: String(data.id),
+                    pending: false,
+                    ingredient_name: String(data.ingredient_name || ''),
+                    vendor_name: String(data.vendor_name || ''),
+                    provided_by_customer: Boolean(data.provided_by_customer),
+                  },
+                ])
+              }
+            }
+            setNewIngredient({ ingredient_name: '', vendor_name: '', provided_by_customer: false })
+          } catch (e) {
+            console.error('Failed to add ingredient:', e)
+          }
+        }}
+        className="px-4 py-2 bg-primary-medium text-white rounded-lg hover:bg-primary-dark transition-all"
+      >
+        Add Ingredient
+      </button>
+
+      {ingredients.length > 0 && (
+        <div className="mt-4 space-y-2">
+          {ingredients.map((ing) => (
+            <div key={ing.id} className="p-3 bg-neutral-light/30 rounded-lg flex justify-between items-center">
+              <span className="font-medium">{ing.ingredient_name}</span>
+              <button
+                type="button"
+                onClick={async () => {
+                  try {
+                    if (ing.pending) {
+                      setIngredients((prev) => prev.filter((x) => x.id !== ing.id))
+                      return
+                    }
+                    await supabase.from('onboarding_ingredients').delete().eq('id', ing.id)
+                    setIngredients((prev) => prev.filter((x) => x.id !== ing.id))
+                  } catch (e) {
+                    console.error('Failed to remove ingredient:', e)
+                  }
+                }}
+                className="text-accent-danger hover:underline text-sm"
+              >
+                Remove
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
@@ -250,98 +645,73 @@ const AllergensTab: React.FC<{ onboardingId: string | null }> = ({ onboardingId 
   const [selectedAllergens, setSelectedAllergens] = useState<string[]>([])
 
   return (
-    <div className="space-y-6">
-      <div className="bg-white rounded-xl p-6 border border-neutral-soft/20">
-        <h3 className="text-lg font-semibold text-neutral-dark mb-4">Allergens Matrix</h3>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          {allergens.map((allergen) => (
-            <label key={allergen} className="flex items-center gap-2">
-              <input
-                type="checkbox"
-                checked={selectedAllergens.includes(allergen)}
-                onChange={(e) => {
-                  if (e.target.checked) {
-                    setSelectedAllergens([...selectedAllergens, allergen])
-                  } else {
-                    setSelectedAllergens(selectedAllergens.filter(a => a !== allergen))
-                  }
-                }}
-                className="h-4 w-4 text-primary-dark focus:ring-primary-light border-neutral-soft rounded"
-              />
-              <span className="text-sm font-medium text-neutral-dark">{allergen}</span>
-            </label>
-          ))}
-        </div>
-        <button
-          onClick={async () => {
-            if (!onboardingId) return
-            try {
-              const allergenRecords = selectedAllergens.map(allergen => ({
-                onboarding_id: onboardingId,
-                allergen,
-                is_present: true
-              }))
-              await supabase.from('onboarding_allergens').insert(allergenRecords)
-              setSelectedAllergens([])
-            } catch (e) {
-              console.error('Failed to save allergens:', e)
-            }
-          }}
-          className="px-4 py-2 bg-primary-medium text-white rounded-lg hover:bg-primary-dark transition-all mt-4"
-        >
-          Save Allergens
-        </button>
+    <div className="space-y-4">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        {allergens.map((allergen) => (
+          <label key={allergen} className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              checked={selectedAllergens.includes(allergen)}
+              onChange={(e) => {
+                if (e.target.checked) {
+                  setSelectedAllergens([...selectedAllergens, allergen])
+                } else {
+                  setSelectedAllergens(selectedAllergens.filter(a => a !== allergen))
+                }
+              }}
+              className="h-4 w-4 text-primary-dark focus:ring-primary-light border-neutral-soft rounded"
+            />
+            <span className="text-sm font-medium text-neutral-dark">{allergen}</span>
+          </label>
+        ))}
       </div>
+      <button
+        type="button"
+        onClick={async () => {
+          if (!onboardingId) return
+          try {
+            const allergenRecords = selectedAllergens.map(allergen => ({
+              onboarding_id: onboardingId,
+              allergen,
+              is_present: true
+            }))
+            await supabase.from('onboarding_allergens').insert(allergenRecords)
+            setSelectedAllergens([])
+          } catch (e) {
+            console.error('Failed to save allergens:', e)
+          }
+        }}
+        className="px-4 py-2 bg-primary-medium text-white rounded-lg hover:bg-primary-dark transition-all"
+      >
+        Save Allergens
+      </button>
     </div>
   )
 }
 
-const LabQATab: React.FC<{ onboardingId: string | null }> = ({ onboardingId }) => {
+const LabQATab: React.FC<{ selectedTests: string[]; setSelectedTests: React.Dispatch<React.SetStateAction<string[]>> }> = ({ selectedTests, setSelectedTests }) => {
   const tests = ['Crude Analysis', 'Salmonella', 'Mold', 'Free Fatty Acids', 'PH', 'Coliform', 'Peroxide Value', 'Yeast']
-  const [selectedTests, setSelectedTests] = useState<string[]>([])
 
   return (
-    <div className="space-y-6">
-      <div className="bg-white rounded-xl p-6 border border-neutral-soft/20">
-        <h3 className="text-lg font-semibold text-neutral-dark mb-4">Lab / QA Requirements</h3>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          {tests.map((test) => (
-            <label key={test} className="flex items-center gap-2">
-              <input
-                type="checkbox"
-                checked={selectedTests.includes(test)}
-                onChange={(e) => {
-                  if (e.target.checked) {
-                    setSelectedTests([...selectedTests, test])
-                  } else {
-                    setSelectedTests(selectedTests.filter(t => t !== test))
-                  }
-                }}
-                className="h-4 w-4 text-primary-dark focus:ring-primary-light border-neutral-soft rounded"
-              />
-              <span className="text-sm font-medium text-neutral-dark">{test}</span>
-            </label>
-          ))}
-        </div>
-        <button
-          onClick={async () => {
-            if (!onboardingId) return
-            try {
-              const testRecords = selectedTests.map(test => ({
-                onboarding_id: onboardingId,
-                test_name: test,
-                required: true
-              }))
-              await supabase.from('onboarding_lab_requirements').insert(testRecords)
-              setSelectedTests([])
-            } catch (e) {
-              console.error('Failed to save lab requirements:', e)
-            }
-          }}
-          className="px-4 py-2 bg-primary-medium text-white rounded-lg hover:bg-primary-dark transition-all mt-4"
-        >
-          Save Requirements
-        </button>
+    <div className="space-y-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        {tests.map((test) => (
+          <label key={test} className="flex items-center gap-2">
+            <input 
+              type="checkbox" 
+              checked={selectedTests.includes(test)} 
+              onChange={(e) => { 
+                if (e.target.checked) { 
+                  setSelectedTests([...selectedTests, test]) 
+                } else { 
+                  setSelectedTests(selectedTests.filter(t => t !== test)) 
+                } 
+              }} 
+              className="h-4 w-4" 
+            />
+            <span className="text-sm">{test}</span>
+          </label>
+        ))}
       </div>
     </div>
   )
@@ -350,57 +720,167 @@ const LabQATab: React.FC<{ onboardingId: string | null }> = ({ onboardingId }) =
 const DocumentsTab: React.FC<{ onboardingId: string | null }> = ({ onboardingId }) => {
   const [docType, setDocType] = useState<'specs' | 'artwork' | 'label' | 'tds'>('specs')
   const [fileUrl, setFileUrl] = useState('')
+  const [documents, setDocuments] = useState<Array<{ id: string; pending: boolean; document_type: string; file_url: string }>>([])
+  const syncingDocumentIdsRef = useRef<Set<string>>(new Set())
+
+  useEffect(() => {
+    if (!onboardingId) return
+    ;(async () => {
+      try {
+        const { data, error } = await supabase
+          .from('onboarding_documents')
+          .select('id, document_type, file_url')
+          .eq('onboarding_id', onboardingId)
+          .order('id', { ascending: true })
+        if (error) throw error
+        setDocuments((prev) => {
+          const pending = prev.filter((p) => p.pending)
+          const fetched = (data ?? []).map((r: any) => ({
+            id: String(r.id),
+            pending: false,
+            document_type: String(r.document_type || ''),
+            file_url: String(r.file_url || ''),
+          }))
+          return [...pending, ...fetched]
+        })
+      } catch (e) {
+        // ignore; allow local-only usage
+      }
+    })()
+  }, [onboardingId])
+
+  useEffect(() => {
+    if (!onboardingId) return
+    const pending = documents.filter((p) => p.pending && !syncingDocumentIdsRef.current.has(p.id))
+    if (pending.length === 0) return
+    ;(async () => {
+      for (const doc of pending) {
+        syncingDocumentIdsRef.current.add(doc.id)
+        try {
+          const { data, error } = await supabase
+            .from('onboarding_documents')
+            .insert({
+              onboarding_id: onboardingId,
+              document_type: doc.document_type,
+              file_url: doc.file_url,
+            })
+            .select('id, document_type, file_url')
+            .single()
+          if (error) throw error
+          if (data?.id) {
+            setDocuments((prev) =>
+              prev.map((x) =>
+                x.id === doc.id
+                  ? {
+                      id: String(data.id),
+                      pending: false,
+                      document_type: String(data.document_type || ''),
+                      file_url: String(data.file_url || ''),
+                    }
+                  : x
+              )
+            )
+          }
+        } catch (e) {
+          // keep pending
+          syncingDocumentIdsRef.current.delete(doc.id)
+        }
+      }
+    })()
+  }, [onboardingId, documents])
 
   return (
-    <div className="space-y-6">
-      <div className="bg-white rounded-xl p-6 border border-neutral-soft/20">
-        <h3 className="text-lg font-semibold text-neutral-dark mb-4">Documents</h3>
-        <div className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-neutral-dark mb-2">Document Type</label>
-            <select
-              value={docType}
-              onChange={(e) => setDocType(e.target.value as any)}
-              className="w-full px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light"
-            >
-              <option value="specs">Specs</option>
-              <option value="artwork">Artwork</option>
-              <option value="label">Label</option>
-              <option value="tds">TDS</option>
-            </select>
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-neutral-dark mb-2">File URL</label>
-            <input
-              type="url"
-              value={fileUrl}
-              onChange={(e) => setFileUrl(e.target.value)}
-              className="w-full px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light"
-              placeholder="https://..."
-            />
-            <p className="text-xs text-neutral-medium mt-2">(For now: paste the Supabase Storage public URL or any hosted file URL.)</p>
-          </div>
-          <button
-            disabled={!onboardingId || !fileUrl.trim()}
-            onClick={async () => {
-              if (!onboardingId || !fileUrl.trim()) return
-              try {
-                await supabase.from('onboarding_documents').insert({
+    <div className="space-y-4">
+      <select 
+        value={docType} 
+        onChange={(e) => setDocType(e.target.value as any)} 
+        className="w-full px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light"
+      >
+        <option value="specs">Specs</option>
+        <option value="artwork">Artwork</option>
+        <option value="label">Label</option>
+        <option value="tds">TDS</option>
+      </select>
+      <input 
+        type="url" 
+        value={fileUrl} 
+        onChange={(e) => setFileUrl(e.target.value)} 
+        placeholder="File URL (https://...)" 
+        className="w-full px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light" 
+      />
+      <p className="text-xs text-neutral-medium">Paste the Supabase Storage public URL or any hosted file URL</p>
+      <button 
+        type="button"
+        disabled={!fileUrl.trim()}
+        onClick={async () => {
+          if (!fileUrl.trim()) return
+          try {
+            if (!onboardingId) {
+              const tempId = `temp_${Date.now()}_${Math.random().toString(16).slice(2)}`
+              setDocuments((prev) => [
+                ...prev,
+                { id: tempId, pending: true, document_type: docType, file_url: fileUrl.trim() },
+              ])
+            } else {
+              const { data, error } = await supabase
+                .from('onboarding_documents')
+                .insert({
                   onboarding_id: onboardingId,
                   document_type: docType,
                   file_url: fileUrl.trim(),
                 })
-                setFileUrl('')
-              } catch (e) {
-                console.error('Failed to add document:', e)
+                .select('id, document_type, file_url')
+                .single()
+              if (error) throw error
+              if (data?.id) {
+                setDocuments((prev) => [
+                  ...prev,
+                  {
+                    id: String(data.id),
+                    pending: false,
+                    document_type: String(data.document_type || ''),
+                    file_url: String(data.file_url || ''),
+                  },
+                ])
               }
-            }}
-            className="px-4 py-2 bg-primary-medium text-white rounded-lg hover:bg-primary-dark transition-all disabled:opacity-60"
-          >
-            Add Document
-          </button>
+            }
+            setFileUrl('')
+          } catch (e) {
+            console.error('Failed to add document:', e)
+          }
+        }}
+        className="px-4 py-2 bg-primary-medium text-white rounded-lg hover:bg-primary-dark transition-all disabled:opacity-60"
+      >
+        Add Document
+      </button>
+
+      {documents.length > 0 && (
+        <div className="mt-4 space-y-2">
+          {documents.map((doc) => (
+            <div key={doc.id} className="p-3 bg-neutral-light/30 rounded-lg flex justify-between items-center">
+              <span className="font-medium">{String(doc.document_type || '').toUpperCase()}</span>
+              <button
+                type="button"
+                onClick={async () => {
+                  try {
+                    if (doc.pending) {
+                      setDocuments((prev) => prev.filter((x) => x.id !== doc.id))
+                      return
+                    }
+                    await supabase.from('onboarding_documents').delete().eq('id', doc.id)
+                    setDocuments((prev) => prev.filter((x) => x.id !== doc.id))
+                  } catch (e) {
+                    console.error('Failed to remove document:', e)
+                  }
+                }}
+                className="text-accent-danger hover:underline text-sm"
+              >
+                Remove
+              </button>
+            </div>
+          ))}
         </div>
-      </div>
+      )}
     </div>
   )
 }
@@ -427,6 +907,7 @@ const Customers: React.FC = () => {
   const [onboardingId, setOnboardingId] = useState<string | null>(null)
   const [onboardingType, setOnboardingType] = useState<'DILLYS' | 'BNUTTY'>('DILLYS')
   const [onboardingNotes, setOnboardingNotes] = useState<string>('')
+  const [selectedLabTests, setSelectedLabTests] = useState<string[]>([])
   const [isViewOpen, setIsViewOpen] = useState<boolean>(false)
   const [viewData, setViewData] = useState<Customer | null>(null)
   const [isDeleteOpen, setIsDeleteOpen] = useState<boolean>(false)
@@ -553,6 +1034,22 @@ const Customers: React.FC = () => {
       return () => clearTimeout(t)
     }
   }, [toast.show])
+
+  const saveLabRequirementsForOnboarding = async (ensuredOnboardingId: string) => {
+    try {
+      await supabase.from('onboarding_lab_requirements').delete().eq('onboarding_id', ensuredOnboardingId)
+      if (selectedLabTests.length === 0) return
+      const testRecords = selectedLabTests.map((test) => ({
+        onboarding_id: ensuredOnboardingId,
+        test_name: test,
+        required: true,
+      }))
+      const { error } = await supabase.from('onboarding_lab_requirements').insert(testRecords)
+      if (error) throw error
+    } catch (e) {
+      console.error('Failed to save lab requirements:', e)
+    }
+  }
 
   const handleView = (c: Customer) => {
     setViewData(c)
@@ -688,8 +1185,6 @@ const Customers: React.FC = () => {
             </div>
           </div>
         )}
-
-        
 
         {/* Search and Filter */}
         <div className="bg-white rounded-xl shadow-md border border-neutral-soft/20 p-3 sm:p-4 lg:p-6 mb-3 lg:mb-4">
@@ -1004,21 +1499,61 @@ const Customers: React.FC = () => {
           <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4">
             <div className="absolute inset-0 bg-black/50" onClick={() => !isSubmitting && setIsAddOpen(false)}></div>
             <div className="relative z-10 w-full max-w-sm sm:max-w-2xl lg:max-w-5xl h-[95vh] sm:h-[90vh] lg:h-[80vh] bg-white rounded-xl sm:rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden flex flex-col">
-              <div className="flex items-center justify-between px-4 sm:px-6 py-4 sm:py-6 bg-gradient-to-r from-neutral-light to-neutral-light/80 border-b border-neutral-soft/50">
-                <div>
-                  <h2 className="text-lg sm:text-xl font-semibold text-neutral-dark">New Customer Onboarding Form</h2>
-                  <p className="text-xs sm:text-sm text-neutral-medium mt-1">Customer information and manufacturing onboarding (single form)</p>
-                </div>
-                <button onClick={() => {
+              {onboardingType === 'DILLYS' ? (
+                <div className="flex items-center justify-between px-6 py-6 bg-gradient-to-r from-primary-dark via-primary-medium to-primary-light border-b border-neutral-soft/50">
+                  <div className="flex items-center gap-4">
+                    <div className="w-12 h-12 bg-white/20 rounded-2xl flex items-center justify-center backdrop-blur-sm">
+                      <Building2 className="h-6 w-6 text-white" />
+                    </div>
+                    <div>
+                      <h2 className="text-xl sm:text-2xl font-bold text-white">Dilly&apos;s Customer Registration</h2>
+                      <p className="text-white/90 text-sm sm:text-base mt-1">Complete customer information and manufacturing requirements</p>
+                    </div>
+                  </div>
+                  <button onClick={() => {
                   setIsAddOpen(false)
                   setCustomerId(null)
                   setOnboardingId(null)
                   setOnboardingNotes('')
                   setAddForm({ company_name: '', contact_person: '', email: '', phone: '', website: '', address: '', comments: '', status: 'Active' })
-                }} className="p-2 sm:p-3 text-neutral-medium hover:text-neutral-dark hover:bg-white/60 rounded-xl transition-all duration-200 hover:shadow-sm">✕</button>
-              </div>
+                }} className="p-2 sm:p-3 text-white/90 hover:text-white hover:bg-white/20 rounded-xl transition-all duration-200 hover:shadow-sm">✕</button>
+                </div>
+              ) : onboardingType === 'BNUTTY' ? (
+                <div className="flex items-center justify-between px-6 py-6 bg-gradient-to-r from-primary-dark via-primary-medium to-primary-light border-b border-neutral-soft/50">
+                  <div className="flex items-center gap-4">
+                    <div className="w-12 h-12 bg-white/20 rounded-2xl flex items-center justify-center backdrop-blur-sm">
+                      <Building2 className="h-6 w-6 text-white" />
+                    </div>
+                    <div>
+                      <h2 className="text-xl sm:text-2xl font-bold text-white">BNutty Customer Registration</h2>
+                      <p className="text-white/90 text-sm sm:text-base mt-1">Complete customer information and manufacturing requirements</p>
+                    </div>
+                  </div>
+                  <button onClick={() => {
+                    setIsAddOpen(false)
+                    setCustomerId(null)
+                    setOnboardingId(null)
+                    setOnboardingNotes('')
+                    setAddForm({ company_name: '', contact_person: '', email: '', phone: '', website: '', address: '', comments: '', status: 'Active' })
+                  }} className="p-2 sm:p-3 text-white/90 hover:text-white hover:bg-white/20 rounded-xl transition-all duration-200 hover:shadow-sm">✕</button>
+                </div>
+              ) : (
+                <div className="flex items-center justify-between px-4 sm:px-6 py-4 sm:py-6 bg-gradient-to-r from-neutral-light to-neutral-light/80 border-b border-neutral-soft/50">
+                  <div>
+                    <h2 className="text-lg sm:text-xl font-semibold text-neutral-dark">New Customer Onboarding Form</h2>
+                    <p className="text-xs sm:text-sm text-neutral-medium mt-1">Customer information and manufacturing onboarding (single form)</p>
+                  </div>
+                  <button onClick={() => {
+                    setIsAddOpen(false)
+                    setCustomerId(null)
+                    setOnboardingId(null)
+                    setOnboardingNotes('')
+                    setAddForm({ company_name: '', contact_person: '', email: '', phone: '', website: '', address: '', comments: '', status: 'Active' })
+                  }} className="p-2 sm:p-3 text-neutral-medium hover:text-neutral-dark hover:bg-white/60 rounded-xl transition-all duration-200 hover:shadow-sm">✕</button>
+                </div>
+              )}
               <div className="flex-1 overflow-y-auto">
-                <div className="p-4 sm:p-6 space-y-8">
+                <div className={onboardingType === 'DILLYS' || onboardingType === 'BNUTTY' ? 'p-6 sm:p-8 space-y-8' : 'p-4 sm:p-6 space-y-8'}>
                   <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
                     <div className="inline-flex items-center gap-3">
                       <span className="text-sm font-semibold text-neutral-dark">Onboarding Type</span>
@@ -1038,165 +1573,420 @@ const Customers: React.FC = () => {
                   </div>
 
                   {/* Customer Information */}
-                  <div className="bg-white rounded-xl sm:rounded-2xl shadow-sm border border-neutral-soft/20 overflow-hidden">
-                    <div className="px-4 sm:px-6 py-3 sm:py-4 bg-gradient-to-r from-primary-dark/5 via-primary-medium/5 to-primary-light/5 border-b border-neutral-soft/30">
-                      <h3 className="text-sm sm:text-base font-semibold text-neutral-dark">Customer Information</h3>
-                    </div>
-                    <div className="p-4 sm:p-6 space-y-4 sm:space-y-6">
-                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
-                    <div className="space-y-2">
-                      <label className="flex items-center text-sm font-semibold text-neutral-dark">
-                        <Building2 className="h-4 w-4 mr-2 text-primary-medium" />
-                        Company Name<span className="text-accent-danger ml-1">*</span>
-                      </label>
-                      <input
-                        type="text"
-                        required
-                        value={addForm.company_name}
-                        onChange={(e) => setAddForm({ ...addForm, company_name: e.target.value })}
-                        placeholder="e.g., ABC Foods Inc."
-                        className="w-full px-3 sm:px-4 py-2.5 sm:py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium text-sm sm:text-base"
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <label className="flex items-center text-sm font-semibold text-neutral-dark">
-                        <User className="h-4 w-4 mr-2 text-primary-medium" />
-                        Contact Person
-                      </label>
-                      <input
-                        type="text"
-                        value={addForm.contact_person}
-                        onChange={(e) => setAddForm({ ...addForm, contact_person: e.target.value })}
-                        placeholder="e.g., John Dela Cruz"
-                        className="w-full px-3 sm:px-4 py-2.5 sm:py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium text-sm sm:text-base"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    <div className="space-y-2">
-                      <label className="flex items-center text-sm font-semibold text-neutral-dark">
-                        <Mail className="h-4 w-4 mr-2 text-primary-medium" />
-                        Email
-                      </label>
-                      <input
-                        type="email"
-                        value={addForm.email}
-                        onChange={(e) => setAddForm({ ...addForm, email: e.target.value })}
-                        placeholder="john@company.com"
-                        className="w-full px-3 sm:px-4 py-2.5 sm:py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium text-sm sm:text-base"
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <label className="flex items-center text-sm font-semibold text-neutral-dark">
-                        <Phone className="h-4 w-4 mr-2 text-primary-medium" />
-                        Phone
-                      </label>
-                      <input
-                        type="text"
-                        value={addForm.phone}
-                        onChange={(e) => setAddForm({ ...addForm, phone: e.target.value })}
-                        placeholder="+1 900 000 0000"
-                        className="w-full px-3 sm:px-4 py-2.5 sm:py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium text-sm sm:text-base"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    <div className="space-y-2">
-                      <label className="flex items-center text-sm font-semibold text-neutral-dark">
-                        <Globe className="h-4 w-4 mr-2 text-primary-medium" />
-                        Website
-                      </label>
-                      <input
-                        type="url"
-                        value={addForm.website}
-                        onChange={(e) => setAddForm({ ...addForm, website: e.target.value })}
-                        placeholder="https://example.com"
-                        className="w-full px-3 sm:px-4 py-2.5 sm:py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium text-sm sm:text-base"
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <label className="flex items-center text-sm font-semibold text-neutral-dark">
-                        <BadgeCheck className="h-4 w-4 mr-2 text-primary-medium" />
-                        Status
-                      </label>
-                      <select
-                        value={addForm.status}
-                        onChange={(e) => setAddForm({ ...addForm, status: e.target.value })}
-                        className="w-full px-3 sm:px-4 py-2.5 sm:py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark hover:border-neutral-medium text-sm sm:text-base"
-                      >
-                        <option>Active</option>
-                        <option>Inactive</option>
-                      </select>
-                    </div>
-                  </div>
-
-                  <div className="space-y-2">
-                    <label className="flex items-center text-sm font-semibold text-neutral-dark">
-                      <MapPin className="h-4 w-4 mr-2 text-primary-medium" />
-                      Address
-                    </label>
-                    <textarea
-                      value={addForm.address}
-                      onChange={(e) => setAddForm({ ...addForm, address: e.target.value })}
-                      placeholder="Street, City, Country"
-                      className="w-full min-h-[60px] sm:min-h-[80px] px-3 sm:px-4 py-2.5 sm:py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium resize-none hover:border-neutral-medium text-sm sm:text-base"
-                    />
-                  </div>
-
-                  <div className="space-y-2">
-                    <label className="flex items-center text-sm font-semibold text-neutral-dark">
-                      <FileText className="h-4 w-4 mr-2 text-primary-medium" />
-                      Comments
-                    </label>
-                    <textarea
-                      value={addForm.comments}
-                      onChange={(e) => setAddForm({ ...addForm, comments: e.target.value })}
-                      placeholder="Additional notes about this customer"
-                      className="w-full min-h-[60px] sm:min-h-[80px] px-3 sm:px-4 py-2.5 sm:py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium resize-none hover:border-neutral-medium text-sm sm:text-base"
-                    />
-                  </div>
-
-                  {/* Products multi-select (UI-only) */}
-                  <div className="space-y-2">
-                    <label className="flex items-center text-sm font-semibold text-neutral-dark">
-                      <Package className="h-4 w-4 mr-2 text-primary-medium" />
-                      Products
-                    </label>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 sm:gap-3 max-h-32 sm:max-h-48 overflow-auto border border-neutral-soft rounded-lg p-2 sm:p-3 bg-white">
-                      {allProducts.length === 0 ? (
-                        <div className="text-xs text-neutral-medium">No products found.</div>
-                      ) : (
-                        allProducts.map(p => (
-                          <label key={p.id} className="flex items-center gap-2">
+                  {onboardingType === 'DILLYS' || onboardingType === 'BNUTTY' ? (
+                    <div className="bg-white rounded-2xl shadow-sm border border-neutral-soft/20 overflow-hidden">
+                      <div className="px-6 py-4 bg-gradient-to-r from-primary-dark/5 via-primary-medium/5 to-primary-light/5 border-b border-neutral-soft/30">
+                        <h3 className="text-base font-semibold text-neutral-dark">Customer Information</h3>
+                      </div>
+                      <div className="p-6 space-y-6">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                          <div className="space-y-2">
+                            <label className="flex items-center text-sm font-semibold text-neutral-dark">
+                              <Building2 className="h-4 w-4 mr-2 text-primary-medium" />
+                              Company Name<span className="text-accent-danger ml-1">*</span>
+                            </label>
                             <input
-                              type="checkbox"
-                              className="h-4 w-4 text-primary-dark focus:ring-primary-light border-neutral-soft rounded"
-                              checked={selectedProductIds.includes(p.id)}
-                              onChange={(e) => {
-                                setSelectedProductIds(prev => e.target.checked ? [...prev, p.id] : prev.filter(id => id !== p.id))
-                              }}
+                              type="text"
+                              required
+                              value={addForm.company_name}
+                              onChange={(e) => setAddForm({ ...addForm, company_name: e.target.value })}
+                              placeholder="e.g., ABC Foods Inc."
+                              className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium"
                             />
-                            <span className="text-xs sm:text-sm text-neutral-dark">{p.name}</span>
+                          </div>
+                          <div className="space-y-2">
+                            <label className="flex items-center text-sm font-semibold text-neutral-dark">
+                              <User className="h-4 w-4 mr-2 text-primary-medium" />
+                              Contact Person
+                            </label>
+                            <input
+                              type="text"
+                              value={addForm.contact_person}
+                              onChange={(e) => setAddForm({ ...addForm, contact_person: e.target.value })}
+                              placeholder="e.g., John Dela Cruz"
+                              className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                          <div className="space-y-2">
+                            <label className="flex items-center text-sm font-semibold text-neutral-dark">
+                              <Mail className="h-4 w-4 mr-2 text-primary-medium" />
+                              Email
+                            </label>
+                            <input
+                              type="email"
+                              value={addForm.email}
+                              onChange={(e) => setAddForm({ ...addForm, email: e.target.value })}
+                              placeholder="john@company.com"
+                              className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium"
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <label className="flex items-center text-sm font-semibold text-neutral-dark">
+                              <Phone className="h-4 w-4 mr-2 text-primary-medium" />
+                              Phone
+                            </label>
+                            <input
+                              type="text"
+                              value={addForm.phone}
+                              onChange={(e) => setAddForm({ ...addForm, phone: e.target.value })}
+                              placeholder="+63 900 000 0000"
+                              className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                          <div className="space-y-2">
+                            <label className="flex items-center text-sm font-semibold text-neutral-dark">
+                              <Globe className="h-4 w-4 mr-2 text-primary-medium" />
+                              Website
+                            </label>
+                            <input
+                              type="url"
+                              value={addForm.website}
+                              onChange={(e) => setAddForm({ ...addForm, website: e.target.value })}
+                              placeholder="https://example.com"
+                              className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium"
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <label className="flex items-center text-sm font-semibold text-neutral-dark">
+                              <BadgeCheck className="h-4 w-4 mr-2 text-primary-medium" />
+                              Status
+                            </label>
+                            <select
+                              value={addForm.status}
+                              onChange={(e) => setAddForm({ ...addForm, status: e.target.value })}
+                              className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark hover:border-neutral-medium"
+                            >
+                              <option>Active</option>
+                              <option>Inactive</option>
+                            </select>
+                          </div>
+                        </div>
+
+                        <div className="space-y-2">
+                          <label className="flex items-center text-sm font-semibold text-neutral-dark">
+                            <MapPin className="h-4 w-4 mr-2 text-primary-medium" />
+                            Address
                           </label>
-                        ))
-                      )}
+                          <textarea
+                            value={addForm.address}
+                            onChange={(e) => setAddForm({ ...addForm, address: e.target.value })}
+                            placeholder="Street, City, Country"
+                            rows={3}
+                            className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium resize-none hover:border-neutral-medium"
+                          />
+                        </div>
+
+                        <div className="space-y-2">
+                          <label className="flex items-center text-sm font-semibold text-neutral-dark">
+                            <FileText className="h-4 w-4 mr-2 text-primary-medium" />
+                            Comments
+                          </label>
+                          <textarea
+                            value={addForm.comments}
+                            onChange={(e) => setAddForm({ ...addForm, comments: e.target.value })}
+                            placeholder="Additional notes about this customer"
+                            rows={3}
+                            className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium resize-none hover:border-neutral-medium"
+                          />
+                        </div>
+                      </div>
                     </div>
-                    <p className="text-xs text-neutral-medium">UI-only: selections are kept in this form but are not saved to the server.</p>
-                  </div>
+                  ) : (
+                    <div className="bg-white rounded-xl sm:rounded-2xl shadow-sm border border-neutral-soft/20 overflow-hidden">
+                      <div className="px-4 sm:px-6 py-3 sm:py-4 bg-gradient-to-r from-primary-dark/5 via-primary-medium/5 to-primary-light/5 border-b border-neutral-soft/30">
+                        <h3 className="text-sm sm:text-base font-semibold text-neutral-dark">Customer Information</h3>
+                      </div>
+                      <div className="p-4 sm:p-6 space-y-4 sm:space-y-6">
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
+                          <div className="space-y-2">
+                            <label className="flex items-center text-sm font-semibold text-neutral-dark">
+                              <Building2 className="h-4 w-4 mr-2 text-primary-medium" />
+                              Company Name<span className="text-accent-danger ml-1">*</span>
+                            </label>
+                            <input
+                              type="text"
+                              required
+                              value={addForm.company_name}
+                              onChange={(e) => setAddForm({ ...addForm, company_name: e.target.value })}
+                              placeholder="e.g., ABC Foods Inc."
+                              className="w-full px-3 sm:px-4 py-2.5 sm:py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium text-sm sm:text-base"
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <label className="flex items-center text-sm font-semibold text-neutral-dark">
+                              <User className="h-4 w-4 mr-2 text-primary-medium" />
+                              Contact Person
+                            </label>
+                            <input
+                              type="text"
+                              value={addForm.contact_person}
+                              onChange={(e) => setAddForm({ ...addForm, contact_person: e.target.value })}
+                              placeholder="e.g., John Dela Cruz"
+                              className="w-full px-3 sm:px-4 py-2.5 sm:py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium text-sm sm:text-base"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                          <div className="space-y-2">
+                            <label className="flex items-center text-sm font-semibold text-neutral-dark">
+                              <Mail className="h-4 w-4 mr-2 text-primary-medium" />
+                              Email
+                            </label>
+                            <input
+                              type="email"
+                              value={addForm.email}
+                              onChange={(e) => setAddForm({ ...addForm, email: e.target.value })}
+                              placeholder="john@company.com"
+                              className="w-full px-3 sm:px-4 py-2.5 sm:py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium text-sm sm:text-base"
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <label className="flex items-center text-sm font-semibold text-neutral-dark">
+                              <Phone className="h-4 w-4 mr-2 text-primary-medium" />
+                              Phone
+                            </label>
+                            <input
+                              type="text"
+                              value={addForm.phone}
+                              onChange={(e) => setAddForm({ ...addForm, phone: e.target.value })}
+                              placeholder="+1 900 000 0000"
+                              className="w-full px-3 sm:px-4 py-2.5 sm:py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium text-sm sm:text-base"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                          <div className="space-y-2">
+                            <label className="flex items-center text-sm font-semibold text-neutral-dark">
+                              <Globe className="h-4 w-4 mr-2 text-primary-medium" />
+                              Website
+                            </label>
+                            <input
+                              type="url"
+                              value={addForm.website}
+                              onChange={(e) => setAddForm({ ...addForm, website: e.target.value })}
+                              placeholder="https://example.com"
+                              className="w-full px-3 sm:px-4 py-2.5 sm:py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium text-sm sm:text-base"
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <label className="flex items-center text-sm font-semibold text-neutral-dark">
+                              <BadgeCheck className="h-4 w-4 mr-2 text-primary-medium" />
+                              Status
+                            </label>
+                            <select
+                              value={addForm.status}
+                              onChange={(e) => setAddForm({ ...addForm, status: e.target.value })}
+                              className="w-full px-3 sm:px-4 py-2.5 sm:py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark hover:border-neutral-medium text-sm sm:text-base"
+                            >
+                              <option>Active</option>
+                              <option>Inactive</option>
+                            </select>
+                          </div>
+                        </div>
+
+                        <div className="space-y-2">
+                          <label className="flex items-center text-sm font-semibold text-neutral-dark">
+                            <MapPin className="h-4 w-4 mr-2 text-primary-medium" />
+                            Address
+                          </label>
+                          <textarea
+                            value={addForm.address}
+                            onChange={(e) => setAddForm({ ...addForm, address: e.target.value })}
+                            placeholder="Street, City, Country"
+                            className="w-full min-h-[60px] sm:min-h-[80px] px-3 sm:px-4 py-2.5 sm:py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium resize-none hover:border-neutral-medium text-sm sm:text-base"
+                          />
+                        </div>
+
+                        <div className="space-y-2">
+                          <label className="flex items-center text-sm font-semibold text-neutral-dark">
+                            <FileText className="h-4 w-4 mr-2 text-primary-medium" />
+                            Comments
+                          </label>
+                          <textarea
+                            value={addForm.comments}
+                            onChange={(e) => setAddForm({ ...addForm, comments: e.target.value })}
+                            placeholder="Additional notes about this customer"
+                            className="w-full min-h-[60px] sm:min-h-[80px] px-3 sm:px-4 py-2.5 sm:py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium resize-none hover:border-neutral-medium text-sm sm:text-base"
+                          />
+                        </div>
+
+                        {/* Products multi-select (UI-only) - Only for BNutty */}
+                        <div className="space-y-2">
+                          <label className="flex items-center text-sm font-semibold text-neutral-dark">
+                            <Package className="h-4 w-4 mr-2 text-primary-medium" />
+                            Products
+                          </label>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 sm:gap-3 max-h-32 sm:max-h-48 overflow-auto border border-neutral-soft rounded-lg p-2 sm:p-3 bg-white">
+                            {allProducts.length === 0 ? (
+                              <div className="text-xs text-neutral-medium">No products found.</div>
+                            ) : (
+                              allProducts.map(p => (
+                                <label key={p.id} className="flex items-center gap-2">
+                                  <input
+                                    type="checkbox"
+                                    className="h-4 w-4 text-primary-dark focus:ring-primary-light border-neutral-soft rounded"
+                                    checked={selectedProductIds.includes(p.id)}
+                                    onChange={(e) => {
+                                      setSelectedProductIds(prev => e.target.checked ? [...prev, p.id] : prev.filter(id => id !== p.id))
+                                    }}
+                                  />
+                                  <span className="text-xs sm:text-sm text-neutral-dark">{p.name}</span>
+                                </label>
+                              ))
+                            )}
+                          </div>
+                          <p className="text-xs text-neutral-medium">UI-only: selections are kept in this form but are not saved to the server.</p>
+                        </div>
+                      </div>
                     </div>
-                  </div>
+                  )}
 
                   {/* Onboarding Sections (same modal, same page) */}
-                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                    <ProductsTab onboardingId={onboardingId} />
-                    <PackagingTab onboardingId={onboardingId} />
-                    <IngredientsTab onboardingId={onboardingId} />
-                    {onboardingType === 'BNUTTY' ? <AllergensTab onboardingId={onboardingId} /> : <div className="bg-white rounded-xl p-6 border border-neutral-soft/20"><h3 className="text-lg font-semibold text-neutral-dark mb-2">Allergens</h3><p className="text-sm text-neutral-medium">Available for BNutty onboarding type only.</p></div>}
-                    <LabQATab onboardingId={onboardingId} />
-                    <DocumentsTab onboardingId={onboardingId} />
-                  </div>
+                  {onboardingType === 'DILLYS' ? (
+                    <div className="space-y-8">
+                      <div className="bg-white rounded-2xl shadow-sm border border-neutral-soft/20 overflow-hidden">
+                        <div className="px-6 py-4 bg-gradient-to-r from-primary-dark/5 via-primary-medium/5 to-primary-light/5 border-b border-neutral-soft/30">
+                          <h3 className="text-base font-semibold text-neutral-dark flex items-center">
+                            <Package className="h-5 w-5 mr-2 text-primary-medium" />
+                            Products & Specifications
+                          </h3>
+                        </div>
+                        <div className="p-6">
+                          <ProductsTab onboardingId={onboardingId} />
+                        </div>
+                      </div>
+
+                      <div className="bg-white rounded-2xl shadow-sm border border-neutral-soft/20 overflow-hidden">
+                        <div className="px-6 py-4 bg-gradient-to-r from-primary-dark/5 via-primary-medium/5 to-primary-light/5 border-b border-neutral-soft/30">
+                          <h3 className="text-base font-semibold text-neutral-dark flex items-center">
+                            <Box className="h-5 w-5 mr-2 text-primary-medium" />
+                            Packaging Configuration
+                          </h3>
+                        </div>
+                        <div className="p-6">
+                          <PackagingTab onboardingId={onboardingId} />
+                        </div>
+                      </div>
+
+                      <div className="bg-white rounded-2xl shadow-sm border border-neutral-soft/20 overflow-hidden">
+                        <div className="px-6 py-4 bg-gradient-to-r from-primary-dark/5 via-primary-medium/5 to-primary-light/5 border-b border-neutral-soft/30">
+                          <h3 className="text-base font-semibold text-neutral-dark flex items-center">
+                            <Leaf className="h-5 w-5 mr-2 text-primary-medium" />
+                            Ingredients & Vendors
+                          </h3>
+                        </div>
+                        <div className="p-6">
+                          <IngredientsTab onboardingId={onboardingId} />
+                        </div>
+                      </div>
+
+                      <div className="bg-white rounded-2xl shadow-sm border border-neutral-soft/20 overflow-hidden">
+                        <div className="px-6 py-4 bg-gradient-to-r from-primary-dark/5 via-primary-medium/5 to-primary-light/5 border-b border-neutral-soft/30">
+                          <h3 className="text-base font-semibold text-neutral-dark flex items-center">
+                            <FlaskConical className="h-5 w-5 mr-2 text-primary-medium" />
+                            Lab / QA Requirements
+                          </h3>
+                        </div>
+                        <div className="p-6">
+                          <LabQATab selectedTests={selectedLabTests} setSelectedTests={setSelectedLabTests} />
+                        </div>
+                      </div>
+
+                      <div className="bg-white rounded-2xl shadow-sm border border-neutral-soft/20 overflow-hidden">
+                        <div className="px-6 py-4 bg-gradient-to-r from-primary-dark/5 via-primary-medium/5 to-primary-light/5 border-b border-neutral-soft/30">
+                          <h3 className="text-base font-semibold text-neutral-dark flex items-center">
+                            <FileUp className="h-5 w-5 mr-2 text-primary-medium" />
+                            Documents
+                          </h3>
+                        </div>
+                        <div className="p-6">
+                          <DocumentsTab onboardingId={onboardingId} />
+                        </div>
+                      </div>
+                    </div>
+                  ) : onboardingType === 'BNUTTY' ? (
+                    <div className="space-y-8">
+                      <div className="bg-white rounded-2xl shadow-sm border border-neutral-soft/20 overflow-hidden">
+                        <div className="px-6 py-4 bg-gradient-to-r from-primary-dark/5 via-primary-medium/5 to-primary-light/5 border-b border-neutral-soft/30">
+                          <h3 className="text-base font-semibold text-neutral-dark flex items-center">
+                            <Package className="h-5 w-5 mr-2 text-primary-medium" />
+                            Products & Specifications
+                          </h3>
+                        </div>
+                        <div className="p-6">
+                          <ProductsTab onboardingId={onboardingId} />
+                        </div>
+                      </div>
+
+                      <div className="bg-white rounded-2xl shadow-sm border border-neutral-soft/20 overflow-hidden">
+                        <div className="px-6 py-4 bg-gradient-to-r from-primary-dark/5 via-primary-medium/5 to-primary-light/5 border-b border-neutral-soft/30">
+                          <h3 className="text-base font-semibold text-neutral-dark flex items-center">
+                            <Box className="h-5 w-5 mr-2 text-primary-medium" />
+                            Packaging Configuration
+                          </h3>
+                        </div>
+                        <div className="p-6">
+                          <PackagingTab onboardingId={onboardingId} />
+                        </div>
+                      </div>
+
+                      <div className="bg-white rounded-2xl shadow-sm border border-neutral-soft/20 overflow-hidden">
+                        <div className="px-6 py-4 bg-gradient-to-r from-primary-dark/5 via-primary-medium/5 to-primary-light/5 border-b border-neutral-soft/30">
+                          <h3 className="text-base font-semibold text-neutral-dark flex items-center">
+                            <Leaf className="h-5 w-5 mr-2 text-primary-medium" />
+                            Ingredients & Vendors
+                          </h3>
+                        </div>
+                        <div className="p-6">
+                          <IngredientsTab onboardingId={onboardingId} />
+                        </div>
+                      </div>
+
+                      <div className="bg-white rounded-2xl shadow-sm border border-neutral-soft/20 overflow-hidden">
+                        <div className="px-6 py-4 bg-gradient-to-r from-primary-dark/5 via-primary-medium/5 to-primary-light/5 border-b border-neutral-soft/30">
+                          <h3 className="text-base font-semibold text-neutral-dark flex items-center">
+                            <AlertTriangle className="h-5 w-5 mr-2 text-primary-medium" />
+                            Allergens Matrix
+                          </h3>
+                        </div>
+                        <div className="p-6">
+                          <AllergensTab onboardingId={onboardingId} />
+                        </div>
+                      </div>
+
+                      <div className="bg-white rounded-2xl shadow-sm border border-neutral-soft/20 overflow-hidden">
+                        <div className="px-6 py-4 bg-gradient-to-r from-primary-dark/5 via-primary-medium/5 to-primary-light/5 border-b border-neutral-soft/30">
+                          <h3 className="text-base font-semibold text-neutral-dark flex items-center">
+                            <FlaskConical className="h-5 w-5 mr-2 text-primary-medium" />
+                            Lab / QA Requirements
+                          </h3>
+                        </div>
+                        <div className="p-6">
+                          <LabQATab selectedTests={selectedLabTests} setSelectedTests={setSelectedLabTests} />
+                        </div>
+                      </div>
+
+                      <div className="bg-white rounded-2xl shadow-sm border border-neutral-soft/20 overflow-hidden">
+                        <div className="px-6 py-4 bg-gradient-to-r from-primary-dark/5 via-primary-medium/5 to-primary-light/5 border-b border-neutral-soft/30">
+                          <h3 className="text-base font-semibold text-neutral-dark flex items-center">
+                            <FileUp className="h-5 w-5 mr-2 text-primary-medium" />
+                            Documents
+                          </h3>
+                        </div>
+                        <div className="p-6">
+                          <DocumentsTab onboardingId={onboardingId} />
+                        </div>
+                      </div>
+                    </div>
+                  ) : null}
 
                   <div className="bg-white rounded-2xl shadow-sm border border-neutral-soft/20 overflow-hidden">
                     <div className="px-6 py-4 bg-gradient-to-r from-primary-dark/5 via-primary-medium/5 to-primary-light/5 border-b border-neutral-soft/30">
@@ -1212,114 +2002,187 @@ const Customers: React.FC = () => {
                     </div>
                   </div>
 
-                  {/* Footer Actions (Save Draft / Submit) */}
+                  {/* Footer Actions (Cancel + Submit) */}
                   <div className="flex items-center justify-between pt-2">
                     <div className="text-xs text-neutral-medium">
                       {onboardingId ? `Onboarding ID: ${onboardingId}` : 'Click Save Draft to create onboarding and enable saving rows.'}
                     </div>
                     <div className="flex items-center gap-3">
-                      <button
-                        onClick={async () => {
-                          if (isSubmitting) return
-                          setIsSubmitting(true)
-                          try {
-                            let ensuredCustomerId = customerId
-                            if (!ensuredCustomerId) {
-                              const payload: any = {
-                                company_name: addForm.company_name,
-                                contact_person: addForm.contact_person || null,
-                                email: addForm.email || null,
-                                phone: addForm.phone || null,
-                                website: addForm.website || null,
-                                address: addForm.address || null,
-                                comments: addForm.comments || null,
-                                status: addForm.status || 'Active',
+                      {(onboardingType === 'DILLYS' || onboardingType === 'BNUTTY') ? (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => !isSubmitting && setIsAddOpen(false)}
+                            className="px-4 py-2 rounded-lg border border-neutral-soft text-neutral-dark hover:bg-neutral-light/40 transition-all"
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              if (isSubmitting) return
+                              setIsSubmitting(true)
+                              try {
+                                let ensuredCustomerId = customerId
+                                if (!ensuredCustomerId) {
+                                  const payload: any = {
+                                    company_name: addForm.company_name,
+                                    contact_person: addForm.contact_person || null,
+                                    email: addForm.email || null,
+                                    phone: addForm.phone || null,
+                                    website: addForm.website || null,
+                                    address: addForm.address || null,
+                                    comments: addForm.comments || null,
+                                    status: addForm.status || 'Active',
+                                  }
+                                  const { data, error } = await supabase.from('customers').insert(payload).select('id').single()
+                                  if (error) throw error
+                                  ensuredCustomerId = data.id
+                                  setCustomerId(ensuredCustomerId)
+                                }
+                                let ensuredOnboardingId = onboardingId
+                                if (!ensuredOnboardingId) {
+                                  const { data: onboardingData, error: onboardingError } = await supabase
+                                    .from('customer_onboardings')
+                                    .insert({ customer_id: ensuredCustomerId, onboarding_type: onboardingType, status: 'Submitted', notes: onboardingNotes || null })
+                                    .select('id')
+                                    .single()
+                                  if (onboardingError) throw onboardingError
+                                  ensuredOnboardingId = onboardingData.id
+                                  setOnboardingId(ensuredOnboardingId)
+                                } else {
+                                  const { error: updErr } = await supabase.from('customer_onboardings').update({ status: 'Submitted', onboarding_type: onboardingType, notes: onboardingNotes || null }).eq('id', ensuredOnboardingId)
+                                  if (updErr) throw updErr
+                                }
+
+                                if (!ensuredOnboardingId) throw new Error('Missing onboardingId')
+                                await saveLabRequirementsForOnboarding(ensuredOnboardingId)
+                                await refresh()
+                                setToast({ show: true, message: 'Onboarding submitted successfully' })
+                                setIsAddOpen(false)
+                                setCustomerId(null)
+                                setOnboardingId(null)
+                                setOnboardingNotes('')
+                                setSelectedLabTests([])
+                                setAddForm({ company_name: '', contact_person: '', email: '', phone: '', website: '', address: '', comments: '', status: 'Active' })
+                              } catch (e: any) {
+                                setError(e?.message || 'Failed to submit onboarding')
+                              } finally {
+                                setIsSubmitting(false)
                               }
-                              const { data, error } = await supabase.from('customers').insert(payload).select('id').single()
-                              if (error) throw error
-                              ensuredCustomerId = data.id
-                              setCustomerId(ensuredCustomerId)
-                            }
-                            let ensuredOnboardingId = onboardingId
-                            if (!ensuredOnboardingId) {
-                              const { data: onboardingData, error: onboardingError } = await supabase
-                                .from('customer_onboardings')
-                                .insert({ customer_id: ensuredCustomerId, onboarding_type: onboardingType, status: 'Draft', notes: onboardingNotes || null })
-                                .select('id')
-                                .single()
-                              if (onboardingError) throw onboardingError
-                              ensuredOnboardingId = onboardingData.id
-                              setOnboardingId(ensuredOnboardingId)
-                            } else {
-                              const { error: updErr } = await supabase.from('customer_onboardings').update({ status: 'Draft', onboarding_type: onboardingType, notes: onboardingNotes || null }).eq('id', ensuredOnboardingId)
-                              if (updErr) throw updErr
-                            }
-                            setToast({ show: true, message: 'Draft saved successfully' })
-                          } catch (e: any) {
-                            setError(e?.message || 'Failed to save draft')
-                          } finally {
-                            setIsSubmitting(false)
-                          }
-                        }}
-                        className="px-4 py-2 rounded-lg border border-neutral-soft text-neutral-dark hover:bg-neutral-light/60 transition-all disabled:opacity-60"
-                        disabled={isSubmitting}
-                      >
-                        Save Draft
-                      </button>
-                      <button
-                        onClick={async () => {
-                          if (isSubmitting) return
-                          setIsSubmitting(true)
-                          try {
-                            let ensuredCustomerId = customerId
-                            if (!ensuredCustomerId) {
-                              const payload: any = {
-                                company_name: addForm.company_name,
-                                contact_person: addForm.contact_person || null,
-                                email: addForm.email || null,
-                                phone: addForm.phone || null,
-                                website: addForm.website || null,
-                                address: addForm.address || null,
-                                comments: addForm.comments || null,
-                                status: addForm.status || 'Active',
+                            }}
+                            className="px-6 py-2 rounded-lg bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold shadow-md disabled:opacity-60"
+                            disabled={isSubmitting}
+                          >
+                            Submit Form
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <button
+                            onClick={async () => {
+                              if (isSubmitting) return
+                              setIsSubmitting(true)
+                              try {
+                                let ensuredCustomerId = customerId
+                                if (!ensuredCustomerId) {
+                                  const payload: any = {
+                                    company_name: addForm.company_name,
+                                    contact_person: addForm.contact_person || null,
+                                    email: addForm.email || null,
+                                    phone: addForm.phone || null,
+                                    website: addForm.website || null,
+                                    address: addForm.address || null,
+                                    comments: addForm.comments || null,
+                                    status: addForm.status || 'Active',
+                                  }
+                                  const { data, error } = await supabase.from('customers').insert(payload).select('id').single()
+                                  if (error) throw error
+                                  ensuredCustomerId = data.id
+                                  setCustomerId(ensuredCustomerId)
+                                }
+                                let ensuredOnboardingId = onboardingId
+                                if (!ensuredOnboardingId) {
+                                  const { data: onboardingData, error: onboardingError } = await supabase
+                                    .from('customer_onboardings')
+                                    .insert({ customer_id: ensuredCustomerId, onboarding_type: onboardingType, status: 'Draft', notes: onboardingNotes || null })
+                                    .select('id')
+                                    .single()
+                                  if (onboardingError) throw onboardingError
+                                  ensuredOnboardingId = onboardingData.id
+                                  setOnboardingId(ensuredOnboardingId)
+                                } else {
+                                  const { error: updErr } = await supabase.from('customer_onboardings').update({ status: 'Draft', onboarding_type: onboardingType, notes: onboardingNotes || null }).eq('id', ensuredOnboardingId)
+                                  if (updErr) throw updErr
+                                }
+                                setToast({ show: true, message: 'Draft saved successfully' })
+                              } catch (e: any) {
+                                setError(e?.message || 'Failed to save draft')
+                              } finally {
+                                setIsSubmitting(false)
                               }
-                              const { data, error } = await supabase.from('customers').insert(payload).select('id').single()
-                              if (error) throw error
-                              ensuredCustomerId = data.id
-                              setCustomerId(ensuredCustomerId)
-                            }
-                            let ensuredOnboardingId = onboardingId
-                            if (!ensuredOnboardingId) {
-                              const { data: onboardingData, error: onboardingError } = await supabase
-                                .from('customer_onboardings')
-                                .insert({ customer_id: ensuredCustomerId, onboarding_type: onboardingType, status: 'Submitted', notes: onboardingNotes || null })
-                                .select('id')
-                                .single()
-                              if (onboardingError) throw onboardingError
-                              ensuredOnboardingId = onboardingData.id
-                              setOnboardingId(ensuredOnboardingId)
-                            } else {
-                              const { error: updErr } = await supabase.from('customer_onboardings').update({ status: 'Submitted', onboarding_type: onboardingType, notes: onboardingNotes || null }).eq('id', ensuredOnboardingId)
-                              if (updErr) throw updErr
-                            }
-                            await refresh()
-                            setToast({ show: true, message: 'Onboarding submitted successfully' })
-                            setIsAddOpen(false)
-                            setCustomerId(null)
-                            setOnboardingId(null)
-                            setOnboardingNotes('')
-                            setAddForm({ company_name: '', contact_person: '', email: '', phone: '', website: '', address: '', comments: '', status: 'Active' })
-                          } catch (e: any) {
-                            setError(e?.message || 'Failed to submit onboarding')
-                          } finally {
-                            setIsSubmitting(false)
-                          }
-                        }}
-                        className="px-6 py-2 rounded-lg bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold shadow-md disabled:opacity-60"
-                        disabled={isSubmitting}
-                      >
-                        Submit Form
-                      </button>
+                            }}
+                            className="px-4 py-2 rounded-lg border border-neutral-soft text-neutral-dark hover:bg-neutral-light/60 transition-all disabled:opacity-60"
+                            disabled={isSubmitting}
+                          >
+                            Save Draft
+                          </button>
+                          <button
+                            onClick={async () => {
+                              if (isSubmitting) return
+                              setIsSubmitting(true)
+                              try {
+                                let ensuredCustomerId = customerId
+                                if (!ensuredCustomerId) {
+                                  const payload: any = {
+                                    company_name: addForm.company_name,
+                                    contact_person: addForm.contact_person || null,
+                                    email: addForm.email || null,
+                                    phone: addForm.phone || null,
+                                    website: addForm.website || null,
+                                    address: addForm.address || null,
+                                    comments: addForm.comments || null,
+                                    status: addForm.status || 'Active',
+                                  }
+                                  const { data, error } = await supabase.from('customers').insert(payload).select('id').single()
+                                  if (error) throw error
+                                  ensuredCustomerId = data.id
+                                  setCustomerId(ensuredCustomerId)
+                                }
+                                let ensuredOnboardingId = onboardingId
+                                if (!ensuredOnboardingId) {
+                                  const { data: onboardingData, error: onboardingError } = await supabase
+                                    .from('customer_onboardings')
+                                    .insert({ customer_id: ensuredCustomerId, onboarding_type: onboardingType, status: 'Submitted', notes: onboardingNotes || null })
+                                    .select('id')
+                                    .single()
+                                  if (onboardingError) throw onboardingError
+                                  ensuredOnboardingId = onboardingData.id
+                                  setOnboardingId(ensuredOnboardingId)
+                                } else {
+                                  const { error: updErr } = await supabase.from('customer_onboardings').update({ status: 'Submitted', onboarding_type: onboardingType, notes: onboardingNotes || null }).eq('id', ensuredOnboardingId)
+                                  if (updErr) throw updErr
+                                }
+                                await refresh()
+                                setToast({ show: true, message: 'Onboarding submitted successfully' })
+                                setIsAddOpen(false)
+                                setCustomerId(null)
+                                setOnboardingId(null)
+                                setOnboardingNotes('')
+                                setAddForm({ company_name: '', contact_person: '', email: '', phone: '', website: '', address: '', comments: '', status: 'Active' })
+                              } catch (e: any) {
+                                setError(e?.message || 'Failed to submit onboarding')
+                              } finally {
+                                setIsSubmitting(false)
+                              }
+                            }}
+                            className="px-6 py-2 rounded-lg bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold shadow-md disabled:opacity-60"
+                            disabled={isSubmitting}
+                          >
+                            Submit Form
+                          </button>
+                        </>
+                      )}
                     </div>
                   </div>
                 </div>

@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
-import { Plus, X, User, Package, Calendar, FileText, Eye, Pencil, Trash2, MapPin, BadgeCheck, Search, CheckCircle2, Truck, PackageCheck, AlertTriangle } from 'lucide-react'
+import { Plus, X, User, Package, Calendar, FileText, Eye, Pencil, Trash2, MapPin, BadgeCheck, Search, CheckCircle2, Truck, AlertTriangle } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 import { Status } from '../domain/enums'
 import { validatePODraft } from '../rules/po.rules'
@@ -26,6 +26,7 @@ function formatStatusLabel(raw?: string | null): string {
   const lower = s.toLowerCase()
   if (lower === 'move_to_procurement' || lower === 'move to procurement') return 'Move to Procurement'
   if (lower === 'ready_to_schedule' || lower === 'ready to schedule') return 'Ready to Schedule'
+  if (lower === 'ready_to_ship' || lower === 'ready to ship') return 'Completed'
   if (lower === 'on_hold' || lower === 'on hold') return 'On Hold'
   if (lower === 'client_communication_required' || lower === 'client communication required') return 'Client Communication Required'
   if (lower === 'partially_shipped') return 'Partially Shipped'
@@ -442,6 +443,8 @@ const PurchaseOrders: React.FC = () => {
     }
   }
 
+  void shipPO
+
   // Handlers requested
   const handleReadyToShip = async (poId: string) => {
     try {
@@ -477,6 +480,10 @@ const PurchaseOrders: React.FC = () => {
       setToast({ show: true, message: 'Failed to create partial shipment', kind: 'error' })
     }
   }
+
+  void handleReadyToShip
+  void handleShipPartial
+  void shipPOPartial
 
   // Ship remaining handler: ship ONLY the true remaining qty
   const handleShipRemaining = async (poId: string) => {
@@ -3339,40 +3346,47 @@ const PurchaseOrders: React.FC = () => {
                               )
                             })()}
                           </div>
-                          <div className="flex items-center gap-3">
-                            {!o.is_copack && String(o.status) === 'allocated' && (
-                              <button
-                                className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-semibold bg-primary-light hover:bg-primary-medium text-white shadow-sm transition-all"
-                                onClick={() => handleReadyToShip(String(o.id))}
-                              >
-                                <Truck className="h-4 w-4" /> Ready to Ship
-                              </button>
-                            )}
+                          <div className="flex items-center gap-3 flex-wrap">
                             {!o.is_copack && (() => {
-                              const st = String(o.status || '').toLowerCase()
-                              const isReadyToShip = st === 'ready to ship' || st === 'ready_to_ship'
-                              if (!isReadyToShip) return null
+                              const st = String(o.status || '').toLowerCase().trim()
+                              const isAllocated = st === 'allocated'
+                              const isPartial = st === 'partial' || st === 'partially_shipped'
+                              const isReadyToShip = st === 'ready_to_ship' || st === 'ready to ship'
+                              const inShippingFlow = isAllocated || isPartial || isReadyToShip
+                              if (!inShippingFlow) return null
 
-                              const isWh = String(currentRole || '').toLowerCase() === 'warehouse'
+                              const role = String(currentRole || '').toLowerCase()
+                              const canAllocate = role === 'admin' || role === 'procurement' || role === 'finance' || role === 'supply_chain' || role === 'warehouse'
+                              const allocatedQty = Number((o as any)?.allocated_qty ?? 0)
+                              const requiredQty = Number((o as any)?.quantity ?? 0)
+                              const needsAllocation = isReadyToShip && (Number.isFinite(requiredQty) && requiredQty > 0 ? allocatedQty < requiredQty : allocatedQty <= 0)
+
                               return (
-                                <button
-                                  className={`inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-semibold shadow-sm transition-all ${isWh ? 'bg-primary-medium hover:bg-primary-dark text-white' : 'bg-neutral-light/40 text-neutral-medium cursor-not-allowed'}`}
-                                  onClick={() => { if (!isWh) return; setOpenMenuId(null); shipPO(String(o.id)) }}
-                                  disabled={!isWh}
-                                  title={isWh ? 'Ship Order' : 'Only Warehouse can ship'}
-                                >
-                                  <PackageCheck className="h-4 w-4" /> Ship Order
-                                </button>
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  {(isAllocated || isPartial) && (
+                                    <span className="text-xs text-neutral-medium">Ship this PO from the Shipping tab.</span>
+                                  )}
+                                  {canAllocate && needsAllocation && (
+                                    <button
+                                      className="inline-flex items-center px-3.5 py-2 rounded-lg text-xs font-semibold border shadow-sm bg-white border-neutral-soft text-neutral-dark hover:border-primary-medium hover:text-primary-medium"
+                                      onClick={() => { setOpenMenuId(null); handleApproveCompletedPo(String(o.id)) }}
+                                      title="Approve (allocate first)"
+                                    >
+                                      Approve
+                                    </button>
+                                  )}
+                                  {(isAllocated || isPartial) && (
+                                    <button
+                                      className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-semibold bg-primary-medium hover:bg-primary-dark text-white shadow-sm transition-all"
+                                      onClick={() => { setOpenMenuId(null); navigate('/admin/supply-chain-procurement?tab=shipping') }}
+                                      title="Go to Shipping"
+                                    >
+                                      <Truck className="h-4 w-4" /> Go to Shipping
+                                    </button>
+                                  )}
+                                </div>
                               )
                             })()}
-                            {!o.is_copack && String(o.status) === 'partial' && (o as any).allow_partial_ship === true && (
-                              <button
-                                className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-semibold bg-accent-warning hover:bg-accent-warning/90 text-white shadow-sm transition-all"
-                                onClick={() => handleShipPartial(String(o.id))}
-                              >
-                                <Truck className="h-4 w-4" /> Partial Ship
-                              </button>
-                            )}
                             {!o.is_copack && String(o.status) === 'partially_shipped' && (
                               <button
                                 className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-semibold bg-accent-warning hover:bg-accent-warning/90 text-white shadow-sm transition-all"

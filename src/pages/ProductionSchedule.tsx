@@ -252,6 +252,8 @@ const ProductionSchedule: React.FC = () => {
 
   // CAPA flags per batch (client-side; set to true after completion if CAPA was created)
   const [capaMap, setCapaMap] = useState<Record<string, boolean>>({})
+  const [capaEverMap, setCapaEverMap] = useState<Record<string, boolean>>({})
+  const [capaScrapQtyMap, setCapaScrapQtyMap] = useState<Record<string, number>>({})
 
   // Merge batches modal state
   const [mergeModalOpen, setMergeModalOpen] = useState(false)
@@ -478,7 +480,7 @@ const ProductionSchedule: React.FC = () => {
     if (low === 'ready to schedule' || low === 'ready_to_schedule') return 'Ready to Schedule'
     if (low === 'in progress' || low === 'in_progress') return 'In Progress'
     if (low === 'quality hold' || low === 'qa hold' || low === 'qa_hold') return 'QA Hold'
-    if (low === 'ready to ship' || low === 'ready_to_ship') return 'Ready to Ship'
+    if (low === 'ready to ship' || low === 'ready_to_ship') return 'Completed - Ready to Ship'
     if (low === 'approved') return 'Approved'
     if (low === 'open') return 'Open'
     if (low === 'backordered') return 'Backordered'
@@ -671,12 +673,55 @@ const ProductionSchedule: React.FC = () => {
         .update({ qa_approved: true })
         .eq('id', batchId)
       if (error) throw error
+
+      // Resolve CAPA tasks (Option A)
+      try {
+        await supabase
+          .from('capa_tasks')
+          .update({ status: 'Revoked' })
+          .eq('batch_id', castBatchId(batchId))
+          .neq('status', 'Revoked')
+      } catch {}
+
+      // Lift Quality Hold if present and move back to Completed (Option A)
+      try {
+        const { data: b } = await supabase
+          .from('production_batches')
+          .select('status')
+          .eq('id', batchId)
+          .maybeSingle()
+        if (String((b as any)?.status || '') === 'Quality Hold') {
+          const { error: stErr } = await supabase
+            .from('production_batches')
+            .update({ status: 'Completed' })
+            .eq('id', batchId)
+          if (stErr) throw stErr
+        }
+      } catch {}
+
+      // PO becomes Ready to Ship after QA approval (Option A)
+      try {
+        await syncPoStatusFromBatch(batchId, 'Ready to Ship')
+        await loadPurchaseOrders()
+      } catch {}
+
+      try {
+        const row = (items || []).find(r => String(r.id) === String(batchId)) as any
+        const completed = Number(row?.completedQty || 0)
+        const scrap = Number(capaScrapQtyMap[String(batchId)] ?? 0)
+        const net = Math.max(0, completed - scrap)
+        pushToast({ type: 'success', message: `Finished Goods: ${net} (Completed ${completed} - Scrap ${scrap})` })
+      } catch {}
+
       // Optimistic update: list rows
-      setItems(prev => prev.map(r => r.id === batchId ? { ...r, qaApproved: true } : r))
+      setItems(prev => prev.map(r => r.id === batchId ? { ...r, qaApproved: true, status: (String((r as any).status || '') === 'Quality Hold' ? 'Completed' : (r as any).status) } : r))
       // Update view modal if open
-      setViewItem(prev => prev && prev.id === batchId ? { ...prev, qaApproved: true } as any : prev)
+      setViewItem(prev => prev && prev.id === batchId ? { ...prev, qaApproved: true, status: (String((prev as any).status || '') === 'Quality Hold' ? 'Completed' : (prev as any).status) } as any : prev)
       // Update gating map used by Start button disabled check
       setQaApprovedMap(prev => ({ ...prev, [batchId]: true }))
+      // CAPA stays visible, but becomes revoked (not active)
+      setCapaEverMap(prev => ({ ...(prev || {}), [String(batchId)]: true }))
+      setCapaMap(prev => { const n = { ...(prev || {}) } as any; delete n[String(batchId)]; return n })
       pushToast({ type: 'success', message: 'QA marked as approved' })
     } catch (e:any) {
       pushToast({ type: 'error', message: e?.message || 'Failed to mark QA approved' })
@@ -706,7 +751,13 @@ const ProductionSchedule: React.FC = () => {
       
       // If status is "Completed", move to "Ready to Ship" and trigger communications
       if (newStatus === 'Completed') {
-        await handleProductionCompleted(batchId)
+        if (capaMap[String(batchId)]) {
+          try {
+            await syncPoStatusFromBatch(batchId, 'Quality Hold')
+          } catch {}
+        } else {
+          await handleProductionCompleted(batchId)
+        }
       }
       
       await loadBatches()
@@ -720,14 +771,6 @@ const ProductionSchedule: React.FC = () => {
   // ───────── Handle Production Completed
   const handleProductionCompleted = async (batchId: string) => {
     try {
-      // Update the batch status to "Ready to Ship"
-      const { error: updateError } = await supabase
-        .from('production_batches')
-        .update({ status: 'Ready to Ship' })
-        .eq('id', batchId)
-      
-      if (updateError) throw updateError
-
       try {
         await syncPoStatusFromBatch(batchId, 'Ready to Ship')
       } catch {}
@@ -907,32 +950,37 @@ const ProductionSchedule: React.FC = () => {
       if (error) throw error;
 
       const mapped: ScheduleItem[] =
-        (data || []).map((r: any) => ({
-          id: String(r.id),
-          product: String(r.product_sku || ""),
-          customer: customersMap.get(String(r.customer_id || "")) || "",
-          formula: formulasMap.get(String(r.formula_id || "")) || "",
-          qty: Number(r.qty || 0),
-          completedQty: Number(r.completed_qty || 0),
-          room: String(r.room || r.assigned_line || ""),
-          startDate: r.start_date || "",
-          status: r.status || "Scheduled",
-          lot: r.lot_number || "",
-          po: r.po_number || "",
-          sourcePoId: r.source_po_id || null,
-          createdAt: r.created_at || null,
-          sanitationRequired: r.sanitation_required ?? null,
-          sanitationStart: r.sanitation_start || null,
-          sanitationEnd: r.sanitation_end || null,
-          qaRequired: r.qa_required ?? null,
-          qaApproved: r.qa_approved ?? null,
-          flags: r.flags,
-          batchType: (Array.isArray(r.flags)
-            ? r.flags.includes('REWORK')
-            : String(r.flags || '') === 'REWORK')
-            ? 'rework'
-            : 'original'
-        }))
+        (data || []).map((r: any) => {
+          const lineName = String(r.room || r.assigned_line || "")
+          const line = productionLineByName.get(lineName)
+          const needsQaSignoff = Boolean((line as any)?.needs_qa_signoff)
+          return {
+            id: String(r.id),
+            product: String(r.product_sku || ""),
+            customer: customersMap.get(String(r.customer_id || "")) || "",
+            formula: formulasMap.get(String(r.formula_id || "")) || "",
+            qty: Number(r.qty || 0),
+            completedQty: Number(r.completed_qty || 0),
+            room: lineName,
+            startDate: r.start_date || "",
+            status: r.status || "Scheduled",
+            lot: r.lot_number || "",
+            po: r.po_number || "",
+            sourcePoId: r.source_po_id || null,
+            createdAt: r.created_at || null,
+            sanitationRequired: r.sanitation_required ?? null,
+            sanitationStart: r.sanitation_start || null,
+            sanitationEnd: r.sanitation_end || null,
+            qaRequired: r.qa_required ?? (needsQaSignoff ? true : null),
+            qaApproved: r.qa_approved ?? null,
+            flags: r.flags,
+            batchType: (Array.isArray(r.flags)
+              ? r.flags.includes('REWORK')
+              : String(r.flags || '') === 'REWORK')
+              ? 'rework'
+              : 'original'
+          }
+        })
  ?? [];
 
       setItems(mapped);
@@ -964,15 +1012,59 @@ const ProductionSchedule: React.FC = () => {
         if (ids.length) {
           const { data: caps } = await supabase
             .from('capa_tasks')
-            .select('batch_id')
+            .select('batch_id, status, scrap_qty, created_at')
             .in('batch_id', ids)
-          const map: Record<string, boolean> = {}
+          const ever: Record<string, boolean> = {}
+          const active: Record<string, boolean> = {}
+          const scrap: Record<string, number> = {}
+          const scrapTs: Record<string, number> = {}
           for (const c of caps || []) {
-            if (c.batch_id) map[String(c.batch_id)] = true
+            const bid = (c as any)?.batch_id
+            if (!bid) continue
+            const id = String(bid)
+            ever[id] = true
+            const st = String((c as any)?.status || '').toLowerCase().trim()
+            if (st !== 'resolved' && st !== 'revoked') active[id] = true
+
+            const ts = (c as any)?.created_at ? new Date(String((c as any).created_at)).getTime() : 0
+            const sq = Number((c as any)?.scrap_qty)
+            if (Number.isFinite(sq)) {
+              if (!scrapTs[id] || ts >= scrapTs[id]) {
+                scrapTs[id] = ts
+                scrap[id] = sq
+              }
+            }
           }
-          setCapaMap(map)
+          setCapaEverMap(ever)
+          setCapaMap(active)
+          setCapaScrapQtyMap(scrap)
+          setItems(prev => prev.map(r => (active[String(r.id)] ? { ...r, status: 'Quality Hold' } : r)))
+
+          // Enforce PO status = qa_hold when batch is Quality Hold (including CAPA-triggered holds)
+          try {
+            const holdPoIds = new Set<string>()
+            for (const r of (data || [])) {
+              const batchId = String(r.id)
+              const isHold = String(r.status || '') === 'Quality Hold' || Boolean(active[batchId])
+              const poId = r.source_po_id ? String(r.source_po_id) : null
+              if (isHold && poId) holdPoIds.add(poId)
+            }
+
+            const poIds = Array.from(holdPoIds)
+            if (poIds.length) {
+              const { error: poHoldErr } = await supabase
+                .from('purchase_orders')
+                .update({ status: 'qa_hold' })
+                .in('id', poIds)
+              if (poHoldErr) throw poHoldErr
+
+              setPurchaseOrders(prev => prev.map((po: any) => (poIds.includes(String(po.id)) ? { ...po, status: 'qa_hold' } : po)))
+            }
+          } catch {}
         } else {
           setCapaMap({})
+          setCapaEverMap({})
+          setCapaScrapQtyMap({})
         }
       } catch {}
     } catch (e) {
@@ -1550,11 +1642,34 @@ const ProductionSchedule: React.FC = () => {
         // Don't fail the completion process if traceability fails
       }
 
+      const scrapBase = (Number(scrapQtyPreview || 0) + Number(qtyToSubmit || 0)) || 1
+      const scrapPercent = Number(scrapQtyPreview || 0) / scrapBase
+      const scrapOverTol = scrapPercent > Number(modalScrapTolerance || 0)
+      const capaTriggered = Boolean(
+        scrapOverTol ||
+          (data &&
+            typeof data === 'object' &&
+            ((data as any).capa_created || (data as any).capa_id))
+      )
+
       try {
-        await syncPoStatusFromBatch(batchId, 'Completed')
+        if (capaTriggered) {
+          const { error: updateError } = await supabase
+            .from('production_batches')
+            .update({ status: 'Quality Hold' })
+            .eq('id', batchId)
+          if (updateError) throw updateError
+
+          setItems(prev => prev.map(r => (r.id === String(batchId) ? { ...r, status: 'Quality Hold' } : r)))
+          setViewItem(prev => prev && String((prev as any).id) === String(batchId) ? ({ ...(prev as any), status: 'Quality Hold' } as any) : prev)
+
+          await syncPoStatusFromBatch(batchId, 'Quality Hold')
+        } else {
+          await handleProductionCompleted(batchId)
+        }
         await loadPurchaseOrders()
       } catch (e: any) {
-        console.warn('Failed to sync PO status from completed batch:', e)
+        console.warn('Failed to update PO status after completion:', e)
       }
       
       setCompleteId(null)
@@ -2168,9 +2283,9 @@ const ProductionSchedule: React.FC = () => {
               </div>
               <div className="bg-neutral-light/30 rounded-xl p-4 border border-neutral-soft/30">
                 <div className="text-xs font-semibold text-neutral-medium uppercase tracking-wide mb-2">Quality Assurance</div>
-                <div className="text-sm font-medium text-neutral-dark">{(row as any)?.qa_required ? 'QA approval required' : 'No QA requirements'}</div>
+                <div className="text-sm font-medium text-neutral-dark">{(((row as any)?.qa_required || productionLineByName.get(String((row as any)?.room || ''))?.needs_qa_signoff || (capaMap as any)?.[String(batchId)] || String((row as any)?.status || '') === 'Quality Hold') ? 'QA approval required' : 'No QA requirements')}</div>
               </div>
-              {(row as any)?.qa_required && (
+              {(((row as any)?.qa_required || productionLineByName.get(String((row as any)?.room || ''))?.needs_qa_signoff || (capaMap as any)?.[String(batchId)] || String((row as any)?.status || '') === 'Quality Hold')) && (
                 <div className="bg-neutral-light/30 rounded-xl p-4 border border-neutral-soft/30">
                   <div className="text-xs font-semibold text-neutral-medium uppercase tracking-wide mb-2">Approval Status</div>
                   <div className="flex items-center gap-3">
@@ -2904,7 +3019,7 @@ const ProductionSchedule: React.FC = () => {
                     </div>
                   </div>
 
-                  <div className="mt-3 grid grid-cols-1 md:grid-cols-3 gap-3 text-[11px] text-neutral-dark">
+                  <div className="mt-3 grid grid-cols-1 md:grid-cols-5 gap-3 text-[11px] text-neutral-dark">
                     <div className="flex items-center gap-2 bg-neutral-light/40 border border-neutral-soft/60 rounded-md px-3 py-2">
                       <span className="font-semibold">Lot</span>
                       <span className="opacity-80">{row.lot || '—'}</span>
@@ -2913,6 +3028,18 @@ const ProductionSchedule: React.FC = () => {
                       <span className="font-semibold">Completed</span>
                       <span className="opacity-80">{row.completedQty}</span>
                     </div>
+                    {(capaEverMap[row.id] || capaMap[row.id]) && (
+                      <div className="flex items-center gap-2 bg-neutral-light/40 border border-neutral-soft/60 rounded-md px-3 py-2">
+                        <span className="font-semibold">Scrap</span>
+                        <span className="opacity-80">{capaScrapQtyMap[row.id] ?? 0}</span>
+                      </div>
+                    )}
+                    {(capaEverMap[row.id] || capaMap[row.id]) && (
+                      <div className="flex items-center gap-2 bg-neutral-light/40 border border-neutral-soft/60 rounded-md px-3 py-2">
+                        <span className="font-semibold">Finished Goods</span>
+                        <span className="opacity-80">{Math.max(0, Number(row.completedQty || 0) - Number(capaScrapQtyMap[row.id] ?? 0))}</span>
+                      </div>
+                    )}
                     <div className="flex items-center gap-2 bg-neutral-light/40 border border-neutral-soft/60 rounded-md px-3 py-2">
                       <span className="font-semibold">Compliance</span>
                       <div className="flex items-center gap-2">
@@ -2949,9 +3076,9 @@ const ProductionSchedule: React.FC = () => {
                           Allergen Conflict
                         </span>
                       )}
-                      {capaMap[row.id] && (
+                      {(capaEverMap[row.id] || capaMap[row.id]) && (
                         <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-red-100 text-red-700 border border-red-200">
-                          CAPA
+                          {capaMap[row.id] ? 'CAPA' : 'CAPA - Revoke'}
                           <span className="ml-1 h-2 w-2 rounded-full bg-yellow-400 inline-block"></span>
                         </span>
                       )}

@@ -913,64 +913,22 @@ const Products: React.FC = () => {
                   </div>
                 </div>
 
-                {/* Row 2: Product Size */}
-                <div className="space-y-3">
-                  <label className="flex items-center text-sm font-semibold text-neutral-dark">
-                    <Box className="h-5 w-5 mr-3 text-primary-medium" />
-                    Product Size
-                  </label>
-                  <input
-                    type="text"
-                    placeholder="e.g., 8oz, 12oz, 16oz"
-                    className="w-full px-4 py-4 border border-neutral-soft rounded-xl focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all duration-200 bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium shadow-sm hover:shadow-md"
-                    value={productForm.productSize}
-                    onChange={(e) => setProductForm({ ...productForm, productSize: e.target.value })}
-                  />
-                </div>
-
-                {/* Row 3: Product Type and Unit of Measure */}
+                {/* Row 2: Product Size and Unit of Measure */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  <div className="space-y-2">
-                    <label className="flex items-center text-sm font-medium text-neutral-dark">
-                      <Package className="h-4 w-4 mr-2 text-primary-medium" />
-                      Product Type
+                  <div className="space-y-3">
+                    <label className="flex items-center text-sm font-semibold text-neutral-dark">
+                      <Box className="h-5 w-5 mr-3 text-primary-medium" />
+                      Product Size
                     </label>
-                    <div className="relative" ref={productTypeRef}>
-                      <button
-                        type="button"
-                        onClick={() => setIsProductTypeOpen((v) => !v)}
-                        className="w-full flex items-center justify-between px-4 py-3 border border-neutral-soft rounded-lg text-left bg-white transition-all hover:border-neutral-medium focus:ring-2 focus:ring-primary-light focus:border-primary-light"
-                      >
-                        <span className={productForm.productType ? 'text-neutral-dark' : 'text-neutral-medium'}>
-                          {productForm.productType || 'Select Product Type'}
-                        </span>
-                        <span className="ml-2 text-neutral-medium">▼</span>
-                      </button>
-                      {isProductTypeOpen && (
-                        <div className="absolute z-[100] mt-2 w-full bg-white border border-neutral-soft rounded-xl shadow-xl max-h-56 overflow-auto">
-                          <div className="px-3 py-2 text-xs text-neutral-medium">Select Type</div>
-                          {productTypes.map((t) => (
-                            <button
-                              key={t}
-                              type="button"
-                              className={`block w-full text-left px-4 py-2 hover:bg-neutral-light ${productForm.productType===t ? 'bg-neutral-light' : ''}`}
-                              onClick={() => { setProductForm({ ...productForm, productType: t }); setIsProductTypeOpen(false) }}
-                            >
-                              {t}
-                            </button>
-                          ))}
-                          <div className="my-1 border-t border-neutral-soft"></div>
-                          <button
-                            type="button"
-                            className="w-full text-left px-4 py-2 text-primary-medium hover:text-primary-dark hover:bg-neutral-light"
-                            onClick={() => { setNewValue(''); setShowAddProductType(true); setIsProductTypeOpen(false) }}
-                          >
-                            + Add New Product Type
-                          </button>
-                        </div>
-                      )}
-                    </div>
+                    <input
+                      type="text"
+                      placeholder="e.g., 8oz, 12oz, 16oz"
+                      className="w-full px-4 py-4 border border-neutral-soft rounded-xl focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all duration-200 bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium shadow-sm hover:shadow-md"
+                      value={productForm.productSize}
+                      onChange={(e) => setProductForm({ ...productForm, productSize: e.target.value })}
+                    />
                   </div>
+
                   <div className="space-y-2">
                     <label className="flex items-center text-sm font-medium text-neutral-dark">
                       <Scale className="h-4 w-4 mr-2 text-primary-medium" />
@@ -1014,109 +972,154 @@ const Products: React.FC = () => {
                   </div>
                 </div>
 
-                {/* Row 4: Packaging Type */}
-                <div className="space-y-2">
-                  <label className="flex items-center text-sm font-medium text-neutral-dark">
-                    <Box className="h-4 w-4 mr-2 text-primary-medium" />
-                    Packaging Type
-                  </label>
-                  <div className="relative" ref={packagingTypeRef}>
-                    <button
-                      type="button"
-                      onClick={() => setIsPackagingTypeOpen((v) => !v)}
-                      className="w-full flex items-center justify-between px-4 py-3 border border-neutral-soft rounded-lg text-left bg-white transition-all hover:border-neutral-medium focus:ring-2 focus:ring-primary-light focus:border-primary-light"
-                    >
-                      <span className={productForm.packagingType ? 'text-neutral-dark' : 'text-neutral-medium'}>
-                        {productForm.packagingType || 'Select Packaging Type'}
-                      </span>
-                      <span className="ml-2 text-neutral-medium">▼</span>
-                    </button>
-                    {isPackagingTypeOpen && (
-                      <div className="absolute z-[100] mt-2 w-full bg-white border border-neutral-soft rounded-xl shadow-xl max-h-56 overflow-auto">
-                        <div className="px-3 py-2 text-xs text-neutral-medium">Select Packaging</div>
-                        {packagingTypes.map((p) => (
+                {/* Row 3: Packaging Type and Product Type */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div className="space-y-2">
+                    <label className="flex items-center text-sm font-medium text-neutral-dark">
+                      <Box className="h-4 w-4 mr-2 text-primary-medium" />
+                      Packaging Type
+                    </label>
+                    <div className="relative" ref={packagingTypeRef}>
+                      <button
+                        type="button"
+                        onClick={() => setIsPackagingTypeOpen((v) => !v)}
+                        className="w-full flex items-center justify-between px-4 py-3 border border-neutral-soft rounded-lg text-left bg-white transition-all hover:border-neutral-medium focus:ring-2 focus:ring-primary-light focus:border-primary-light"
+                      >
+                        <span className={productForm.packagingType ? 'text-neutral-dark' : 'text-neutral-medium'}>
+                          {productForm.packagingType || 'Select Packaging Type'}
+                        </span>
+                        <span className="ml-2 text-neutral-medium">▼</span>
+                      </button>
+                      {isPackagingTypeOpen && (
+                        <div className="absolute z-[100] mt-2 w-full bg-white border border-neutral-soft rounded-xl shadow-xl max-h-56 overflow-auto">
+                          <div className="px-3 py-2 text-xs text-neutral-medium">Select Packaging</div>
+                          {packagingTypes.map((p) => (
+                            <button
+                              key={p}
+                              type="button"
+                              className={`block w-full text-left px-4 py-2 hover:bg-neutral-light ${productForm.packagingType===p ? 'bg-neutral-light' : ''}`}
+                              onClick={() => { setProductForm({ ...productForm, packagingType: p }); setIsPackagingTypeOpen(false) }}
+                            >
+                              {p}
+                            </button>
+                          ))}
+                          <div className="my-1 border-t border-neutral-soft"></div>
                           <button
-                            key={p}
                             type="button"
-                            className={`block w-full text-left px-4 py-2 hover:bg-neutral-light ${productForm.packagingType===p ? 'bg-neutral-light' : ''}`}
-                            onClick={() => { setProductForm({ ...productForm, packagingType: p }); setIsPackagingTypeOpen(false) }}
+                            className="w-full text-left px-4 py-2 text-primary-medium hover:text-primary-dark hover:bg-neutral-light"
+                            onClick={() => { setNewValue(''); setShowAddPackagingType(true); setIsPackagingTypeOpen(false) }}
                           >
-                            {p}
+                            + Add New Packaging Type
                           </button>
-                        ))}
-                        <div className="my-1 border-t border-neutral-soft"></div>
-                        <button
-                          type="button"
-                          className="w-full text-left px-4 py-2 text-primary-medium hover:text-primary-dark hover:bg-neutral-light"
-                          onClick={() => { setNewValue(''); setShowAddPackagingType(true); setIsPackagingTypeOpen(false) }}
-                        >
-                          + Add New Packaging Type
-                        </button>
-                      </div>
-                    )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="flex items-center text-sm font-medium text-neutral-dark">
+                      <Package className="h-4 w-4 mr-2 text-primary-medium" />
+                      Product Type
+                    </label>
+                    <div className="relative" ref={productTypeRef}>
+                      <button
+                        type="button"
+                        onClick={() => setIsProductTypeOpen((v) => !v)}
+                        className="w-full flex items-center justify-between px-4 py-3 border border-neutral-soft rounded-lg text-left bg-white transition-all hover:border-neutral-medium focus:ring-2 focus:ring-primary-light focus:border-primary-light"
+                      >
+                        <span className={productForm.productType ? 'text-neutral-dark' : 'text-neutral-medium'}>
+                          {productForm.productType || 'Select Product Type'}
+                        </span>
+                        <span className="ml-2 text-neutral-medium">▼</span>
+                      </button>
+                      {isProductTypeOpen && (
+                        <div className="absolute z-[100] mt-2 w-full bg-white border border-neutral-soft rounded-xl shadow-xl max-h-56 overflow-auto">
+                          <div className="px-3 py-2 text-xs text-neutral-medium">Select Type</div>
+                          {productTypes.map((t) => (
+                            <button
+                              key={t}
+                              type="button"
+                              className={`block w-full text-left px-4 py-2 hover:bg-neutral-light ${productForm.productType===t ? 'bg-neutral-light' : ''}`}
+                              onClick={() => { setProductForm({ ...productForm, productType: t }); setIsProductTypeOpen(false) }}
+                            >
+                              {t}
+                            </button>
+                          ))}
+                          <div className="my-1 border-t border-neutral-soft"></div>
+                          <button
+                            type="button"
+                            className="w-full text-left px-4 py-2 text-primary-medium hover:text-primary-dark hover:bg-neutral-light"
+                            onClick={() => { setNewValue(''); setShowAddProductType(true); setIsProductTypeOpen(false) }}
+                          >
+                            + Add New Product Type
+                          </button>
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </div>
 
-                {/* Row 5: Formula (Required) */}
-                <div className="space-y-2">
-                  <label className="flex items-center text-sm font-medium text-neutral-dark">
-                    <FlaskConical className="h-4 w-4 mr-2 text-primary-medium" />
-                    Formula
-                    <span className="text-red-500 ml-1">*</span>
-                  </label>
-                  <div className="relative" ref={formulaRef}>
-                    <button
-                      type="button"
-                      onClick={() => { if (!formulasLoading) setIsFormulaOpen((v)=>!v) }}
-                      className="w-full flex items-center justify-between px-4 py-3 border border-neutral-soft rounded-lg text-left bg-white transition-all hover:border-neutral-medium focus:ring-2 focus:ring-primary-light focus:border-primary-light"
-                    >
-                      <span className={selectedFormula ? 'text-neutral-dark' : 'text-neutral-medium'}>
-                        {selectedFormula ? `${selectedFormula.formula_name}` : (formulasLoading ? 'Loading formulas...' : 'Select Formula')}
-                      </span>
-                      <span className="ml-2 text-neutral-medium">▼</span>
-                    </button>
-                    {isFormulaOpen && (
-                      <div className="absolute z-[100] mt-2 w-full bg-white border border-neutral-soft rounded-xl shadow-xl max-h-56 overflow-auto">
-                        <div className="px-3 py-2 text-xs text-neutral-medium">Select Formula</div>
-                        {formulas.map((f) => (
+                {/* Row 4: Formula and Shelf Life */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div className="space-y-2">
+                    <label className="flex items-center text-sm font-medium text-neutral-dark">
+                      <FlaskConical className="h-4 w-4 mr-2 text-primary-medium" />
+                      Formula
+                      <span className="text-red-500 ml-1">*</span>
+                    </label>
+                    <div className="relative" ref={formulaRef}>
+                      <button
+                        type="button"
+                        onClick={() => { if (!formulasLoading) setIsFormulaOpen((v)=>!v) }}
+                        className="w-full flex items-center justify-between px-4 py-3 border border-neutral-soft rounded-lg text-left bg-white transition-all hover:border-neutral-medium focus:ring-2 focus:ring-primary-light focus:border-primary-light"
+                      >
+                        <span className={selectedFormula ? 'text-neutral-dark' : 'text-neutral-medium'}>
+                          {selectedFormula ? `${selectedFormula.formula_name}` : (formulasLoading ? 'Loading formulas...' : 'Select Formula')}
+                        </span>
+                        <span className="ml-2 text-neutral-medium">▼</span>
+                      </button>
+                      {isFormulaOpen && (
+                        <div className="absolute z-[100] mt-2 w-full bg-white border border-neutral-soft rounded-xl shadow-xl max-h-56 overflow-auto">
+                          <div className="px-3 py-2 text-xs text-neutral-medium">Select Formula</div>
+                          {formulas.map((f) => (
+                            <button
+                              key={f.id}
+                              type="button"
+                              className={`block w-full text-left px-4 py-2 hover:bg-neutral-light ${selectedFormula?.id===f.id ? 'bg-neutral-light' : ''}`}
+                              onClick={() => { setSelectedFormula(f); setIsFormulaOpen(false) }}
+                            >
+                              <div className="text-sm text-neutral-dark font-medium">{f.formula_name}</div>
+                            </button>
+                          ))}
+                          {(!formulasLoading && formulas.length === 0) && (
+                            <div className="px-4 py-3 text-sm text-neutral-medium">No formulas found</div>
+                          )}
+                          <div className="my-1 border-t border-neutral-soft"></div>
                           <button
-                            key={f.id}
                             type="button"
-                            className={`block w-full text-left px-4 py-2 hover:bg-neutral-light ${selectedFormula?.id===f.id ? 'bg-neutral-light' : ''}`}
-                            onClick={() => { setSelectedFormula(f); setIsFormulaOpen(false) }}
+                            className="w-full text-left px-4 py-2 text-primary-medium hover:text-primary-dark hover:bg-neutral-light"
+                            onClick={() => { setIsFormulaOpen(false); setActiveTab('formulas'); }}
                           >
-                            <div className="text-sm text-neutral-dark font-medium">{f.formula_name}</div>
+                            + Add New Formula
                           </button>
-                        ))}
-                        {(!formulasLoading && formulas.length === 0) && (
-                          <div className="px-4 py-3 text-sm text-neutral-medium">No formulas found</div>
-                        )}
-                        <div className="my-1 border-t border-neutral-soft"></div>
-                        <button
-                          type="button"
-                          className="w-full text-left px-4 py-2 text-primary-medium hover:text-primary-dark hover:bg-neutral-light"
-                          onClick={() => { setIsFormulaOpen(false); setActiveTab('formulas'); }}
-                        >
-                          + Add New Formula
-                        </button>
-                      </div>
-                    )}
+                        </div>
+                      )}
+                    </div>
                   </div>
-                </div>
 
-                {/* Row 6: Shelf Life */}
-                <div className="space-y-2">
-                  <label className="flex items-center text-sm font-medium text-neutral-dark">
-                    <Calendar className="h-4 w-4 mr-2 text-primary-medium" />
-                    Shelf Life (Days)
-                  </label>
-                  <input
-                    type="number"
-                    placeholder="e.g., 365"
-                    className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all duration-200 bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium"
-                    value={productForm.shelfLife}
-                    onChange={(e) => setProductForm({ ...productForm, shelfLife: e.target.value })}
-                  />
+                  <div className="space-y-2">
+                    <label className="flex items-center text-sm font-medium text-neutral-dark">
+                      <Calendar className="h-4 w-4 mr-2 text-primary-medium" />
+                      Shelf Life (Days)
+                    </label>
+                    <input
+                      type="number"
+                      placeholder="e.g., 365"
+                      className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all duration-200 bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium"
+                      value={productForm.shelfLife}
+                      onChange={(e) => setProductForm({ ...productForm, shelfLife: e.target.value })}
+                    />
+                  </div>
                 </div>
 
                 {/* Row 6.5: Discontinued and Substitute SKU */}

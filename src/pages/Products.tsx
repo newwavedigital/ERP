@@ -849,9 +849,9 @@ const Products: React.FC = () => {
                 }}
                 className="p-8 space-y-6"
               >
-                {/* Row 1: Product Name and Customer */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  <div className="space-y-3">
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                  {/* Row 1: Product Name and Customer */}
+                  <div className="space-y-3 lg:col-span-2">
                     <label className="flex items-center text-sm font-semibold text-neutral-dark">
                       <Package className="h-5 w-5 mr-3 text-primary-medium" />
                       Product Name
@@ -911,10 +911,8 @@ const Products: React.FC = () => {
                       )}
                     </div>
                   </div>
-                </div>
 
-                {/* Row 2: Product Size and Unit of Measure */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  {/* Row 2: Product Size and Unit of Measure */}
                   <div className="space-y-3">
                     <label className="flex items-center text-sm font-semibold text-neutral-dark">
                       <Box className="h-5 w-5 mr-3 text-primary-medium" />
@@ -970,10 +968,8 @@ const Products: React.FC = () => {
                       )}
                     </div>
                   </div>
-                </div>
 
-                {/* Row 3: Packaging Type and Product Type */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  {/* Row 3: Packaging Type and Product Type */}
                   <div className="space-y-2">
                     <label className="flex items-center text-sm font-medium text-neutral-dark">
                       <Box className="h-4 w-4 mr-2 text-primary-medium" />
@@ -1057,10 +1053,8 @@ const Products: React.FC = () => {
                       )}
                     </div>
                   </div>
-                </div>
 
-                {/* Row 4: Formula and Shelf Life */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  {/* Row 4: Formula and Shelf Life */}
                   <div className="space-y-2">
                     <label className="flex items-center text-sm font-medium text-neutral-dark">
                       <FlaskConical className="h-4 w-4 mr-2 text-primary-medium" />
@@ -1120,10 +1114,8 @@ const Products: React.FC = () => {
                       onChange={(e) => setProductForm({ ...productForm, shelfLife: e.target.value })}
                     />
                   </div>
-                </div>
 
-                {/* Row 6.5: Discontinued and Substitute SKU */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  {/* Row 6.5: Discontinued and Substitute SKU */}
                   <div className="space-y-2">
                     <label className="flex items-center text-sm font-medium text-neutral-dark">Discontinued</label>
                     <label className="inline-flex items-center gap-3 cursor-pointer select-none">
@@ -1146,10 +1138,9 @@ const Products: React.FC = () => {
                       onChange={(e) => setProductForm({ ...productForm, substituteSku: e.target.value })}
                     />
                   </div>
-                </div>
 
-                {/* Row 7: Price */}
-                <div className="space-y-2">
+                  {/* Row 7: Price */}
+                  <div className="space-y-2">
                   <label className="flex items-center text-sm font-medium text-neutral-dark">
                     <span className="text-neutral-dark">Price</span>
                   </label>
@@ -1161,10 +1152,10 @@ const Products: React.FC = () => {
                     value={productForm.cost}
                     onChange={(e) => setProductForm({ ...productForm, cost: e.target.value })}
                   />
-                </div>
 
-                {/* Row 8: Case Qty and Case Dimensions (One Line) */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  </div>
+
+                  {/* Row 8: Case Qty and Case Dimensions (One Line) */}
                   <div className="space-y-2">
                     <label className="flex items-center text-sm font-medium text-neutral-dark">Case Qty</label>
                     <input
@@ -1185,10 +1176,9 @@ const Products: React.FC = () => {
                       onChange={(e) => setProductForm({ ...productForm, caseDimension: e.target.value })}
                     />
                   </div>
-                </div>
 
-                {/* Row 6.6: Allergen Profile */}
-                <div className="space-y-3">
+                  {/* Row 6.6: Allergen Profile */}
+                  <div className="space-y-3 md:col-span-2 lg:col-span-3">
                   <label className="flex items-center text-sm font-medium text-neutral-dark">Allergen Profile</label>
                   <div className="flex flex-wrap gap-2">
                     {commonAllergens.map((a: string) => {
@@ -1235,6 +1225,7 @@ const Products: React.FC = () => {
                         ))}
                       </div>
                     )}
+                  </div>
                   </div>
                 </div>
 

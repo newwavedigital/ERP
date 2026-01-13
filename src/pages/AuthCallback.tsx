@@ -48,6 +48,18 @@ const AuthCallback: React.FC = () => {
       }
     }
 
+    const redirectToSetPassword = () => {
+      window.location.replace(`${window.location.origin}/#/set-password`)
+      if (window.opener && !window.opener.closed) {
+        try {
+          window.opener.location.href = `${window.location.origin}/#/set-password`
+          setTimeout(() => window.close(), 500)
+        } catch (e) {
+          setTimeout(() => window.close(), 500)
+        }
+      }
+    }
+
     async function run() {
       try {
         if (err) {
@@ -56,6 +68,11 @@ const AuthCallback: React.FC = () => {
         if (access_token && refresh_token) {
           const { error: setErr } = await supabase.auth.setSession({ access_token, refresh_token })
           if (setErr) throw setErr
+          if (type === 'invite') {
+            setMessage('Invitation accepted. Redirecting…')
+            setTimeout(redirectToSetPassword, 900)
+            return
+          }
           setMessage('Signed in! Redirecting to Login…')
           setTimeout(redirectToLogin, 1000)
           return

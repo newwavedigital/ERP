@@ -18,6 +18,7 @@ import AIInsights from './pages/AIInsights.tsx'
 import Login from './pages/Login.tsx'
 import LandingPage from './pages/LandingPage.tsx'
 import AuthCallback from './pages/AuthCallback.tsx'
+import SetPassword from './pages/SetPassword.tsx'
 import WaitingApproval from './pages/WaitingApproval.tsx'
 import Rejected from './pages/Rejected.tsx'
 import AccountManagement from './pages/management/AccountManagement.tsx'
@@ -41,6 +42,7 @@ const App: React.FC = () => {
       </ApprovalGuard>
     ) },
     { path: 'auth/callback', element: <AuthCallback /> },
+    { path: 'set-password', element: <SetPassword /> },
     { path: 'login', element: <Login /> },
     { path: 'waiting-approval', element: <WaitingApproval /> },
     { path: 'rejected', element: <Rejected /> },

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { ArrowRight, CheckCircle, BarChart3, Package, ShoppingCart, Zap, TrendingUp, Factory, Truck, Layers, Settings, ChevronLeft, ChevronRight, Play } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
+import { useAuth } from '../contexts/AuthContext'
 
 // Custom hook for scroll animations
 const useScrollAnimation = () => {
@@ -57,6 +58,7 @@ const useScrollAnimation = () => {
 
 const LandingPage: React.FC = () => {
   const navigate = useNavigate()
+  const { user, initializing } = useAuth()
   const [currentSlide, setCurrentSlide] = useState(0)
   const { visibleElements, observeElement } = useScrollAnimation()
 
@@ -76,6 +78,19 @@ const LandingPage: React.FC = () => {
     }, 4000)
     return () => clearInterval(interval)
   }, [])
+
+  useEffect(() => {
+    if (initializing) return
+    if (!user) return
+    let target = '/admin/dashboard'
+    try {
+      const last = localStorage.getItem('erp_last_admin_path')
+      if (last && last.startsWith('/admin')) target = last
+    } catch {}
+    if (window.location.hash === '#/' || window.location.hash === '' || window.location.hash.startsWith('#/landing')) {
+      navigate(target, { replace: true })
+    }
+  }, [initializing, user, navigate])
 
   // Set up scroll observers for all sections
   useEffect(() => {

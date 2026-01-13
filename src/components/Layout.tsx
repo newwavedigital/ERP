@@ -111,6 +111,15 @@ const Layout: React.FC = () => {
     setMobileMenuOpen(false)
   }, [location.pathname])
 
+  useEffect(() => {
+    if (initializing || !user) return
+    const p = String(location.pathname || '')
+    if (!p.startsWith('/admin')) return
+    try {
+      localStorage.setItem('erp_last_admin_path', p)
+    } catch {}
+  }, [location.pathname, initializing, user])
+
   // Prevent body scroll when mobile menu is open
   useEffect(() => {
     if (mobileMenuOpen) {

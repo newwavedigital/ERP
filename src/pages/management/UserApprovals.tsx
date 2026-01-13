@@ -643,10 +643,12 @@ const UserApprovals: React.FC<UserApprovalsProps> = ({ embedded }) => {
                       setAddError('Email is required')
                       return
                     }
+                    const redirect_to = `${window.location.origin}/#/auth/callback`
                     await invokeAdminUserManagement({
                       action: 'create_user',
                       payload: {
                         email,
+                        redirect_to,
                         first_name: addForm.first_name.trim() || null,
                         last_name: addForm.last_name.trim() || null,
                         role: addForm.role,

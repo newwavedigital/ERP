@@ -1348,15 +1348,7 @@ const Customers: React.FC = () => {
                 <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
                   <button
                     type="button"
-                    onClick={() => navigate('/customers/registration')}
-                    className="w-full sm:w-auto px-4 py-2.5 rounded-xl border border-neutral-soft bg-white hover:bg-neutral-light/40 text-neutral-dark font-semibold transition-all flex items-center justify-center gap-2"
-                  >
-                    <FileText className="h-4 w-4 text-primary-medium" />
-                    Customer Form
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => navigate('/customers/registration/dillys')}
+                    onClick={() => navigate('/customers/registration/dillys?from=customers', { state: { from: 'customers' } })}
                     className="w-full sm:w-auto px-4 py-2.5 rounded-xl border border-neutral-soft bg-white hover:bg-neutral-light/40 text-neutral-dark font-semibold transition-all flex items-center justify-center gap-2"
                   >
                     <FileText className="h-4 w-4 text-primary-medium" />
@@ -1364,7 +1356,7 @@ const Customers: React.FC = () => {
                   </button>
                   <button
                     type="button"
-                    onClick={() => navigate('/customers/registration/bnutty')}
+                    onClick={() => navigate('/customers/registration/bnutty?from=customers', { state: { from: 'customers' } })}
                     className="w-full sm:w-auto px-4 py-2.5 rounded-xl border border-neutral-soft bg-white hover:bg-neutral-light/40 text-neutral-dark font-semibold transition-all flex items-center justify-center gap-2"
                   >
                     <FileText className="h-4 w-4 text-primary-medium" />

@@ -7,6 +7,7 @@ type Action = "create_user" | "update_user" | "delete_user";
 
 type CreateUserPayload = {
   email: string;
+  redirect_to?: string | null;
   first_name?: string | null;
   last_name?: string | null;
   role?: string | null;
@@ -85,12 +86,15 @@ Deno.serve(async (req: Request) => {
 
   try {
     if (body.action === "create_user") {
-      const { email, first_name, last_name, role } = body.payload;
+      const { email, redirect_to, first_name, last_name, role } = body.payload;
       const normalizedEmail = String(email || "").trim().toLowerCase();
       if (!normalizedEmail) return json(400, { error: "Email is required" });
 
+      const redirectTo = redirect_to ? String(redirect_to) : undefined;
+
       const { data: inviteData, error: inviteErr } = await adminClient.auth.admin.inviteUserByEmail(
         normalizedEmail,
+        redirectTo ? { redirectTo } : undefined,
       );
       if (inviteErr) return json(400, { error: inviteErr.message || "Failed to invite user" });
 

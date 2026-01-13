@@ -42,9 +42,27 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, [])
 
   const signOut = async () => {
-    await supabase.auth.signOut()
-    setUser(null)
-    setSession(null)
+    try {
+      const { data } = await supabase.auth.getSession()
+      const s = data.session
+      const expiresAtMs = s?.expires_at ? Number(s.expires_at) * 1000 : null
+
+      // If session is missing/expired, don't call the network logout endpoint (often returns 403).
+      if (s?.access_token && expiresAtMs && expiresAtMs > Date.now()) {
+        try {
+          await supabase.auth.signOut({ scope: 'local' } as any)
+        } catch {}
+      }
+    } finally {
+      // Always clear local auth storage so refresh/restart won't restore the session.
+      try {
+        localStorage.removeItem('sb-qupsgxpaotpotvxpcppn-auth-token')
+        localStorage.removeItem('erp_auth')
+        localStorage.removeItem('erp_last_admin_path')
+      } catch {}
+      setUser(null)
+      setSession(null)
+    }
   }
 
   const value = useMemo(() => ({ user, session, initializing, signOut }), [user, session, initializing])

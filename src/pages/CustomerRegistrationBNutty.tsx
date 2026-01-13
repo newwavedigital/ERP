@@ -1,16 +1,24 @@
 import React, { useState } from 'react'
 import { Building2, User, Mail, Phone, Globe, MapPin, FileText, CheckCircle2, ArrowLeft, BadgeCheck, Package, Box, Leaf, AlertTriangle, FlaskConical, FileUp } from 'lucide-react'
 import { supabase } from '../lib/supabase'
-import { useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 
 const CustomerRegistrationBNutty: React.FC = () => {
   const navigate = useNavigate()
+  const location = useLocation()
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [submitted, setSubmitted] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [customerId, setCustomerId] = useState<string | null>(null)
   const [onboardingId, setOnboardingId] = useState<string | null>(null)
   const [onboardingNotes, setOnboardingNotes] = useState('')
+
+  const cameFromCustomers = (() => {
+    const stateFrom = (location.state as any)?.from
+    if (stateFrom === 'customers') return true
+    const params = new URLSearchParams(location.search)
+    return params.get('from') === 'customers'
+  })()
   
   const [formData, setFormData] = useState({
     company_name: '',
@@ -144,11 +152,11 @@ const CustomerRegistrationBNutty: React.FC = () => {
     <div className="min-h-screen bg-gradient-to-br from-primary-light/20 via-white to-primary-medium/20 py-12 px-4">
       <div className="max-w-6xl mx-auto">
         <button
-          onClick={() => navigate('/')}
+          onClick={() => navigate(cameFromCustomers ? '/admin/customers' : '/')}
           className="mb-6 flex items-center gap-2 text-primary-dark hover:text-primary-medium transition-colors font-medium"
         >
           <ArrowLeft className="h-5 w-5" />
-          Back to Home
+          {cameFromCustomers ? 'Back to Customers' : 'Back to Home'}
         </button>
 
         <div className="bg-white rounded-3xl shadow-2xl border border-neutral-soft/30 overflow-hidden">

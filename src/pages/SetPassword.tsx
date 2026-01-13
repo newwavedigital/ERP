@@ -35,6 +35,10 @@ const SetPassword: React.FC = () => {
       setLoading(true)
       const { error: updErr } = await supabase.auth.updateUser({ password })
       if (updErr) throw updErr
+      const { error: actErr } = await supabase.functions.invoke('admin-user-management', {
+        body: { action: 'activate_user', payload: {} },
+      })
+      if (actErr) throw actErr
       setMessage('Password set! Redirecting…')
       setTimeout(() => navigate('/admin/dashboard', { replace: true }), 600)
     } catch (e: any) {

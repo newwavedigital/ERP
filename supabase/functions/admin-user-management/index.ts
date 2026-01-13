@@ -3,7 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 
 declare const Deno: any;
 
-type Action = "create_user" | "update_user" | "delete_user";
+type Action = "create_user" | "update_user" | "delete_user" | "activate_user";
 
 type CreateUserPayload = {
   email: string;
@@ -25,10 +25,15 @@ type DeleteUserPayload = {
   id: string;
 };
 
+type ActivateUserPayload = {
+  id?: string | null;
+};
+
 type RequestBody =
   | { action: "create_user"; payload: CreateUserPayload }
   | { action: "update_user"; payload: UpdateUserPayload }
-  | { action: "delete_user"; payload: DeleteUserPayload };
+  | { action: "delete_user"; payload: DeleteUserPayload }
+  | { action: "activate_user"; payload?: ActivateUserPayload };
 
 const json = (status: number, body: unknown) =>
   new Response(JSON.stringify(body), {
@@ -66,17 +71,6 @@ Deno.serve(async (req: Request) => {
 
   const callerId = userData.user.id;
 
-  const { data: callerProfile, error: callerProfileErr } = await adminClient
-    .from("profiles")
-    .select("role")
-    .eq("id", callerId)
-    .maybeSingle();
-
-  if (callerProfileErr) return json(500, { error: "Failed to load caller profile" });
-
-  const callerRole = String((callerProfile as any)?.role || "").toLowerCase();
-  if (callerRole !== "admin") return json(403, { error: "Admin only" });
-
   let body: RequestBody;
   try {
     body = (await req.json()) as RequestBody;
@@ -85,6 +79,32 @@ Deno.serve(async (req: Request) => {
   }
 
   try {
+    if (body.action === "activate_user") {
+      const targetId = String((body.payload as any)?.id || callerId).trim();
+      if (targetId !== callerId) return json(403, { error: "Cannot activate another user" });
+
+      const updates: Record<string, unknown> = {
+        approval_status: "approved",
+        updated_at: new Date().toISOString(),
+      };
+
+      const { error: updErr } = await adminClient.from("profiles").update(updates).eq("id", callerId);
+      if (updErr) return json(400, { error: updErr.message || "Failed to activate user" });
+
+      return json(200, { ok: true });
+    }
+
+    const { data: callerProfile, error: callerProfileErr } = await adminClient
+      .from("profiles")
+      .select("role")
+      .eq("id", callerId)
+      .maybeSingle();
+
+    if (callerProfileErr) return json(500, { error: "Failed to load caller profile" });
+
+    const callerRole = String((callerProfile as any)?.role || "").toLowerCase();
+    if (callerRole !== "admin") return json(403, { error: "Admin only" });
+
     if (body.action === "create_user") {
       const { email, redirect_to, first_name, last_name, role } = body.payload;
       const normalizedEmail = String(email || "").trim().toLowerCase();
@@ -108,7 +128,7 @@ Deno.serve(async (req: Request) => {
         last_name: last_name ?? null,
         role: role ?? "client",
         updated_at: new Date().toISOString(),
-        approval_status: "approved",
+        approval_status: "pending",
       };
 
       const { error: upsertErr } = await adminClient

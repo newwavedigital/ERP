@@ -1,11 +1,19 @@
 import React, { useEffect, useRef, useState, useMemo } from 'react'
-import { Plus, Search, Filter, Users, User, Mail, Phone, Globe, BadgeCheck, Eye, Edit, Trash2, Building2, MapPin, FileText, CheckCircle2, Package, Box, Leaf, AlertTriangle, FlaskConical, FileUp } from 'lucide-react'
+import { Plus, Search, Filter, Users, User, Mail, Phone, Globe, BadgeCheck, Eye, Edit, Trash2, Building2, MapPin, FileText, CheckCircle2, Package, Box, Leaf, AlertTriangle, FlaskConical, FileUp, Upload } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../contexts/AuthContext'
+import { useNavigate } from 'react-router-dom'
 
 // Tab Components
 const ProductsTab: React.FC<{ onboardingId: string | null }> = ({ onboardingId }) => {
   const [newProduct, setNewProduct] = useState({ product_name: '', formula_source: 'existing', specifications: '', trial_date: '' })
+  const [availableProducts, setAvailableProducts] = useState<Array<{ id: string; name: string }>>([]) 
+  const [isProductDropdownOpen, setIsProductDropdownOpen] = useState(false)
+  const [selectedProductIds, setSelectedProductIds] = useState<string[]>([])
+  const [isAddNewProductOpen, setIsAddNewProductOpen] = useState(false)
+  const [newProductName, setNewProductName] = useState('')
+  const [isAddingNewProduct, setIsAddingNewProduct] = useState(false)
+  const productDropdownRef = useRef<HTMLDivElement>(null)
   const [products, setProducts] = useState<
     Array<{
       id: string
@@ -17,6 +25,23 @@ const ProductsTab: React.FC<{ onboardingId: string | null }> = ({ onboardingId }
     }>
   >([])
   const syncingProductIdsRef = useRef<Set<string>>(new Set())
+
+  // Load available products from database
+  useEffect(() => {
+    ;(async () => {
+      try {
+        const { data, error } = await supabase
+          .from('products')
+          .select('id, product_name')
+          .order('product_name', { ascending: true })
+        if (error) throw error
+        const list = (data ?? []).map((p: any) => ({ id: String(p.id), name: String(p.product_name || '') }))
+        setAvailableProducts(list)
+      } catch (e) {
+        // ignore; allow local-only usage
+      }
+    })()
+  }, [])
 
   useEffect(() => {
     if (!onboardingId) return
@@ -95,16 +120,75 @@ const ProductsTab: React.FC<{ onboardingId: string | null }> = ({ onboardingId }
     })()
   }, [onboardingId, products])
 
+  // Click outside handler
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (productDropdownRef.current && !productDropdownRef.current.contains(event.target as Node)) {
+        setIsProductDropdownOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
+
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <input
-          type="text"
-          value={newProduct.product_name}
-          onChange={(e) => setNewProduct({ ...newProduct, product_name: e.target.value })}
-          placeholder="Product Name"
-          className="px-4 py-2 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light"
-        />
+        <div className="relative" ref={productDropdownRef}>
+          <button
+            type="button"
+            onClick={() => setIsProductDropdownOpen(!isProductDropdownOpen)}
+            className="w-full flex items-center justify-between px-4 py-2 border border-neutral-soft rounded-lg text-left bg-white transition-all hover:border-neutral-medium focus:ring-2 focus:ring-primary-light focus:border-primary-light"
+          >
+            <span className={selectedProductIds.length > 0 ? 'text-neutral-dark' : 'text-neutral-medium'}>
+              {selectedProductIds.length > 0
+                ? `${selectedProductIds.length} product${selectedProductIds.length > 1 ? 's' : ''} selected`
+                : 'Select Products'}
+            </span>
+            <span className="ml-2 text-neutral-medium">▼</span>
+          </button>
+          {isProductDropdownOpen && (
+            <div className="absolute z-50 mt-2 w-full bg-white border border-neutral-soft rounded-xl shadow-xl max-h-64 overflow-hidden">
+              <div className="px-3 py-2 text-xs text-neutral-medium border-b border-neutral-soft/50">
+                Select product(s) for specifications
+              </div>
+              <div className="max-h-48 overflow-auto">
+                {availableProducts.length === 0 ? (
+                  <div className="px-3 py-4 text-sm text-neutral-medium text-center">No products found</div>
+                ) : (
+                  availableProducts.map(p => (
+                    <label key={p.id} className="w-full flex items-center gap-3 px-3 py-2 hover:bg-neutral-light/40 cursor-pointer text-left">
+                      <input
+                        type="checkbox"
+                        className="h-4 w-4 text-primary-dark focus:ring-primary-light border-neutral-soft rounded"
+                        checked={selectedProductIds.includes(p.id)}
+                        onChange={(e) => {
+                          setSelectedProductIds((prev) =>
+                            e.target.checked ? [...prev, p.id] : prev.filter((id) => id !== p.id)
+                          )
+                        }}
+                      />
+                      <span className="text-sm text-neutral-dark flex-1">{p.name}</span>
+                    </label>
+                  ))
+                )}
+              </div>
+              <div className="border-t border-neutral-soft/50">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsProductDropdownOpen(false)
+                    setIsAddNewProductOpen(true)
+                  }}
+                  className="w-full flex items-center gap-2 px-3 py-3 text-sm text-primary-medium hover:bg-primary-light/10 transition-colors"
+                >
+                  <Plus className="h-4 w-4" />
+                  Add New Product
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
         <select
           value={newProduct.formula_source}
           onChange={(e) => setNewProduct({ ...newProduct, formula_source: e.target.value })}
@@ -130,45 +214,50 @@ const ProductsTab: React.FC<{ onboardingId: string | null }> = ({ onboardingId }
       <button
         type="button"
         onClick={async () => {
-          if (!newProduct.product_name) return
+          if (selectedProductIds.length === 0) return
           try {
+            const namesById = new Map(availableProducts.map((p) => [p.id, p.name]))
+            const selectedNames = selectedProductIds
+              .map((id) => namesById.get(id))
+              .filter((x): x is string => Boolean(x && String(x).trim()))
+            if (selectedNames.length === 0) return
+
             if (!onboardingId) {
-              const tempId = `temp_${Date.now()}_${Math.random().toString(16).slice(2)}`
               setProducts((prev) => [
                 ...prev,
-                {
-                  id: tempId,
+                ...selectedNames.map((name) => ({
+                  id: `temp_${Date.now()}_${Math.random().toString(16).slice(2)}`,
                   pending: true,
-                  product_name: newProduct.product_name,
+                  product_name: name,
                   formula_source: newProduct.formula_source,
                   specifications: newProduct.specifications,
                   trial_date: newProduct.trial_date,
-                },
+                })),
               ])
             } else {
+              const rowsToInsert = selectedNames.map((name) => ({
+                onboarding_id: onboardingId,
+                product_name: name,
+                formula_source: newProduct.formula_source,
+                specifications: newProduct.specifications,
+                trial_date: newProduct.trial_date,
+              }))
               const { data, error } = await supabase
                 .from('onboarding_products')
-                .insert({
-                  onboarding_id: onboardingId,
-                  ...newProduct,
-                })
+                .insert(rowsToInsert)
                 .select('id, product_name, formula_source, specifications, trial_date')
-                .single()
               if (error) throw error
-              if (data?.id) {
-                setProducts((prev) => [
-                  ...prev,
-                  {
-                    id: String(data.id),
-                    pending: false,
-                    product_name: String(data.product_name || ''),
-                    formula_source: String(data.formula_source || 'existing'),
-                    specifications: String(data.specifications || ''),
-                    trial_date: String(data.trial_date || ''),
-                  },
-                ])
-              }
+              const inserted = (data ?? []).map((r: any) => ({
+                id: String(r.id),
+                pending: false,
+                product_name: String(r.product_name || ''),
+                formula_source: String(r.formula_source || 'existing'),
+                specifications: String(r.specifications || ''),
+                trial_date: String(r.trial_date || ''),
+              }))
+              if (inserted.length > 0) setProducts((prev) => [...prev, ...inserted])
             }
+            setSelectedProductIds([])
             setNewProduct({ product_name: '', formula_source: 'existing', specifications: '', trial_date: '' })
           } catch (e) {
             console.error('Failed to add product:', e)
@@ -204,6 +293,74 @@ const ProductsTab: React.FC<{ onboardingId: string | null }> = ({ onboardingId }
               </button>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Add New Product Modal */}
+      {isAddNewProductOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/50" onClick={() => !isAddingNewProduct && setIsAddNewProductOpen(false)}></div>
+          <div className="relative z-10 w-full max-w-md bg-white rounded-2xl shadow-2xl border border-neutral-soft/30 overflow-hidden">
+            <div className="px-6 py-4 border-b border-neutral-soft/30 flex items-center justify-between">
+              <div className="text-lg font-semibold text-neutral-dark">Add New Product</div>
+              <button type="button" className="p-2 rounded-lg hover:bg-neutral-light/40 text-neutral-medium" onClick={() => !isAddingNewProduct && setIsAddNewProductOpen(false)}>
+                ×
+              </button>
+            </div>
+            <div className="px-6 py-5 space-y-4">
+              <div className="space-y-2">
+                <label className="text-sm font-semibold text-neutral-dark">Product Name</label>
+                <input
+                  type="text"
+                  value={newProductName}
+                  onChange={(e) => setNewProductName(e.target.value)}
+                  placeholder="Enter product name"
+                  className="w-full px-4 py-2.5 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light"
+                />
+              </div>
+            </div>
+            <div className="px-6 py-4 border-t border-neutral-soft/30 flex items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setIsAddNewProductOpen(false)}
+                disabled={isAddingNewProduct}
+                className="px-4 py-2 rounded-lg border border-neutral-soft text-neutral-dark hover:bg-neutral-light disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isAddingNewProduct || !newProductName.trim()}
+                onClick={async () => {
+                  try {
+                    setIsAddingNewProduct(true)
+                    const { data, error } = await supabase
+                      .from('products')
+                      .insert({
+                        product_name: newProductName.trim(),
+                      })
+                      .select('id, product_name')
+                      .single()
+                    if (error) throw error
+                    if (data?.id) {
+                      const newProd = { id: String(data.id), name: String(data.product_name || '') }
+                      setAvailableProducts(prev => [...prev, newProd].sort((a, b) => a.name.localeCompare(b.name)))
+                      setSelectedProductIds((prev) => (prev.includes(newProd.id) ? prev : [...prev, newProd.id]))
+                    }
+                    setIsAddNewProductOpen(false)
+                    setNewProductName('')
+                  } catch (e) {
+                    console.error('Failed to add product:', e)
+                  } finally {
+                    setIsAddingNewProduct(false)
+                  }
+                }}
+                className="px-4 py-2 rounded-lg bg-primary-medium text-white hover:bg-primary-dark disabled:opacity-50"
+              >
+                {isAddingNewProduct ? 'Adding...' : 'Add Product'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>
@@ -887,6 +1044,7 @@ const DocumentsTab: React.FC<{ onboardingId: string | null }> = ({ onboardingId 
 
 const Customers: React.FC = () => {
   const { user } = useAuth()
+  const navigate = useNavigate()
   const [currentUserRole, setCurrentUserRole] = useState<string | null>(null)
   const [roleLoading, setRoleLoading] = useState<boolean>(false)
 
@@ -952,8 +1110,27 @@ const Customers: React.FC = () => {
   const [error, setError] = useState<string | null>(null)
   const [toast, setToast] = useState<{ show: boolean; message: string }>(() => ({ show: false, message: '' }))
   // Products for UI-only multi-select in Add Customer modal
-  const [allProducts, setAllProducts] = useState<Array<{ id: string; name: string }>>([])
+  const [allProducts, setAllProducts] = useState<Array<{ id: string; name: string }>>([])  
   const [selectedProductIds, setSelectedProductIds] = useState<string[]>([])
+
+  const [ndaFile, setNdaFile] = useState<File | null>(null)
+  const [contractFile, setContractFile] = useState<File | null>(null)
+  const [ndaUrl, setNdaUrl] = useState<string>('')
+  const [contractUrl, setContractUrl] = useState<string>('')
+  const [uploadingNda, setUploadingNda] = useState(false)
+  const [uploadingContract, setUploadingContract] = useState(false)
+
+  const [ndaDragOver, setNdaDragOver] = useState(false)
+  const [contractDragOver, setContractDragOver] = useState(false)
+  const ndaFileInputRef = useRef<HTMLInputElement | null>(null)
+  const contractFileInputRef = useRef<HTMLInputElement | null>(null)
+
+  // Products dropdown state
+  const [isProductsDropdownOpen, setIsProductsDropdownOpen] = useState(false)
+  const [isAddProductModalOpen, setIsAddProductModalOpen] = useState(false)
+  const [newProductForm, setNewProductForm] = useState({ product_name: '', description: '' })
+  const [isAddingProduct, setIsAddingProduct] = useState(false)
+  const productsDropdownRef = useRef<HTMLDivElement>(null)
 
   // Load user role
   const loadUserRole = async () => {
@@ -1051,6 +1228,53 @@ const Customers: React.FC = () => {
     }
   }
 
+  const uploadAgreementFile = async (ensuredOnboardingId: string, kind: 'nda' | 'contract', file: File) => {
+    const bucket = 'ERP_storage'
+    const safeName = `${Date.now()}-${file.name}`.replace(/[^a-zA-Z0-9._-]/g, '_')
+    const path = `onboarding_docs/${ensuredOnboardingId}/${kind}/${safeName}`
+    const { error: upErr } = await supabase.storage.from(bucket).upload(path, file, {
+      upsert: true,
+      contentType: file.type || 'application/octet-stream',
+    })
+    if (upErr) throw upErr
+    const { data: pub } = supabase.storage.from(bucket).getPublicUrl(path)
+    let url = pub?.publicUrl || ''
+    if (!url) {
+      const { data: signed } = await supabase.storage.from(bucket).createSignedUrl(path, 60 * 60 * 24 * 365)
+      url = signed?.signedUrl || ''
+    }
+    if (!url) throw new Error('Failed to generate file URL')
+    const { error: insErr } = await supabase.from('onboarding_documents').insert({
+      onboarding_id: ensuredOnboardingId,
+      document_type: kind,
+      file_url: url,
+    })
+    if (insErr) throw insErr
+    return url
+  }
+
+  const uploadAgreementFilesForOnboarding = async (ensuredOnboardingId: string) => {
+    if (!ensuredOnboardingId) return
+    if (ndaFile) {
+      setUploadingNda(true)
+      try {
+        const url = await uploadAgreementFile(ensuredOnboardingId, 'nda', ndaFile)
+        setNdaUrl(url)
+      } finally {
+        setUploadingNda(false)
+      }
+    }
+    if (contractFile) {
+      setUploadingContract(true)
+      try {
+        const url = await uploadAgreementFile(ensuredOnboardingId, 'contract', contractFile)
+        setContractUrl(url)
+      } finally {
+        setUploadingContract(false)
+      }
+    }
+  }
+
   const handleView = (c: Customer) => {
     setViewData(c)
     setIsViewOpen(true)
@@ -1087,6 +1311,9 @@ const Customers: React.FC = () => {
       if (statusRef.current && !statusRef.current.contains(e.target as Node)) {
         setIsStatusOpen(false)
       }
+      if (productsDropdownRef.current && !productsDropdownRef.current.contains(e.target as Node)) {
+        setIsProductsDropdownOpen(false)
+      }
     }
     document.addEventListener('mousedown', onDocClick)
     return () => document.removeEventListener('mousedown', onDocClick)
@@ -1116,15 +1343,45 @@ const Customers: React.FC = () => {
             <div>
               <h1 className="text-xl sm:text-2xl font-bold text-neutral-dark mb-1">Customers</h1>
             </div>
-            {canManageCustomers && (
-              <button 
-                onClick={() => { setIsAddOpen(true); setSelectedProductIds([]) }}
-                className="w-full sm:w-auto px-4 sm:px-6 py-2.5 sm:py-3 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold transition-all duration-300 shadow-lg hover:shadow-xl transform hover:-translate-y-0.5 flex items-center justify-center"
-              >
-                <Plus className="h-4 w-4 sm:h-5 sm:w-5 mr-2 sm:mr-3" />
-                Add Customer
-              </button>
-            )}
+            <div className="w-full sm:w-auto flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+              {(canManageCustomers || canViewCustomers) && (
+                <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => navigate('/customers/registration')}
+                    className="w-full sm:w-auto px-4 py-2.5 rounded-xl border border-neutral-soft bg-white hover:bg-neutral-light/40 text-neutral-dark font-semibold transition-all flex items-center justify-center gap-2"
+                  >
+                    <FileText className="h-4 w-4 text-primary-medium" />
+                    Customer Form
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => navigate('/customers/registration/dillys')}
+                    className="w-full sm:w-auto px-4 py-2.5 rounded-xl border border-neutral-soft bg-white hover:bg-neutral-light/40 text-neutral-dark font-semibold transition-all flex items-center justify-center gap-2"
+                  >
+                    <FileText className="h-4 w-4 text-primary-medium" />
+                    Dilly&apos;s Form
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => navigate('/customers/registration/bnutty')}
+                    className="w-full sm:w-auto px-4 py-2.5 rounded-xl border border-neutral-soft bg-white hover:bg-neutral-light/40 text-neutral-dark font-semibold transition-all flex items-center justify-center gap-2"
+                  >
+                    <FileText className="h-4 w-4 text-primary-medium" />
+                    BNutty Form
+                  </button>
+                </div>
+              )}
+              {canManageCustomers && (
+                <button 
+                  onClick={() => { setIsAddOpen(true); setSelectedProductIds([]) }}
+                  className="w-full sm:w-auto px-4 sm:px-6 py-2.5 sm:py-3 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold transition-all duration-300 shadow-lg hover:shadow-xl transform hover:-translate-y-0.5 flex items-center justify-center"
+                >
+                  <Plus className="h-4 w-4 sm:h-5 sm:w-5 mr-2 sm:mr-3" />
+                  Add Customer
+                </button>
+              )}
+            </div>
             {!canViewCustomers && !roleLoading && (
               <div className="text-sm text-neutral-medium">
                 Access restricted to authorized roles only.
@@ -1494,6 +1751,85 @@ const Customers: React.FC = () => {
           </div>
         )}
 
+        {/* Add New Product Modal */}
+        {isAddProductModalOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-black/50" onClick={() => !isAddingProduct && setIsAddProductModalOpen(false)}></div>
+            <div className="relative z-10 w-full max-w-md bg-white rounded-2xl shadow-2xl border border-neutral-soft/30 overflow-hidden">
+              <div className="px-6 py-4 border-b border-neutral-soft/30 flex items-center justify-between">
+                <div className="text-lg font-semibold text-neutral-dark">Add New Product</div>
+                <button type="button" className="p-2 rounded-lg hover:bg-neutral-light/40 text-neutral-medium" onClick={() => !isAddingProduct && setIsAddProductModalOpen(false)}>
+                  ×
+                </button>
+              </div>
+              <div className="px-6 py-5 space-y-4">
+                <div className="space-y-2">
+                  <label className="text-sm font-semibold text-neutral-dark">Product Name</label>
+                  <input
+                    type="text"
+                    value={newProductForm.product_name}
+                    onChange={(e) => setNewProductForm({ ...newProductForm, product_name: e.target.value })}
+                    placeholder="Enter product name"
+                    className="w-full px-4 py-2.5 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-semibold text-neutral-dark">Description (Optional)</label>
+                  <textarea
+                    value={newProductForm.description}
+                    onChange={(e) => setNewProductForm({ ...newProductForm, description: e.target.value })}
+                    placeholder="Product description"
+                    rows={3}
+                    className="w-full px-4 py-2.5 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light resize-none"
+                  />
+                </div>
+              </div>
+              <div className="px-6 py-4 border-t border-neutral-soft/30 flex items-center justify-end gap-3">
+                <button
+                  type="button"
+                  onClick={() => setIsAddProductModalOpen(false)}
+                  disabled={isAddingProduct}
+                  className="px-4 py-2 rounded-lg border border-neutral-soft text-neutral-dark hover:bg-neutral-light disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={isAddingProduct || !newProductForm.product_name.trim()}
+                  onClick={async () => {
+                    try {
+                      setIsAddingProduct(true)
+                      const { data, error } = await supabase
+                        .from('products')
+                        .insert({
+                          product_name: newProductForm.product_name.trim(),
+                          description: newProductForm.description.trim() || null,
+                        })
+                        .select('id, product_name')
+                        .single()
+                      if (error) throw error
+                      if (data?.id) {
+                        const newProduct = { id: String(data.id), name: String(data.product_name || '') }
+                        setAllProducts(prev => [...prev, newProduct].sort((a, b) => a.name.localeCompare(b.name)))
+                        setSelectedProductIds(prev => [...prev, newProduct.id])
+                      }
+                      setIsAddProductModalOpen(false)
+                      setNewProductForm({ product_name: '', description: '' })
+                    } catch (e) {
+                      console.error('Failed to add product:', e)
+                    } finally {
+                      setIsAddingProduct(false)
+                    }
+                  }}
+                  className="px-4 py-2 rounded-lg bg-primary-medium text-white hover:bg-primary-dark disabled:opacity-50"
+                >
+                  {isAddingProduct ? 'Adding...' : 'Add Product'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Add Customer Modal */}
         {isAddOpen && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4">
@@ -1515,6 +1851,10 @@ const Customers: React.FC = () => {
                   setCustomerId(null)
                   setOnboardingId(null)
                   setOnboardingNotes('')
+                  setNdaFile(null)
+                  setContractFile(null)
+                  setNdaUrl('')
+                  setContractUrl('')
                   setAddForm({ company_name: '', contact_person: '', email: '', phone: '', website: '', address: '', comments: '', status: 'Active' })
                 }} className="p-2 sm:p-3 text-white/90 hover:text-white hover:bg-white/20 rounded-xl transition-all duration-200 hover:shadow-sm">✕</button>
                 </div>
@@ -1534,6 +1874,10 @@ const Customers: React.FC = () => {
                     setCustomerId(null)
                     setOnboardingId(null)
                     setOnboardingNotes('')
+                    setNdaFile(null)
+                    setContractFile(null)
+                    setNdaUrl('')
+                    setContractUrl('')
                     setAddForm({ company_name: '', contact_person: '', email: '', phone: '', website: '', address: '', comments: '', status: 'Active' })
                   }} className="p-2 sm:p-3 text-white/90 hover:text-white hover:bg-white/20 rounded-xl transition-all duration-200 hover:shadow-sm">✕</button>
                 </div>
@@ -1548,6 +1892,10 @@ const Customers: React.FC = () => {
                     setCustomerId(null)
                     setOnboardingId(null)
                     setOnboardingNotes('')
+                    setNdaFile(null)
+                    setContractFile(null)
+                    setNdaUrl('')
+                    setContractUrl('')
                     setAddForm({ company_name: '', contact_person: '', email: '', phone: '', website: '', address: '', comments: '', status: 'Active' })
                   }} className="p-2 sm:p-3 text-neutral-medium hover:text-neutral-dark hover:bg-white/60 rounded-xl transition-all duration-200 hover:shadow-sm">✕</button>
                 </div>
@@ -1695,6 +2043,88 @@ const Customers: React.FC = () => {
                             className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark placeholder-neutral-medium resize-none hover:border-neutral-medium"
                           />
                         </div>
+
+                        {/* Products multi-select dropdown */}
+                        <div className="space-y-2">
+                          <label className="flex items-center text-sm font-semibold text-neutral-dark">
+                            <Package className="h-4 w-4 mr-2 text-primary-medium" />
+                            Products
+                          </label>
+                          <div className="relative" ref={productsDropdownRef}>
+                            <button
+                              type="button"
+                              onClick={() => setIsProductsDropdownOpen(!isProductsDropdownOpen)}
+                              className="w-full flex items-center justify-between px-4 py-3 border border-neutral-soft rounded-lg text-left bg-white transition-all hover:border-neutral-medium focus:ring-2 focus:ring-primary-light focus:border-primary-light"
+                            >
+                              <span className={selectedProductIds.length > 0 ? 'text-neutral-dark' : 'text-neutral-medium'}>
+                                {selectedProductIds.length > 0
+                                  ? `${selectedProductIds.length} product${selectedProductIds.length > 1 ? 's' : ''} selected`
+                                  : 'Select products'
+                                }
+                              </span>
+                              <span className="ml-2 text-neutral-medium">▼</span>
+                            </button>
+                            {isProductsDropdownOpen && (
+                              <div className="absolute z-50 mt-2 w-full bg-white border border-neutral-soft rounded-xl shadow-xl max-h-64 overflow-hidden">
+                                <div className="px-3 py-2 text-xs text-neutral-medium border-b border-neutral-soft/50">
+                                  Select products for this customer
+                                </div>
+                                <div className="max-h-48 overflow-auto">
+                                  {allProducts.length === 0 ? (
+                                    <div className="px-3 py-4 text-sm text-neutral-medium text-center">No products found</div>
+                                  ) : (
+                                    allProducts.map(p => (
+                                      <label key={p.id} className="flex items-center gap-3 px-3 py-2 hover:bg-neutral-light/40 cursor-pointer">
+                                        <input
+                                          type="checkbox"
+                                          className="h-4 w-4 text-primary-dark focus:ring-primary-light border-neutral-soft rounded"
+                                          checked={selectedProductIds.includes(p.id)}
+                                          onChange={(e) => {
+                                            setSelectedProductIds(prev => e.target.checked ? [...prev, p.id] : prev.filter(id => id !== p.id))
+                                          }}
+                                        />
+                                        <span className="text-sm text-neutral-dark flex-1">{p.name}</span>
+                                      </label>
+                                    ))
+                                  )}
+                                </div>
+                                <div className="border-t border-neutral-soft/50">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setIsProductsDropdownOpen(false)
+                                      setIsAddProductModalOpen(true)
+                                    }}
+                                    className="w-full flex items-center gap-2 px-3 py-3 text-sm text-primary-medium hover:bg-primary-light/10 transition-colors"
+                                  >
+                                    <Plus className="h-4 w-4" />
+                                    Add New Product
+                                  </button>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                          {selectedProductIds.length > 0 && (
+                            <div className="flex flex-wrap gap-2 mt-2">
+                              {selectedProductIds.map(id => {
+                                const product = allProducts.find(p => p.id === id)
+                                return product ? (
+                                  <span key={id} className="inline-flex items-center gap-1 px-2 py-1 bg-primary-light/20 text-primary-dark text-xs rounded-full">
+                                    {product.name}
+                                    <button
+                                      type="button"
+                                      onClick={() => setSelectedProductIds(prev => prev.filter(pid => pid !== id))}
+                                      className="ml-1 text-primary-medium hover:text-primary-dark"
+                                    >
+                                      ×
+                                    </button>
+                                  </span>
+                                ) : null
+                              })}
+                            </div>
+                          )}
+                          <p className="text-xs text-neutral-medium">UI-only: selections are kept in this form but are not saved to the server.</p>
+                        </div>
                       </div>
                     </div>
                   ) : (
@@ -1818,31 +2248,85 @@ const Customers: React.FC = () => {
                           />
                         </div>
 
-                        {/* Products multi-select (UI-only) - Only for BNutty */}
+                        {/* Products multi-select dropdown */}
                         <div className="space-y-2">
                           <label className="flex items-center text-sm font-semibold text-neutral-dark">
                             <Package className="h-4 w-4 mr-2 text-primary-medium" />
                             Products
                           </label>
-                          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 sm:gap-3 max-h-32 sm:max-h-48 overflow-auto border border-neutral-soft rounded-lg p-2 sm:p-3 bg-white">
-                            {allProducts.length === 0 ? (
-                              <div className="text-xs text-neutral-medium">No products found.</div>
-                            ) : (
-                              allProducts.map(p => (
-                                <label key={p.id} className="flex items-center gap-2">
-                                  <input
-                                    type="checkbox"
-                                    className="h-4 w-4 text-primary-dark focus:ring-primary-light border-neutral-soft rounded"
-                                    checked={selectedProductIds.includes(p.id)}
-                                    onChange={(e) => {
-                                      setSelectedProductIds(prev => e.target.checked ? [...prev, p.id] : prev.filter(id => id !== p.id))
+                          <div className="relative" ref={productsDropdownRef}>
+                            <button
+                              type="button"
+                              onClick={() => setIsProductsDropdownOpen(!isProductsDropdownOpen)}
+                              className="w-full flex items-center justify-between px-4 py-3 border border-neutral-soft rounded-lg text-left bg-white transition-all hover:border-neutral-medium focus:ring-2 focus:ring-primary-light focus:border-primary-light"
+                            >
+                              <span className={selectedProductIds.length > 0 ? 'text-neutral-dark' : 'text-neutral-medium'}>
+                                {selectedProductIds.length > 0 
+                                  ? `${selectedProductIds.length} product${selectedProductIds.length > 1 ? 's' : ''} selected`
+                                  : 'Select products'
+                                }
+                              </span>
+                              <span className="ml-2 text-neutral-medium">▼</span>
+                            </button>
+                            {isProductsDropdownOpen && (
+                              <div className="absolute z-50 mt-2 w-full bg-white border border-neutral-soft rounded-xl shadow-xl max-h-64 overflow-hidden">
+                                <div className="px-3 py-2 text-xs text-neutral-medium border-b border-neutral-soft/50">
+                                  Select products for this customer
+                                </div>
+                                <div className="max-h-48 overflow-auto">
+                                  {allProducts.length === 0 ? (
+                                    <div className="px-3 py-4 text-sm text-neutral-medium text-center">No products found</div>
+                                  ) : (
+                                    allProducts.map(p => (
+                                      <label key={p.id} className="flex items-center gap-3 px-3 py-2 hover:bg-neutral-light/40 cursor-pointer">
+                                        <input
+                                          type="checkbox"
+                                          className="h-4 w-4 text-primary-dark focus:ring-primary-light border-neutral-soft rounded"
+                                          checked={selectedProductIds.includes(p.id)}
+                                          onChange={(e) => {
+                                            setSelectedProductIds(prev => e.target.checked ? [...prev, p.id] : prev.filter(id => id !== p.id))
+                                          }}
+                                        />
+                                        <span className="text-sm text-neutral-dark flex-1">{p.name}</span>
+                                      </label>
+                                    ))
+                                  )}
+                                </div>
+                                <div className="border-t border-neutral-soft/50">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setIsProductsDropdownOpen(false)
+                                      setIsAddProductModalOpen(true)
                                     }}
-                                  />
-                                  <span className="text-xs sm:text-sm text-neutral-dark">{p.name}</span>
-                                </label>
-                              ))
+                                    className="w-full flex items-center gap-2 px-3 py-3 text-sm text-primary-medium hover:bg-primary-light/10 transition-colors"
+                                  >
+                                    <Plus className="h-4 w-4" />
+                                    Add New Product
+                                  </button>
+                                </div>
+                              </div>
                             )}
                           </div>
+                          {selectedProductIds.length > 0 && (
+                            <div className="flex flex-wrap gap-2 mt-2">
+                              {selectedProductIds.map(id => {
+                                const product = allProducts.find(p => p.id === id)
+                                return product ? (
+                                  <span key={id} className="inline-flex items-center gap-1 px-2 py-1 bg-primary-light/20 text-primary-dark text-xs rounded-full">
+                                    {product.name}
+                                    <button
+                                      type="button"
+                                      onClick={() => setSelectedProductIds(prev => prev.filter(pid => pid !== id))}
+                                      className="ml-1 text-primary-medium hover:text-primary-dark"
+                                    >
+                                      ×
+                                    </button>
+                                  </span>
+                                ) : null
+                              })}
+                            </div>
+                          )}
                           <p className="text-xs text-neutral-medium">UI-only: selections are kept in this form but are not saved to the server.</p>
                         </div>
                       </div>
@@ -2002,6 +2486,119 @@ const Customers: React.FC = () => {
                     </div>
                   </div>
 
+                  <div className="bg-white rounded-2xl shadow-sm border border-neutral-soft/20 overflow-hidden">
+                    <div className="px-6 py-4 bg-gradient-to-r from-primary-dark/5 via-primary-medium/5 to-primary-light/5 border-b border-neutral-soft/30">
+                      <h3 className="text-base font-semibold text-neutral-dark">Legal Documents</h3>
+                    </div>
+                    <div className="p-6 space-y-6">
+                      <div className="space-y-2">
+                        <label className="text-sm font-semibold text-neutral-dark">NDA Upload</label>
+                        <input
+                          ref={ndaFileInputRef}
+                          type="file"
+                          accept=".pdf,.doc,.docx,.png,.jpg,.jpeg"
+                          className="hidden"
+                          onChange={(e) => setNdaFile(e.target.files && e.target.files[0] ? e.target.files[0] : null)}
+                        />
+                        <div
+                          className={`relative border-2 border-dashed rounded-xl p-4 transition-all duration-300 cursor-pointer ${ndaDragOver ? 'border-primary-light bg-primary-light/10' : 'border-neutral-soft bg-gradient-to-br from-neutral-light/40 to-neutral-light/20 hover:from-primary-light/10 hover:to-primary-medium/5'}`}
+                          onClick={() => ndaFileInputRef.current?.click()}
+                          onDragOver={(e) => { e.preventDefault(); setNdaDragOver(true) }}
+                          onDragLeave={() => setNdaDragOver(false)}
+                          onDrop={(e) => {
+                            e.preventDefault()
+                            setNdaDragOver(false)
+                            const file = e.dataTransfer.files && e.dataTransfer.files[0] ? e.dataTransfer.files[0] : null
+                            if (file) setNdaFile(file)
+                          }}
+                        >
+                          {ndaFile ? (
+                            <div className="flex items-center justify-between gap-3">
+                              <div className="min-w-0">
+                                <div className="text-sm font-semibold text-neutral-dark truncate">{ndaFile.name}</div>
+                                <div className="text-xs text-neutral-medium">Click or drop to replace</div>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={(e) => { e.stopPropagation(); setNdaFile(null); setNdaUrl('') }}
+                                className="px-3 py-1.5 text-xs border border-neutral-soft rounded-lg hover:bg-neutral-light/40"
+                              >
+                                Remove
+                              </button>
+                            </div>
+                          ) : (
+                            <div className="text-center">
+                              <div className="mx-auto w-10 h-10 bg-primary-light/20 rounded-full flex items-center justify-center mb-2">
+                                <Upload className="h-5 w-5 text-primary-medium" />
+                              </div>
+                              <p className="text-sm text-neutral-dark font-semibold">Drag & drop file here, or click to upload</p>
+                              <p className="text-xs text-neutral-medium">PDF/DOC/Images</p>
+                            </div>
+                          )}
+                          {uploadingNda ? (
+                            <div className="absolute top-2 right-2 w-4 h-4 border-2 border-primary-medium border-t-transparent rounded-full animate-spin" />
+                          ) : null}
+                        </div>
+                        {ndaUrl ? (
+                          <a className="text-xs text-primary-medium hover:underline" href={ndaUrl} target="_blank" rel="noreferrer">View uploaded NDA</a>
+                        ) : null}
+                      </div>
+
+                      <div className="space-y-2">
+                        <label className="text-sm font-semibold text-neutral-dark">Contracting Agreement Upload</label>
+                        <input
+                          ref={contractFileInputRef}
+                          type="file"
+                          accept=".pdf,.doc,.docx,.png,.jpg,.jpeg"
+                          className="hidden"
+                          onChange={(e) => setContractFile(e.target.files && e.target.files[0] ? e.target.files[0] : null)}
+                        />
+                        <div
+                          className={`relative border-2 border-dashed rounded-xl p-4 transition-all duration-300 cursor-pointer ${contractDragOver ? 'border-primary-light bg-primary-light/10' : 'border-neutral-soft bg-gradient-to-br from-neutral-light/40 to-neutral-light/20 hover:from-primary-light/10 hover:to-primary-medium/5'}`}
+                          onClick={() => contractFileInputRef.current?.click()}
+                          onDragOver={(e) => { e.preventDefault(); setContractDragOver(true) }}
+                          onDragLeave={() => setContractDragOver(false)}
+                          onDrop={(e) => {
+                            e.preventDefault()
+                            setContractDragOver(false)
+                            const file = e.dataTransfer.files && e.dataTransfer.files[0] ? e.dataTransfer.files[0] : null
+                            if (file) setContractFile(file)
+                          }}
+                        >
+                          {contractFile ? (
+                            <div className="flex items-center justify-between gap-3">
+                              <div className="min-w-0">
+                                <div className="text-sm font-semibold text-neutral-dark truncate">{contractFile.name}</div>
+                                <div className="text-xs text-neutral-medium">Click or drop to replace</div>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={(e) => { e.stopPropagation(); setContractFile(null); setContractUrl('') }}
+                                className="px-3 py-1.5 text-xs border border-neutral-soft rounded-lg hover:bg-neutral-light/40"
+                              >
+                                Remove
+                              </button>
+                            </div>
+                          ) : (
+                            <div className="text-center">
+                              <div className="mx-auto w-10 h-10 bg-primary-light/20 rounded-full flex items-center justify-center mb-2">
+                                <Upload className="h-5 w-5 text-primary-medium" />
+                              </div>
+                              <p className="text-sm text-neutral-dark font-semibold">Drag & drop file here, or click to upload</p>
+                              <p className="text-xs text-neutral-medium">PDF/DOC/Images</p>
+                            </div>
+                          )}
+                          {uploadingContract ? (
+                            <div className="absolute top-2 right-2 w-4 h-4 border-2 border-primary-medium border-t-transparent rounded-full animate-spin" />
+                          ) : null}
+                        </div>
+                        {contractUrl ? (
+                          <a className="text-xs text-primary-medium hover:underline" href={contractUrl} target="_blank" rel="noreferrer">View uploaded Contracting Agreement</a>
+                        ) : null}
+                      </div>
+                    </div>
+                  </div>
+
                   {/* Footer Actions (Cancel + Submit) */}
                   <div className="flex items-center justify-between pt-2">
                     <div className="text-xs text-neutral-medium">
@@ -2056,6 +2653,7 @@ const Customers: React.FC = () => {
                                 }
 
                                 if (!ensuredOnboardingId) throw new Error('Missing onboardingId')
+                                await uploadAgreementFilesForOnboarding(ensuredOnboardingId)
                                 await saveLabRequirementsForOnboarding(ensuredOnboardingId)
                                 await refresh()
                                 setToast({ show: true, message: 'Onboarding submitted successfully' })
@@ -2064,6 +2662,10 @@ const Customers: React.FC = () => {
                                 setOnboardingId(null)
                                 setOnboardingNotes('')
                                 setSelectedLabTests([])
+                                setNdaFile(null)
+                                setContractFile(null)
+                                setNdaUrl('')
+                                setContractUrl('')
                                 setAddForm({ company_name: '', contact_person: '', email: '', phone: '', website: '', address: '', comments: '', status: 'Active' })
                               } catch (e: any) {
                                 setError(e?.message || 'Failed to submit onboarding')
@@ -2115,6 +2717,7 @@ const Customers: React.FC = () => {
                                   const { error: updErr } = await supabase.from('customer_onboardings').update({ status: 'Draft', onboarding_type: onboardingType, notes: onboardingNotes || null }).eq('id', ensuredOnboardingId)
                                   if (updErr) throw updErr
                                 }
+                                if (ensuredOnboardingId) await uploadAgreementFilesForOnboarding(ensuredOnboardingId)
                                 setToast({ show: true, message: 'Draft saved successfully' })
                               } catch (e: any) {
                                 setError(e?.message || 'Failed to save draft')
@@ -2163,12 +2766,17 @@ const Customers: React.FC = () => {
                                   const { error: updErr } = await supabase.from('customer_onboardings').update({ status: 'Submitted', onboarding_type: onboardingType, notes: onboardingNotes || null }).eq('id', ensuredOnboardingId)
                                   if (updErr) throw updErr
                                 }
+                                if (ensuredOnboardingId) await uploadAgreementFilesForOnboarding(ensuredOnboardingId)
                                 await refresh()
                                 setToast({ show: true, message: 'Onboarding submitted successfully' })
                                 setIsAddOpen(false)
                                 setCustomerId(null)
                                 setOnboardingId(null)
                                 setOnboardingNotes('')
+                                setNdaFile(null)
+                                setContractFile(null)
+                                setNdaUrl('')
+                                setContractUrl('')
                                 setAddForm({ company_name: '', contact_person: '', email: '', phone: '', website: '', address: '', comments: '', status: 'Active' })
                               } catch (e: any) {
                                 setError(e?.message || 'Failed to submit onboarding')

@@ -913,15 +913,15 @@ const Products: React.FC = () => {
                   </div>
 
                   {/* Row 2: Product Size and Unit of Measure */}
-                  <div className="space-y-3">
-                    <label className="flex items-center text-sm font-semibold text-neutral-dark">
-                      <Box className="h-5 w-5 mr-3 text-primary-medium" />
+                  <div className="space-y-2">
+                    <label className="flex items-center text-sm font-medium text-neutral-dark">
+                      <Box className="h-4 w-4 mr-2 text-primary-medium" />
                       Product Size
                     </label>
                     <input
                       type="text"
                       placeholder="e.g., 8oz, 12oz, 16oz"
-                      className="w-full px-4 py-4 border border-neutral-soft rounded-xl focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all duration-200 bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium shadow-sm hover:shadow-md"
+                      className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all duration-200 bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium"
                       value={productForm.productSize}
                       onChange={(e) => setProductForm({ ...productForm, productSize: e.target.value })}
                     />
@@ -1201,11 +1201,11 @@ const Products: React.FC = () => {
                       )
                     })}
                   </div>
-                  <div className="flex items-center gap-3">
+                  <div className="space-y-3">
                     <input
                       type="text"
                       placeholder="Type custom allergen and press Enter"
-                      className="flex-1 px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light"
+                      className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light"
                       onKeyDown={(e) => {
                         const v = (e.target as HTMLInputElement).value.trim()
                         if (e.key === 'Enter' && v) {
@@ -1216,7 +1216,7 @@ const Products: React.FC = () => {
                       }}
                     />
                     {productForm.allergens.length > 0 && (
-                      <div className="flex flex-wrap gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
                         {productForm.allergens.map((a, i) => (
                           <span key={`${a}-${i}`} className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold bg-white border border-neutral-soft">
                             {a}

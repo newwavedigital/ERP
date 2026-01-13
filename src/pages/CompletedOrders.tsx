@@ -1,10 +1,10 @@
-import React, { useState } from 'react'
-import { Search, Filter, CheckCircle, Eye, Download, Archive, Package, DollarSign, TrendingUp } from 'lucide-react'
+import React, { useMemo, useState } from 'react'
+import { Search, Filter, CheckCircle, Download, Package, DollarSign, TrendingUp } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 
 interface CompletedOrder {
-  id: number
+  id: string
   orderNumber: string
   customer: string
   product: string
@@ -13,6 +13,12 @@ interface CompletedOrder {
   deliveryDate: string
   total: number
   status: string
+  poDate?: string
+  shipDate?: string
+  location?: string
+  paymentTerms?: string
+  depositPaid?: boolean
+  is_copack?: boolean
 }
 //dfsafsafsa
 const CompletedOrders: React.FC = () => {
@@ -21,7 +27,27 @@ const CompletedOrders: React.FC = () => {
   const isSalesRepViewOnly = String(currentUserRole || '').toLowerCase() === 'sales_representative'
 
   const [searchTerm, setSearchTerm] = useState<string>('')
-  const [completedOrders] = useState<CompletedOrder[]>([])
+  const [completedOrders, setCompletedOrders] = useState<CompletedOrder[]>([])
+  const [loading, setLoading] = useState(false)
+  const [activeTab, setActiveTab] = useState<'copack' | 'brand'>('brand')
+
+  const STICKY_COMPLETED_KEY = 'erp.completed_orders.sticky_po_ids'
+
+  const readStickyCompletedIds = () => {
+    try {
+      const raw = localStorage.getItem(STICKY_COMPLETED_KEY)
+      const arr = raw ? JSON.parse(raw) : []
+      return new Set<string>(Array.isArray(arr) ? arr.map((v) => String(v)) : [])
+    } catch {
+      return new Set<string>()
+    }
+  }
+
+  const writeStickyCompletedIds = (ids: Set<string>) => {
+    try {
+      localStorage.setItem(STICKY_COMPLETED_KEY, JSON.stringify(Array.from(ids)))
+    } catch {}
+  }
 
   React.useEffect(() => {
     let active = true
@@ -44,11 +70,117 @@ const CompletedOrders: React.FC = () => {
     return () => { active = false }
   }, [user?.id])
 
-  const filteredOrders = completedOrders.filter(order =>
-    order.orderNumber.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    order.customer.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    order.product.toLowerCase().includes(searchTerm.toLowerCase())
-  )
+  React.useEffect(() => {
+    let active = true
+    const normalizeStatus = (raw: any) => String(raw || '').trim().toLowerCase()
+    const labelStatus = (raw: any) => {
+      const s = normalizeStatus(raw)
+      if (s === 'completed') return 'Ready to Ship'
+      if (s === 'ready_to_ship' || s === 'ready to ship') return 'Ready to Ship'
+      if (s === 'partially_shipped' || s === 'partial') return 'Partially Shipped'
+      if (s === 'shipped') return 'Shipped'
+      if (!s) return '—'
+      return String(raw)
+        .replace(/_/g, ' ')
+        .split(' ')
+        .filter(Boolean)
+        .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+        .join(' ')
+    }
+
+    const fmt = (d: any) => {
+      const v = String(d || '').trim()
+      if (!v) return ''
+      try {
+        const dt = new Date(v)
+        if (Number.isNaN(dt.getTime())) return v
+        return dt.toLocaleDateString()
+      } catch {
+        return v
+      }
+    }
+
+    const load = async () => {
+      setLoading(true)
+      try {
+        const { data, error } = await supabase
+          .from('purchase_orders')
+          .select('id, po_number, customer_name, product_name, quantity, date, requested_ship_date, status, is_copack, location, payment_terms, deposit_paid')
+          .order('created_at', { ascending: false })
+        if (!active) return
+        if (error) throw error
+        const rows = Array.isArray(data) ? data : []
+        const keep = new Set(['completed', 'ready_to_ship', 'ready to ship', 'partially_shipped', 'partial', 'shipped'])
+        const sticky = readStickyCompletedIds()
+        let stickyDirty = false
+
+        const mapped: CompletedOrder[] = rows
+          .filter((r: any) => {
+            const id = String(r?.id || '')
+            const st = normalizeStatus(r?.status)
+            const inKeep = keep.has(st)
+            if (inKeep && id && !sticky.has(id)) {
+              sticky.add(id)
+              stickyDirty = true
+            }
+            return (inKeep || (id && sticky.has(id)))
+          })
+          .map((r: any) => ({
+            id: String(r.id),
+            orderNumber: String(r.po_number || r.id || ''),
+            customer: String(r.customer_name || ''),
+            product: String(r.product_name || ''),
+            quantity: Number(r.quantity || 0),
+            completedDate: fmt(r.date),
+            deliveryDate: fmt(r.requested_ship_date),
+            total: 0,
+            status: labelStatus(r.status),
+            poDate: fmt(r.date),
+            shipDate: fmt(r.requested_ship_date),
+            location: String(r.location || ''),
+            paymentTerms: String(r.payment_terms || ''),
+            depositPaid: !!r.deposit_paid,
+            is_copack: !!r.is_copack,
+          }))
+
+        if (stickyDirty) writeStickyCompletedIds(sticky)
+
+        setCompletedOrders(mapped)
+      } catch {
+        if (!active) return
+        setCompletedOrders([])
+      } finally {
+        if (active) setLoading(false)
+      }
+    }
+
+    load()
+
+    const channel = supabase
+      .channel('completed-orders-po')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'purchase_orders' }, () => {
+        load()
+      })
+      .subscribe()
+
+    return () => {
+      active = false
+      try {
+        supabase.removeChannel(channel)
+      } catch {}
+    }
+  }, [])
+
+  const filteredOrders = useMemo(() => {
+    const q = String(searchTerm || '').toLowerCase()
+    const base = completedOrders.filter(order =>
+      order.orderNumber.toLowerCase().includes(q) ||
+      order.customer.toLowerCase().includes(q) ||
+      order.product.toLowerCase().includes(q)
+    )
+    const tabIsCopack = activeTab === 'copack'
+    return base.filter((o: any) => !!o.is_copack === tabIsCopack)
+  }, [activeTab, completedOrders, searchTerm])
 
   const totalRevenue = completedOrders.reduce((sum, order) => sum + order.total, 0)
   const totalQuantity = completedOrders.reduce((sum, order) => sum + order.quantity, 0)
@@ -69,6 +201,25 @@ const CompletedOrders: React.FC = () => {
                 Export Report
               </button>
             )}
+          </div>
+        </div>
+
+        <div className="bg-white rounded-2xl shadow-md border border-neutral-soft/20 p-4 mb-8">
+          <div className="inline-flex items-center rounded-lg bg-neutral-light/60 p-1 border border-neutral-soft/60">
+            <button
+              type="button"
+              className={`px-3 py-1.5 text-sm rounded-md ${activeTab==='copack' ? 'bg-primary-medium text-white shadow' : 'text-neutral-dark hover:bg-white'}`}
+              onClick={() => setActiveTab('copack')}
+            >
+              Co-Packing
+            </button>
+            <button
+              type="button"
+              className={`px-3 py-1.5 text-sm rounded-md ${activeTab==='brand' ? 'bg-primary-medium text-white shadow' : 'text-neutral-dark hover:bg-white'}`}
+              onClick={() => setActiveTab('brand')}
+            >
+              Brands
+            </button>
           </div>
         </div>
 
@@ -175,14 +326,17 @@ const CompletedOrders: React.FC = () => {
         </div>
 
         {/* Table or Empty State */}
-        {filteredOrders.length === 0 ? (
+        {loading ? (
+          <div className="bg-white rounded-3xl shadow-md border border-neutral-soft/30 overflow-hidden">
+            <div className="p-16 text-center">
+              <p className="text-neutral-medium mb-1">Loading…</p>
+            </div>
+          </div>
+        ) : filteredOrders.length === 0 ? (
           <div className="bg-white rounded-3xl shadow-md border border-neutral-soft/30 overflow-hidden">
             <div className="px-10 py-8 bg-gradient-to-r from-primary-dark/5 via-primary-medium/5 to-primary-light/5 border-b border-neutral-soft/40">
               <div className="flex items-center justify-between">
                 <h3 className="text-2xl font-bold text-neutral-dark mb-2">Completed Orders</h3>
-                <div className="px-4 py-2 bg-primary-light/10 rounded-xl border border-primary-light/20">
-                  <span className="text-sm font-semibold text-primary-dark">0 Total</span>
-                </div>
               </div>
             </div>
             <div className="p-16 text-center">
@@ -191,76 +345,66 @@ const CompletedOrders: React.FC = () => {
             </div>
           </div>
         ) : (
-          <div className="bg-white rounded-3xl shadow-md border border-neutral-soft/30 overflow-hidden">
-            {/* Gradient header section */}
-            <div className="px-10 py-8 bg-gradient-to-r from-primary-dark/5 via-primary-medium/5 to-primary-light/5 border-b border-neutral-soft/40">
-              <div className="flex items-center justify-between">
-                <h3 className="text-2xl font-bold text-neutral-dark mb-2">Completed Orders</h3>
-                <div className="px-4 py-2 bg-primary-light/10 rounded-xl border border-primary-light/20">
-                  <span className="text-sm font-semibold text-primary-dark">{filteredOrders.length} Total</span>
-                </div>
+          <div className="bg-white rounded-2xl shadow-md border border-neutral-soft/20 p-6">
+            <div className="mb-4 flex items-center justify-between">
+              <div className="text-base font-semibold text-neutral-dark">Completed Orders</div>
+              <div className="px-3 py-1.5 bg-primary-light/10 rounded-xl border border-primary-light/20">
+                <span className="text-sm font-semibold text-primary-dark">{filteredOrders.length} Total</span>
               </div>
             </div>
-            {/* Column headers */}
-            <div className="overflow-x-auto">
-              <table className="min-w-full">
-                <thead>
-                  <tr className="bg-gradient-to-r from-neutral-light/60 via-neutral-light/40 to-neutral-soft/30 border-b-2 border-neutral-soft/50">
-                    <th className="px-8 py-6 text-left text-sm font-bold text-neutral-dark uppercase tracking-wider">Order #</th>
-                    <th className="px-8 py-6 text-left text-sm font-bold text-neutral-dark uppercase tracking-wider">Customer</th>
-                    <th className="px-8 py-6 text-left text-sm font-bold text-neutral-dark uppercase tracking-wider">Product</th>
-                    <th className="px-8 py-6 text-left text-sm font-bold text-neutral-dark uppercase tracking-wider">Qty</th>
-                    <th className="px-8 py-6 text-left text-sm font-bold text-neutral-dark uppercase tracking-wider">Completed</th>
-                    <th className="px-8 py-6 text-left text-sm font-bold text-neutral-dark uppercase tracking-wider">Delivery</th>
-                    <th className="px-8 py-6 text-left text-sm font-bold text-neutral-dark uppercase tracking-wider">Total</th>
-                    <th className="px-8 py-6 text-left text-sm font-bold text-neutral-dark uppercase tracking-wider">Status</th>
-                    <th className="px-8 py-6 text-center text-sm font-bold text-neutral-dark uppercase tracking-wider">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-neutral-soft/20">
-                  {filteredOrders.map((order) => (
-                    <tr key={order.id} className="group hover:bg-gradient-to-r hover:from-primary-light/5 hover:to-primary-medium/5 transition-all duration-300 hover:shadow-sm">
-                      <td className="px-8 py-6">
-                        <div className="text-sm font-semibold text-neutral-dark">{order.orderNumber}</div>
-                      </td>
-                      <td className="px-8 py-6">
-                        <div className="text-sm text-neutral-dark">{order.customer}</div>
-                      </td>
-                      <td className="px-8 py-6">
-                        <div className="text-sm text-neutral-dark">{order.product}</div>
-                      </td>
-                      <td className="px-8 py-6">
-                        <div className="text-sm text-neutral-dark">{order.quantity}</div>
-                      </td>
-                      <td className="px-8 py-6">
-                        <div className="text-sm text-neutral-dark">{order.completedDate}</div>
-                      </td>
-                      <td className="px-8 py-6">
-                        <div className="text-sm text-neutral-dark">{order.deliveryDate}</div>
-                      </td>
-                      <td className="px-8 py-6">
-                        <div className="text-sm text-neutral-dark">${order.total.toFixed(2)}</div>
-                      </td>
-                      <td className="px-8 py-6">
-                        <span className="inline-flex items-center px-3 py-1.5 rounded-xl text-xs font-semibold bg-neutral-light/50 text-neutral-dark border border-neutral-soft/30">{order.status}</span>
-                      </td>
-                      <td className="px-8 py-6">
-                        <div className="flex items-center justify-center space-x-2">
-                          <button className="group/btn p-3 text-primary-medium hover:text-white hover:bg-primary-medium rounded-xl transition-all duration-300 hover:shadow-lg hover:scale-105 border border-primary-light/30 hover:border-primary-medium">
-                            <Eye className="h-5 w-5" />
-                          </button>
-                          <button className="group/btn p-3 text-neutral-medium hover:text-white hover:bg-neutral-medium rounded-xl transition-all duration-300 hover:shadow-lg hover:scale-105 border border-neutral-soft hover:border-neutral-medium">
-                            <Download className="h-5 w-5" />
-                          </button>
-                          <button className="group/btn p-3 text-neutral-medium hover:text-white hover:bg-neutral-medium rounded-xl transition-all duration-300 hover:shadow-lg hover:scale-105 border border-neutral-soft hover:border-neutral-medium">
-                            <Archive className="h-5 w-5" />
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            <div className="space-y-4">
+              {filteredOrders.map((o) => (
+                <div key={o.id} className="rounded-2xl border border-neutral-soft/40 bg-gradient-to-br from-white to-neutral-light/30 p-5 shadow-sm hover:shadow-md transition-all">
+                  <div className="flex items-start justify-between pb-3 border-b border-neutral-soft/60">
+                    <div className="grid grid-cols-2 gap-6">
+                      <div className="space-y-1">
+                        <div className="text-[11px] uppercase tracking-wide text-neutral-medium">PO Date</div>
+                        <div className="text-sm font-semibold text-neutral-dark">{o.poDate || o.completedDate || '-'}</div>
+                      </div>
+                      <div className="space-y-1">
+                        <div className="text-[11px] uppercase tracking-wide text-neutral-medium">PO #</div>
+                        <div className="text-sm font-semibold text-neutral-dark">{o.orderNumber || '-'}</div>
+                      </div>
+                    </div>
+                    <span className="inline-flex items-center px-3 py-1.5 rounded-xl text-xs font-semibold border bg-neutral-light/40 text-neutral-dark border-neutral-soft/60">{o.status}</span>
+                  </div>
+
+                  <div className="mt-4 grid grid-cols-1 md:grid-cols-4 gap-4">
+                    <div className="space-y-1">
+                      <div className="text-[11px] uppercase tracking-wide text-neutral-medium">Customer</div>
+                      <div className="text-sm font-semibold text-neutral-dark truncate">{o.customer || '-'}</div>
+                    </div>
+                    <div className="space-y-1">
+                      <div className="text-[11px] uppercase tracking-wide text-neutral-medium">Product</div>
+                      <div className="flex items-center gap-2">
+                        <div className="text-sm font-semibold text-neutral-dark truncate">{o.product || '-'}</div>
+                        {o.depositPaid && (
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-green-100 text-green-700">Deposit</span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="space-y-1">
+                      <div className="text-[11px] uppercase tracking-wide text-neutral-medium">Qty</div>
+                      <div className="text-sm font-semibold text-neutral-dark">{Number(o.quantity || 0)}</div>
+                    </div>
+                    <div className="space-y-1">
+                      <div className="text-[11px] uppercase tracking-wide text-neutral-medium">Ship Date</div>
+                      <div className="text-sm font-semibold text-neutral-dark">{o.shipDate || '-'}</div>
+                    </div>
+                  </div>
+
+                  <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="flex items-center gap-2 bg-neutral-light/40 border border-neutral-soft/60 rounded-md px-3 py-2">
+                      <span className="font-semibold">Location</span>
+                      <span className="opacity-80">{o.location || '—'}</span>
+                    </div>
+                    <div className="flex items-center gap-2 bg-neutral-light/40 border border-neutral-soft/60 rounded-md px-3 py-2">
+                      <span className="font-semibold">Payment Terms</span>
+                      <span className="opacity-80">{o.paymentTerms || '—'}</span>
+                    </div>
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
         )}

@@ -25,6 +25,13 @@ const ShippingTab: React.FC<ShippingTabProps> = ({
   onPartialShip,
   onShipOrder
 }) => {
+  const formatWordDate = (dateStr?: string | null) => {
+    if (!dateStr) return '—'
+    const d = new Date(dateStr)
+    if (Number.isNaN(d.getTime())) return '—'
+    return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
+  }
+
   const [asnOpen, setAsnOpen] = useState(false)
   const [asnLoading, setAsnLoading] = useState(false)
   const [asnError, setAsnError] = useState<string | null>(null)
@@ -105,7 +112,7 @@ const ShippingTab: React.FC<ShippingTabProps> = ({
             <div className="space-y-3">
               {shippingOrders.map((po: any) => {
                 const id = String(po.id ?? '')
-                const created = po.created_at ? new Date(po.created_at).toLocaleDateString() : '—'
+                const created = po.created_at ? formatWordDate(po.created_at) : '—'
                 const poNumber = String(po.po_number ?? po.number ?? id.slice(0, 8))
                 const st = String(po.status || '').toLowerCase().trim()
                 const isAllocated = st === 'allocated'
@@ -114,6 +121,10 @@ const ShippingTab: React.FC<ShippingTabProps> = ({
                 const isPartiallyShipped = st === 'partially_shipped'
                 const isShipped = st === 'shipped' || st === 'submitted'
                 const allowPartial = (po as any).allow_partial_ship === true
+                const flags = Array.isArray((po as any).flags) ? ((po as any).flags as any[]) : []
+                const hasPickPackComplete = flags.some((f) => String(f || '').toLowerCase().trim() === 'pick_pack_complete')
+                const readyFlag = (po as any).ready_to_ship === true
+                const canShowShipOrder = isReadyToShip && readyFlag && hasPickPackComplete
                 
                 return (
                   <div
@@ -144,31 +155,42 @@ const ShippingTab: React.FC<ShippingTabProps> = ({
                         <div className="flex items-center gap-2 flex-wrap">
                           {isAllocated && (
                             <button
-                              className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold bg-primary-light hover:bg-primary-medium text-white shadow-sm transition-all"
-                              onClick={() => onReadyToShip(String(po.id))}
-                              title="Mark Ready to Ship"
+                              className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold shadow-sm transition-all ${canShipWarehouse ? 'bg-primary-light hover:bg-primary-medium text-white' : 'bg-neutral-light/40 text-neutral-medium cursor-not-allowed'}`}
+                              onClick={() => { if (!canShipWarehouse) return; onReadyToShip(String(po.id)) }}
+                              disabled={!canShipWarehouse}
+                              title={canShipWarehouse ? 'Mark Ready to Ship' : 'Only Warehouse/Admin can ship'}
                             >
                               <Truck className="h-3.5 w-3.5" /> Ready to Ship
                             </button>
                           )}
                           {isPartial && allowPartial && (
                             <button
-                              className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold bg-accent-warning hover:bg-accent-warning/90 text-white shadow-sm transition-all"
-                              onClick={() => onPartialShip(String(po.id))}
-                              title="Create Partial Shipment"
+                              className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold shadow-sm transition-all ${canShipWarehouse ? 'bg-accent-warning hover:bg-accent-warning/90 text-white' : 'bg-neutral-light/40 text-neutral-medium cursor-not-allowed'}`}
+                              onClick={() => { if (!canShipWarehouse) return; onPartialShip(String(po.id)) }}
+                              disabled={!canShipWarehouse}
+                              title={canShipWarehouse ? 'Create Partial Shipment' : 'Only Warehouse/Admin can ship'}
                             >
                               <Truck className="h-3.5 w-3.5" /> Partial Ship
                             </button>
                           )}
                           {isReadyToShip && (
-                            <button
-                              className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold shadow-sm transition-all ${canShipWarehouse ? 'bg-primary-medium hover:bg-primary-dark text-white' : 'bg-neutral-light/40 text-neutral-medium cursor-not-allowed'}`}
-                              onClick={() => { if (!canShipWarehouse) return; onShipOrder(String(po.id)) }}
-                              disabled={!canShipWarehouse}
-                              title={canShipWarehouse ? 'Ship Order' : 'Only Warehouse can ship'}
-                            >
-                              <Package className="h-3.5 w-3.5" /> Ship Order
-                            </button>
+                            canShowShipOrder ? (
+                              <button
+                                className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold shadow-sm transition-all ${canShipWarehouse ? 'bg-primary-medium hover:bg-primary-dark text-white' : 'bg-neutral-light/40 text-neutral-medium cursor-not-allowed'}`}
+                                onClick={() => { if (!canShipWarehouse) return; onShipOrder(String(po.id)) }}
+                                disabled={!canShipWarehouse}
+                                title={canShipWarehouse ? 'Ship Order' : 'Only Warehouse/Admin can ship'}
+                              >
+                                <Package className="h-3.5 w-3.5" /> Ship Order
+                              </button>
+                            ) : (
+                              <span
+                                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-neutral-light/40 text-neutral-medium border border-neutral-soft/50"
+                                title="Awaiting allocation approval / pick-pack completion"
+                              >
+                                <Package className="h-3.5 w-3.5" /> Awaiting Approval
+                              </span>
+                            )
                           )}
                           {(isPartiallyShipped || isShipped) && (
                             <button

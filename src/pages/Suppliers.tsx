@@ -1546,36 +1546,22 @@ const Suppliers: React.FC = () => {
                       </div>
 
                       <div className="space-y-3">
-                        <label className="text-sm font-semibold text-neutral-dark">NET Terms</label>
-                        <div className="flex flex-wrap gap-4">
-                          <label className="flex items-center gap-2">
-                            <input
-                              type="checkbox"
-                              checked={addForm.payment_terms_net30}
-                              onChange={(e) => setAddForm({ ...addForm, payment_terms_net30: e.target.checked })}
-                              className="h-4 w-4"
-                            />
-                            <span className="text-sm">NET 30 Days</span>
-                          </label>
-                          <label className="flex items-center gap-2">
-                            <input
-                              type="checkbox"
-                              checked={addForm.payment_terms_net60}
-                              onChange={(e) => setAddForm({ ...addForm, payment_terms_net60: e.target.checked })}
-                              className="h-4 w-4"
-                            />
-                            <span className="text-sm">NET 60 Days</span>
-                          </label>
-                          <label className="flex items-center gap-2">
-                            <input
-                              type="checkbox"
-                              checked={addForm.payment_terms_net90}
-                              onChange={(e) => setAddForm({ ...addForm, payment_terms_net90: e.target.checked })}
-                              className="h-4 w-4"
-                            />
-                            <span className="text-sm">NET 90 Days</span>
-                          </label>
-                        </div>
+                        <label className="text-sm font-semibold text-neutral-dark">Payment Terms</label>
+                        <select
+                          value={addForm.payment_terms || ''}
+                          onChange={(e) => setAddForm({ ...addForm, payment_terms: e.target.value })}
+                          className="w-full px-4 py-2.5 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark"
+                        >
+                          <option value="">Select Payment Terms</option>
+                          <option>Pay In Advance</option>
+                          <option>50% Down</option>
+                          <option>50% DOR</option>
+                          <option>50% Down & Net 15</option>
+                          <option>Net 15</option>
+                          <option>Net 30</option>
+                          <option>Net 60</option>
+                          <option>Net 90</option>
+                        </select>
                       </div>
 
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -2098,37 +2084,23 @@ const Suppliers: React.FC = () => {
                     </div>
 
                     <div className="p-6 space-y-4">
-                      <div className="grid grid-cols-1 md:grid-cols-[220px_1fr] gap-3 items-start">
-                        <label className="text-sm font-semibold text-neutral-dark pt-2">NET Terms</label>
-                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                          <label className="flex items-center justify-center gap-2 px-3 py-2 rounded-lg border border-neutral-soft bg-white">
-                            <input
-                              type="checkbox"
-                              checked={editForm.payment_terms_net30}
-                              onChange={(e) => setEditForm({ ...editForm, payment_terms_net30: e.target.checked })}
-                              className="h-4 w-4 text-primary-medium focus:ring-primary-light border-neutral-soft rounded"
-                            />
-                            <span className="text-sm font-semibold text-neutral-dark">NET30</span>
-                          </label>
-                          <label className="flex items-center justify-center gap-2 px-3 py-2 rounded-lg border border-neutral-soft bg-white">
-                            <input
-                              type="checkbox"
-                              checked={editForm.payment_terms_net60}
-                              onChange={(e) => setEditForm({ ...editForm, payment_terms_net60: e.target.checked })}
-                              className="h-4 w-4 text-primary-medium focus:ring-primary-light border-neutral-soft rounded"
-                            />
-                            <span className="text-sm font-semibold text-neutral-dark">NET60</span>
-                          </label>
-                          <label className="flex items-center justify-center gap-2 px-3 py-2 rounded-lg border border-neutral-soft bg-white">
-                            <input
-                              type="checkbox"
-                              checked={editForm.payment_terms_net90}
-                              onChange={(e) => setEditForm({ ...editForm, payment_terms_net90: e.target.checked })}
-                              className="h-4 w-4 text-primary-medium focus:ring-primary-light border-neutral-soft rounded"
-                            />
-                            <span className="text-sm font-semibold text-neutral-dark">NET90</span>
-                          </label>
-                        </div>
+                      <div className="grid grid-cols-1 md:grid-cols-[220px_1fr] gap-3 items-center">
+                        <label className="text-sm font-semibold text-neutral-dark">Payment Terms</label>
+                        <select
+                          value={editForm.payment_terms || ''}
+                          onChange={(e) => setEditForm({ ...editForm, payment_terms: e.target.value })}
+                          className="w-full px-4 py-2.5 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all bg-white text-neutral-dark"
+                        >
+                          <option value="">Select Payment Terms</option>
+                          <option>Pay In Advance</option>
+                          <option>50% Down</option>
+                          <option>50% DOR</option>
+                          <option>50% Down & Net 15</option>
+                          <option>Net 15</option>
+                          <option>Net 30</option>
+                          <option>Net 60</option>
+                          <option>Net 90</option>
+                        </select>
                       </div>
 
                       <div className="grid grid-cols-1 md:grid-cols-[220px_1fr] gap-3 items-center">

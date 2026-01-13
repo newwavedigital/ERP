@@ -207,10 +207,6 @@ const ContentLibrary: React.FC = () => {
               <div className="flex items-center justify-between">
                 <div>
                   <h3 className="text-2xl font-bold text-neutral-dark mb-2">Content Catalog</h3>
-                  <p className="text-neutral-medium font-medium">0 files in your library</p>
-                </div>
-                <div className="px-4 py-2 bg-primary-light/10 rounded-xl border border-primary-light/20">
-                  <span className="text-sm font-semibold text-primary-dark">0 Total</span>
                 </div>
               </div>
             </div>
@@ -233,9 +229,6 @@ const ContentLibrary: React.FC = () => {
                 <div>
                   <h3 className="text-2xl font-bold text-neutral-dark mb-2">Content Catalog</h3>
                   <p className="text-neutral-medium font-medium">{files.length} files in your library</p>
-                </div>
-                <div className="px-4 py-2 bg-primary-light/10 rounded-xl border border-primary-light/20">
-                  <span className="text-sm font-semibold text-primary-dark">{files.length} Total</span>
                 </div>
               </div>
             </div>

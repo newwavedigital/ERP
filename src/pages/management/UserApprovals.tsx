@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { Users, CheckCircle, XCircle, Clock, Search, Filter, Mail, Calendar, User } from 'lucide-react'
+import { Users, CheckCircle, XCircle, Clock, Search, Filter, Mail, Calendar, User, Plus, Edit, Trash2 } from 'lucide-react'
 import { supabase } from '../../lib/supabase'
 
 interface UserProfile {
@@ -24,10 +24,35 @@ const UserApprovals: React.FC<UserApprovalsProps> = ({ embedded }) => {
   const [loading, setLoading] = useState(true)
   const [searchTerm, setSearchTerm] = useState('')
   const [statusFilter, setStatusFilter] = useState<'all' | 'pending' | 'approved' | 'rejected'>('all')
-  const [updating, setUpdating] = useState<string | null>(null)
   const [updatingRole, setUpdatingRole] = useState<string | null>(null)
   const [roleDrafts, setRoleDrafts] = useState<Record<string, string>>({})
   const [roleConfirm, setRoleConfirm] = useState<{ userId: string; fromRole: string; toRole: string } | null>(null)
+
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null)
+
+  const [isAdmin, setIsAdmin] = useState(false)
+  const [adminRoleLoading, setAdminRoleLoading] = useState(true)
+
+  const [addOpen, setAddOpen] = useState(false)
+  const [addForm, setAddForm] = useState<{ email: string; first_name: string; last_name: string; role: string }>({
+    email: '',
+    first_name: '',
+    last_name: '',
+    role: 'client',
+  })
+  const [addSubmitting, setAddSubmitting] = useState(false)
+  const [addError, setAddError] = useState<string | null>(null)
+
+  const [editOpen, setEditOpen] = useState(false)
+  const [editTarget, setEditTarget] = useState<UserProfile | null>(null)
+  const [editForm, setEditForm] = useState<{ first_name: string; last_name: string; role: string; approval_status: string } | null>(null)
+  const [editSubmitting, setEditSubmitting] = useState(false)
+  const [editError, setEditError] = useState<string | null>(null)
+
+  const [deleteOpen, setDeleteOpen] = useState(false)
+  const [deleteTarget, setDeleteTarget] = useState<UserProfile | null>(null)
+  const [deleteSubmitting, setDeleteSubmitting] = useState(false)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
 
   // Available roles for assignment
   const availableRoles = [
@@ -58,6 +83,60 @@ const UserApprovals: React.FC<UserApprovalsProps> = ({ embedded }) => {
     }
   }
 
+  const loadIsAdmin = async () => {
+    try {
+      setAdminRoleLoading(true)
+      const { data: authData, error: authErr } = await supabase.auth.getUser()
+      if (authErr || !authData?.user?.id) {
+        setIsAdmin(false)
+        setCurrentUserId(null)
+        return
+      }
+      setCurrentUserId(authData.user.id)
+      const { data: prof, error: profErr } = await supabase
+        .from('profiles')
+        .select('role')
+        .eq('id', authData.user.id)
+        .maybeSingle()
+      if (profErr) {
+        setIsAdmin(false)
+        return
+      }
+      setIsAdmin(String((prof as any)?.role || '').toLowerCase() === 'admin')
+    } catch {
+      setIsAdmin(false)
+      setCurrentUserId(null)
+    } finally {
+      setAdminRoleLoading(false)
+    }
+  }
+
+  const invokeAdminUserManagement = async (body: any) => {
+    const { data, error } = await supabase.functions.invoke('admin-user-management', { body })
+    if (error) {
+      const ctx = (error as any)?.context as Response | undefined
+      if (ctx) {
+        try {
+          const json = await ctx.clone().json()
+          if (json && typeof json === 'object' && 'error' in json) {
+            throw new Error(String((json as any).error))
+          }
+          throw new Error(JSON.stringify(json))
+        } catch {
+          try {
+            const text = await ctx.clone().text()
+            if (text) throw new Error(text)
+          } catch {
+            // fall through
+          }
+        }
+      }
+      throw new Error(error.message || 'Request failed')
+    }
+    if (data && (data as any).error) throw new Error(String((data as any).error))
+    return data
+  }
+
   const confirmRoleChange = async () => {
     if (!roleConfirm) return
     const { userId, fromRole, toRole } = roleConfirm
@@ -82,46 +161,18 @@ const UserApprovals: React.FC<UserApprovalsProps> = ({ embedded }) => {
     setRoleConfirm(null)
   }
 
-  // Update user approval status
-  const updateApprovalStatus = async (userId: string, status: 'pending' | 'approved' | 'rejected') => {
-    try {
-      setUpdating(userId)
-      const { error } = await supabase
-        .from('profiles')
-        .update({ 
-          approval_status: status,
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', userId)
-
-      if (error) throw error
-
-      // Update local state
-      setUsers(prev => prev.map(user => 
-        user.id === userId 
-          ? { ...user, approval_status: status, updated_at: new Date().toISOString() }
-          : user
-      ))
-    } catch (error) {
-      console.error('Error updating approval status:', error)
-    } finally {
-      setUpdating(null)
-    }
-  }
-
   // Update user role
   const updateUserRole = async (userId: string, role: string) => {
     try {
       setUpdatingRole(userId)
-      const { error } = await supabase
-        .from('profiles')
-        .update({ 
-          role: role,
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', userId)
-
-      if (error) throw error
+      if (!isAdmin) throw new Error('Admin only')
+      await invokeAdminUserManagement({
+        action: 'update_user',
+        payload: {
+          id: userId,
+          role,
+        }
+      })
 
       // Update local state
       setUsers(prev => prev.map(user => 
@@ -138,10 +189,35 @@ const UserApprovals: React.FC<UserApprovalsProps> = ({ embedded }) => {
 
   useEffect(() => {
     loadUsers()
+    loadIsAdmin()
   }, [])
 
-  // Exclude admin accounts from the UI entirely
-  const visibleUsers = users.filter(u => (u.role || '').toLowerCase() !== 'admin')
+  useEffect(() => {
+    if (!addOpen) {
+      setAddError(null)
+      setAddSubmitting(false)
+      setAddForm({ email: '', first_name: '', last_name: '', role: 'client' })
+    }
+  }, [addOpen])
+
+  useEffect(() => {
+    if (!editOpen) {
+      setEditError(null)
+      setEditSubmitting(false)
+      setEditTarget(null)
+      setEditForm(null)
+    }
+  }, [editOpen])
+
+  useEffect(() => {
+    if (!deleteOpen) {
+      setDeleteError(null)
+      setDeleteSubmitting(false)
+      setDeleteTarget(null)
+    }
+  }, [deleteOpen])
+
+  const visibleUsers = users
 
   // Filter users based on search and status (from visible set only)
   const filteredUsers = visibleUsers.filter(user => {
@@ -299,6 +375,17 @@ const UserApprovals: React.FC<UserApprovalsProps> = ({ embedded }) => {
 
       {/* Users Table */}
       <div className="bg-white rounded-2xl border border-neutral-soft overflow-hidden">
+        {isAdmin && !adminRoleLoading && (
+          <div className="px-6 py-4 border-b border-neutral-soft flex items-center justify-end">
+            <button
+              type="button"
+              onClick={() => setAddOpen(true)}
+              className="inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm text-white bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light shadow-md"
+            >
+              <Plus className="w-4 h-4" /> Add User
+            </button>
+          </div>
+        )}
         <div className="overflow-x-auto">
           <table className="w-full">
             <thead className="bg-neutral-light/50 border-b border-neutral-soft">
@@ -339,7 +426,12 @@ const UserApprovals: React.FC<UserApprovalsProps> = ({ embedded }) => {
                           <User className="w-5 h-5 text-primary-medium" />
                         </div>
                         <div>
-                          <p className="font-medium text-neutral-dark">{(user.full_name && user.full_name.trim()) || `${user.first_name || ''} ${user.last_name || ''}`.trim() || 'N/A'}</p>
+                          <div className="flex items-center gap-2">
+                            <p className="font-medium text-neutral-dark">{(user.full_name && user.full_name.trim()) || `${user.first_name || ''} ${user.last_name || ''}`.trim() || 'N/A'}</p>
+                            {currentUserId && user.id === currentUserId && (
+                              <span className="px-2 py-0.5 rounded-full text-xs font-semibold border border-neutral-soft text-neutral-dark bg-white">You</span>
+                            )}
+                          </div>
                           <p className="text-sm text-neutral-medium flex items-center gap-1">
                             <Mail className="w-3 h-3" />
                             {user.email}
@@ -351,28 +443,34 @@ const UserApprovals: React.FC<UserApprovalsProps> = ({ embedded }) => {
                       <span className="text-sm text-neutral-dark">{user.company || 'N/A'}</span>
                     </td>
                     <td className="px-6 py-4">
-                      <div className="flex items-center gap-2">
-                        <select
-                          value={roleDrafts[user.id] ?? (user.role || 'client')}
-                          onChange={(e) => {
-                            const fromRole = String(user.role || 'client')
-                            const toRole = e.target.value
-                            setRoleDrafts((prev) => ({ ...prev, [user.id]: toRole }))
-                            setRoleConfirm({ userId: user.id, fromRole, toRole })
-                          }}
-                          disabled={updatingRole === user.id}
-                          className="text-sm border border-neutral-soft rounded-lg px-3 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-primary-medium focus:border-transparent disabled:opacity-50 disabled:cursor-not-allowed"
-                        >
-                          {availableRoles.map(role => (
-                            <option key={role} value={role}>
-                              {formatRoleName(role)}
-                            </option>
-                          ))}
-                        </select>
-                        {updatingRole === user.id && (
-                          <div className="w-4 h-4 border-2 border-primary-medium border-t-transparent rounded-full animate-spin"></div>
-                        )}
-                      </div>
+                      {isAdmin ? (
+                        <div className="flex items-center gap-2">
+                          <select
+                            value={roleDrafts[user.id] ?? (user.role || 'client')}
+                            onChange={(e) => {
+                              if (currentUserId && user.id === currentUserId) return
+                              const fromRole = String(user.role || 'client')
+                              const toRole = e.target.value
+                              setRoleDrafts((prev) => ({ ...prev, [user.id]: toRole }))
+                              setRoleConfirm({ userId: user.id, fromRole, toRole })
+                            }}
+                            disabled={updatingRole === user.id || (currentUserId ? user.id === currentUserId : false)}
+                            title={currentUserId && user.id === currentUserId ? 'This is the account currently logged in' : undefined}
+                            className="text-sm border border-neutral-soft rounded-lg px-3 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-primary-medium focus:border-transparent disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            {availableRoles.map(role => (
+                              <option key={role} value={role}>
+                                {formatRoleName(role)}
+                              </option>
+                            ))}
+                          </select>
+                          {updatingRole === user.id && (
+                            <div className="w-4 h-4 border-2 border-primary-medium border-t-transparent rounded-full animate-spin"></div>
+                          )}
+                        </div>
+                      ) : (
+                        <span className="text-sm text-neutral-dark">{formatRoleName(user.role || 'client')}</span>
+                      )}
                     </td>
                     <td className="px-6 py-4">
                       {getStatusBadge(user.approval_status)}
@@ -385,38 +483,38 @@ const UserApprovals: React.FC<UserApprovalsProps> = ({ embedded }) => {
                     </td>
                     <td className="px-6 py-4">
                       <div className="flex items-center gap-2">
-                        {user.approval_status === 'pending' && (
-                          <>
-                            <button
-                              onClick={() => updateApprovalStatus(user.id, 'approved')}
-                              disabled={updating === user.id}
-                              className="p-2 text-accent-success hover:bg-accent-success/10 rounded-lg transition-colors disabled:opacity-50"
-                              title="Approve"
-                            >
-                              <CheckCircle className="w-4 h-4" />
-                            </button>
-                            <button
-                              onClick={() => updateApprovalStatus(user.id, 'rejected')}
-                              disabled={updating === user.id}
-                              className="p-2 text-accent-danger hover:bg-accent-danger/10 rounded-lg transition-colors disabled:opacity-50"
-                              title="Reject"
-                            >
-                              <XCircle className="w-4 h-4" />
-                            </button>
-                          </>
-                        )}
-                        {user.approval_status !== 'pending' && (
+                        {isAdmin && (
                           <button
-                            onClick={() => updateApprovalStatus(user.id, 'pending')}
-                            disabled={updating === user.id}
-                            className="p-2 text-accent-warning hover:bg-accent-warning/10 rounded-lg transition-colors disabled:opacity-50"
-                            title="Reset to Pending"
+                            type="button"
+                            onClick={() => {
+                              setEditTarget(user)
+                              setEditForm({
+                                first_name: String(user.first_name || ''),
+                                last_name: String(user.last_name || ''),
+                                role: String(user.role || 'client'),
+                                approval_status: String(user.approval_status || 'pending'),
+                              })
+                              setEditOpen(true)
+                            }}
+                            className="p-2 text-primary-medium hover:bg-primary-light/10 rounded-lg transition-colors"
+                            title="Edit user"
                           >
-                            <Clock className="w-4 h-4" />
+                            <Edit className="w-4 h-4" />
                           </button>
                         )}
-                        {updating === user.id && (
-                          <div className="w-4 h-4 border-2 border-primary-medium border-t-transparent rounded-full animate-spin"></div>
+
+                        {isAdmin && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setDeleteTarget(user)
+                              setDeleteOpen(true)
+                            }}
+                            className="p-2 text-accent-danger hover:bg-accent-danger/10 rounded-lg transition-colors"
+                            title="Delete user"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
                         )}
                       </div>
                     </td>
@@ -462,6 +560,270 @@ const UserApprovals: React.FC<UserApprovalsProps> = ({ embedded }) => {
                 className="px-4 py-2 rounded-lg bg-primary-medium text-white hover:bg-primary-dark disabled:opacity-50"
               >
                 Yes
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {addOpen && isAdmin && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/50" onClick={() => !addSubmitting && setAddOpen(false)}></div>
+          <div className="relative z-10 w-full max-w-lg bg-white rounded-2xl shadow-2xl border border-neutral-soft/30 overflow-hidden">
+            <div className="px-6 py-4 border-b border-neutral-soft/30 flex items-center justify-between">
+              <div className="text-lg font-semibold text-neutral-dark">Add User</div>
+              <button type="button" className="p-2 rounded-lg hover:bg-neutral-light/40 text-neutral-medium" onClick={() => !addSubmitting && setAddOpen(false)}>
+                <XCircle className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="px-6 py-5 space-y-4">
+              <div>
+                <label className="text-sm font-semibold text-neutral-dark">Email (required)</label>
+                <input
+                  value={addForm.email}
+                  onChange={(e) => setAddForm((p) => ({ ...p, email: e.target.value }))}
+                  className="mt-2 w-full px-4 py-2.5 border border-neutral-soft rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-medium"
+                  placeholder="name@company.com"
+                />
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="text-sm font-semibold text-neutral-dark">First Name</label>
+                  <input
+                    value={addForm.first_name}
+                    onChange={(e) => setAddForm((p) => ({ ...p, first_name: e.target.value }))}
+                    className="mt-2 w-full px-4 py-2.5 border border-neutral-soft rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-medium"
+                    placeholder="First name"
+                  />
+                </div>
+                <div>
+                  <label className="text-sm font-semibold text-neutral-dark">Last Name</label>
+                  <input
+                    value={addForm.last_name}
+                    onChange={(e) => setAddForm((p) => ({ ...p, last_name: e.target.value }))}
+                    className="mt-2 w-full px-4 py-2.5 border border-neutral-soft rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-medium"
+                    placeholder="Last name"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="text-sm font-semibold text-neutral-dark">Role</label>
+                <select
+                  value={addForm.role}
+                  onChange={(e) => setAddForm((p) => ({ ...p, role: e.target.value }))}
+                  className="mt-2 w-full px-4 py-2.5 border border-neutral-soft rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-primary-medium"
+                >
+                  {availableRoles.map((r) => (
+                    <option key={r} value={r}>{formatRoleName(r)}</option>
+                  ))}
+                </select>
+              </div>
+              {addError && (
+                <div className="text-sm text-accent-danger">{addError}</div>
+              )}
+            </div>
+            <div className="px-6 py-4 border-t border-neutral-soft/30 flex items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setAddOpen(false)}
+                disabled={addSubmitting}
+                className="px-4 py-2 rounded-lg border border-neutral-soft text-neutral-dark hover:bg-neutral-light disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={addSubmitting}
+                onClick={async () => {
+                  try {
+                    setAddSubmitting(true)
+                    setAddError(null)
+                    const email = addForm.email.trim()
+                    if (!email) {
+                      setAddError('Email is required')
+                      return
+                    }
+                    await invokeAdminUserManagement({
+                      action: 'create_user',
+                      payload: {
+                        email,
+                        first_name: addForm.first_name.trim() || null,
+                        last_name: addForm.last_name.trim() || null,
+                        role: addForm.role,
+                      }
+                    })
+                    setAddOpen(false)
+                    await loadUsers()
+                  } catch (e) {
+                    setAddError(e instanceof Error ? e.message : 'Failed to add user')
+                  } finally {
+                    setAddSubmitting(false)
+                  }
+                }}
+                className="px-4 py-2 rounded-lg bg-primary-medium text-white hover:bg-primary-dark disabled:opacity-50"
+              >
+                {addSubmitting ? 'Sending Invite…' : 'Send Invite'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {editOpen && editTarget && editForm && isAdmin && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/50" onClick={() => !editSubmitting && setEditOpen(false)}></div>
+          <div className="relative z-10 w-full max-w-lg bg-white rounded-2xl shadow-2xl border border-neutral-soft/30 overflow-hidden">
+            <div className="px-6 py-4 border-b border-neutral-soft/30 flex items-center justify-between">
+              <div className="text-lg font-semibold text-neutral-dark">Edit User</div>
+              <button type="button" className="p-2 rounded-lg hover:bg-neutral-light/40 text-neutral-medium" onClick={() => !editSubmitting && setEditOpen(false)}>
+                <XCircle className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="px-6 py-5 space-y-4">
+              <div className="text-sm text-neutral-medium">{editTarget.email}</div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="text-sm font-semibold text-neutral-dark">First Name</label>
+                  <input
+                    value={editForm.first_name}
+                    onChange={(e) => setEditForm((p) => p ? ({ ...p, first_name: e.target.value }) : p)}
+                    className="mt-2 w-full px-4 py-2.5 border border-neutral-soft rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-medium"
+                  />
+                </div>
+                <div>
+                  <label className="text-sm font-semibold text-neutral-dark">Last Name</label>
+                  <input
+                    value={editForm.last_name}
+                    onChange={(e) => setEditForm((p) => p ? ({ ...p, last_name: e.target.value }) : p)}
+                    className="mt-2 w-full px-4 py-2.5 border border-neutral-soft rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-medium"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="text-sm font-semibold text-neutral-dark">Role</label>
+                <select
+                  value={editForm.role}
+                  onChange={(e) => setEditForm((p) => p ? ({ ...p, role: e.target.value }) : p)}
+                  disabled={currentUserId ? editTarget.id === currentUserId : false}
+                  title={currentUserId && editTarget.id === currentUserId ? 'This is the account currently logged in' : undefined}
+                  className="mt-2 w-full px-4 py-2.5 border border-neutral-soft rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-primary-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {availableRoles.map((r) => (
+                    <option key={r} value={r}>{formatRoleName(r)}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="text-sm font-semibold text-neutral-dark">Status</label>
+                <select
+                  value={editForm.approval_status}
+                  onChange={(e) => setEditForm((p) => p ? ({ ...p, approval_status: e.target.value }) : p)}
+                  disabled={currentUserId ? editTarget.id === currentUserId : false}
+                  title={currentUserId && editTarget.id === currentUserId ? 'This is the account currently logged in' : undefined}
+                  className="mt-2 w-full px-4 py-2.5 border border-neutral-soft rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-primary-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <option value="pending">Pending</option>
+                  <option value="approved">Approved</option>
+                  <option value="rejected">Rejected</option>
+                </select>
+              </div>
+              {editError && (
+                <div className="text-sm text-accent-danger">{editError}</div>
+              )}
+            </div>
+            <div className="px-6 py-4 border-t border-neutral-soft/30 flex items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setEditOpen(false)}
+                disabled={editSubmitting}
+                className="px-4 py-2 rounded-lg border border-neutral-soft text-neutral-dark hover:bg-neutral-light disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={editSubmitting}
+                onClick={async () => {
+                  try {
+                    setEditSubmitting(true)
+                    setEditError(null)
+                    await invokeAdminUserManagement({
+                      action: 'update_user',
+                      payload: {
+                        id: editTarget.id,
+                        first_name: editForm.first_name.trim() || null,
+                        last_name: editForm.last_name.trim() || null,
+                        role: editForm.role,
+                        approval_status: editForm.approval_status,
+                      }
+                    })
+                    setEditOpen(false)
+                    await loadUsers()
+                  } catch (e) {
+                    setEditError(e instanceof Error ? e.message : 'Failed to update user')
+                  } finally {
+                    setEditSubmitting(false)
+                  }
+                }}
+                className="px-4 py-2 rounded-lg bg-primary-medium text-white hover:bg-primary-dark disabled:opacity-50"
+              >
+                {editSubmitting ? 'Saving…' : 'Save Changes'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {deleteOpen && deleteTarget && isAdmin && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/50" onClick={() => !deleteSubmitting && setDeleteOpen(false)}></div>
+          <div className="relative z-10 w-full max-w-md bg-white rounded-2xl shadow-2xl border border-neutral-soft/30 overflow-hidden">
+            <div className="px-6 py-4 border-b border-neutral-soft/30 flex items-center justify-between">
+              <div className="text-lg font-semibold text-neutral-dark">Delete User</div>
+              <button type="button" className="p-2 rounded-lg hover:bg-neutral-light/40 text-neutral-medium" onClick={() => !deleteSubmitting && setDeleteOpen(false)}>
+                <XCircle className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="px-6 py-5 space-y-3">
+              <div className="text-sm text-neutral-medium">
+                This will permanently delete the user from Authentication and remove their profile.
+              </div>
+              <div className="text-sm font-semibold text-neutral-dark">{deleteTarget.email}</div>
+              {deleteError && (
+                <div className="text-sm text-accent-danger">{deleteError}</div>
+              )}
+            </div>
+            <div className="px-6 py-4 border-t border-neutral-soft/30 flex items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setDeleteOpen(false)}
+                disabled={deleteSubmitting}
+                className="px-4 py-2 rounded-lg border border-neutral-soft text-neutral-dark hover:bg-neutral-light disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={deleteSubmitting}
+                onClick={async () => {
+                  try {
+                    setDeleteSubmitting(true)
+                    setDeleteError(null)
+                    await invokeAdminUserManagement({
+                      action: 'delete_user',
+                      payload: { id: deleteTarget.id },
+                    })
+                    setDeleteOpen(false)
+                    await loadUsers()
+                  } catch (e) {
+                    setDeleteError(e instanceof Error ? e.message : 'Failed to delete user')
+                  } finally {
+                    setDeleteSubmitting(false)
+                  }
+                }}
+                className="px-4 py-2 rounded-lg bg-accent-danger text-white hover:bg-accent-danger/90 disabled:opacity-50"
+              >
+                {deleteSubmitting ? 'Deleting…' : 'Delete'}
               </button>
             </div>
           </div>

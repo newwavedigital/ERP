@@ -17,7 +17,7 @@ function formatDate(dateStr?: string | null): string {
   if (!dateStr) return '-'
   const d = new Date(dateStr)
   if (Number.isNaN(d.getTime())) return '-'
-  return d.toLocaleDateString()
+  return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
 }
 
 function formatStatusLabel(raw?: string | null): string {
@@ -146,8 +146,26 @@ const PurchaseOrders: React.FC = () => {
   const [newSalesRep, setNewSalesRep] = useState('')
   const [isPaymentTermsOpen, setIsPaymentTermsOpen] = useState(false)
   const [isSalesRepOpen, setIsSalesRepOpen] = useState(false)
+  const [showAddCustomer, setShowAddCustomer] = useState(false)
+  const [newCustomerName, setNewCustomerName] = useState('')
+  const [addingCustomer, setAddingCustomer] = useState(false)
   // Brand vs Copack list tabs
-  const [poTab, setPoTab] = useState<'brand' | 'copack'>('brand')
+  const [poTab, setPoTab] = useState<'brand' | 'copack'>('copack')
+
+  const productNamesSet = useMemo(() => {
+    const set = new Set<string>()
+    ;(products || []).forEach((p: any) => {
+      const n = String(p?.name || '').trim().toLowerCase()
+      if (n) set.add(n)
+    })
+    return set
+  }, [products])
+
+  const isKnownProductName = (name: string) => {
+    const n = String(name || '').trim().toLowerCase()
+    if (!n) return false
+    return productNamesSet.has(n)
+  }
 
   // Detect products with competing POs (same product across multiple open rows)
   // Only count POs with deposit_paid=true AND rush dates for escalation threshold
@@ -1681,6 +1699,23 @@ const PurchaseOrders: React.FC = () => {
   const saveOrder = async () => {
     setError(null)
 
+    if (!form.is_copack) {
+      const mainName = String(form.product || '').trim()
+      if (!mainName || !isKnownProductName(mainName)) {
+        setToast({ show: true, message: 'Please select a product from the Products list.', kind: 'error' })
+        return
+      }
+      const badExtra = (extraLines || []).find((l) => {
+        const n = String(l?.product || '').trim()
+        if (!n) return false
+        return !isKnownProductName(n)
+      })
+      if (badExtra) {
+        setToast({ show: true, message: 'One or more additional products are not in the Products list. Please select from the suggestions.', kind: 'error' })
+        return
+      }
+    }
+
     // Build draft payload from UI
     const selectedCustomerId = customers.find(c => c.name === form.customer)?.id || null
     const draft = {
@@ -1814,7 +1849,9 @@ const PurchaseOrders: React.FC = () => {
             client_materials_required: !!draft.client_materials_required,
             operation_supplies_materials: !!draft.operation_supplies_materials,
             payment_terms: form.paymentTerms || null,
+            sales_representative: form.salesRepresentative || null,
             additional_packaging: form.additionalPackaging || null,
+            notes: form.comments || null,
           })
           .eq('id', isEditOpen.id)
         if (upErr) throw upErr
@@ -1842,7 +1879,9 @@ const PurchaseOrders: React.FC = () => {
             client_materials_required: !!draft.client_materials_required,
             operation_supplies_materials: !!draft.operation_supplies_materials,
             payment_terms: form.paymentTerms || null,
+            sales_representative: form.salesRepresentative || null,
             additional_packaging: form.additionalPackaging || null,
+            notes: form.comments || null,
           })
           .select()
           .single()
@@ -2368,6 +2407,119 @@ const PurchaseOrders: React.FC = () => {
           </div>
         )}
 
+        {showAddCustomer && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[90]">
+            <div className="bg-white rounded-xl p-6 w-full max-w-md mx-4">
+              <h3 className="text-lg font-semibold text-neutral-dark mb-4">Add New Customer</h3>
+              <div className="space-y-4">
+                <input
+                  type="text"
+                  placeholder="Enter customer name"
+                  value={newCustomerName}
+                  onChange={(e) => setNewCustomerName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && newCustomerName.trim() && !addingCustomer) {
+                      const v = newCustomerName.trim()
+                      setAddingCustomer(true)
+                      ;(async () => {
+                        try {
+                          const { data, error } = await supabase
+                            .from('customers')
+                            .insert({ company_name: v })
+                            .select('id, company_name, credit_hold, overdue_balance, credit_limit, current_balance')
+                            .maybeSingle()
+                          if (error) throw error
+                          const row: any = data || null
+                          const id = String(row?.id || '')
+                          if (!id) throw new Error('Customer not created')
+                          const nextCustomer = {
+                            id,
+                            name: String(row?.company_name ?? v),
+                            credit_hold: !!row?.credit_hold,
+                            overdue_balance: Number(row?.overdue_balance ?? 0),
+                            credit_limit: Number(row?.credit_limit ?? 0),
+                            current_balance: Number(row?.current_balance ?? 0),
+                          }
+                          setCustomers((prev) => {
+                            const dedup = (prev || []).filter((c) => String(c.id) !== String(nextCustomer.id))
+                            const merged = [...dedup, nextCustomer]
+                            merged.sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')))
+                            return merged
+                          })
+                          setForm((prev: any) => ({ ...prev, customer: nextCustomer.name, customer_id: nextCustomer.id }))
+                          setShowAddCustomer(false)
+                          setNewCustomerName('')
+                          setToast({ show: true, message: 'Customer added', kind: 'success' })
+                        } catch (err: any) {
+                          setToast({ show: true, message: err?.message || 'Failed to add customer', kind: 'error' })
+                        } finally {
+                          setAddingCustomer(false)
+                        }
+                      })()
+                    }
+                  }}
+                  className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light"
+                />
+                <div className="flex gap-3">
+                  <button
+                    type="button"
+                    onClick={() => { if (!addingCustomer) { setShowAddCustomer(false); setNewCustomerName('') } }}
+                    className="flex-1 px-4 py-2 border border-neutral-soft rounded-lg text-neutral-dark hover:bg-neutral-light disabled:opacity-50"
+                    disabled={addingCustomer}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const v = newCustomerName.trim()
+                      if (!v || addingCustomer) return
+                      setAddingCustomer(true)
+                      try {
+                        const { data, error } = await supabase
+                          .from('customers')
+                          .insert({ company_name: v })
+                          .select('id, company_name, credit_hold, overdue_balance, credit_limit, current_balance')
+                          .maybeSingle()
+                        if (error) throw error
+                        const row: any = data || null
+                        const id = String(row?.id || '')
+                        if (!id) throw new Error('Customer not created')
+                        const nextCustomer = {
+                          id,
+                          name: String(row?.company_name ?? v),
+                          credit_hold: !!row?.credit_hold,
+                          overdue_balance: Number(row?.overdue_balance ?? 0),
+                          credit_limit: Number(row?.credit_limit ?? 0),
+                          current_balance: Number(row?.current_balance ?? 0),
+                        }
+                        setCustomers((prev) => {
+                          const dedup = (prev || []).filter((c) => String(c.id) !== String(nextCustomer.id))
+                          const merged = [...dedup, nextCustomer]
+                          merged.sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')))
+                          return merged
+                        })
+                        setForm((prev: any) => ({ ...prev, customer: nextCustomer.name, customer_id: nextCustomer.id }))
+                        setShowAddCustomer(false)
+                        setNewCustomerName('')
+                        setToast({ show: true, message: 'Customer added', kind: 'success' })
+                      } catch (err: any) {
+                        setToast({ show: true, message: err?.message || 'Failed to add customer', kind: 'error' })
+                      } finally {
+                        setAddingCustomer(false)
+                      }
+                    }}
+                    disabled={!newCustomerName.trim() || addingCustomer}
+                    className="flex-1 px-4 py-2 bg-primary-medium text-white rounded-lg hover:bg-primary-dark disabled:opacity-50"
+                  >
+                    {addingCustomer ? 'Adding…' : 'Add'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* ASN Modal - System Design Standards */}
         {asnModalOpen && (
           <div className="fixed inset-0 z-[80] flex items-center justify-center p-4">
@@ -2656,6 +2808,7 @@ const PurchaseOrders: React.FC = () => {
                           const fallbackName = currentOrder.customer_name || (customers.find(c=> String(c.id)===String(currentOrder.customer_id))?.name || '');
                           setForm((prev) => ({
                             ...prev,
+                            date: currentOrder.date || prev.date,
                             customer: fallbackName,
                             customer_id: currentOrder.customer_id ? String(currentOrder.customer_id) : '',
                             product: currentOrder.product_name || '',
@@ -2663,10 +2816,15 @@ const PurchaseOrders: React.FC = () => {
                             ship_date: currentOrder.requested_ship_date || '',
                             quantity: String(currentOrder.quantity || ''),
                             caseQty: String(currentOrder.case_qty || ''),
+                            paymentTerms: currentOrder.payment_terms || '',
+                            salesRepresentative: currentOrder.sales_representative || '',
+                            additionalPackaging: currentOrder.additional_packaging || '',
+                            location: currentOrder.location || '',
                             comments: currentOrder.notes || '',
                             is_copack: Boolean(currentOrder.is_copack),
                             po_number: currentOrder.po_number || '',
                             status: currentOrder.status || 'Draft',
+                            deposit_paid: !!currentOrder.deposit_paid,
                           }));
                           // Load additional items from purchase_order_items
                           try {
@@ -2687,10 +2845,34 @@ const PurchaseOrders: React.FC = () => {
                           )}
 
                           {/* Move to Procurement */}
-                          {(['finance', 'procurement'].includes(String(currentRole || '').toLowerCase())) && (
+                          {(['admin', 'finance', 'procurement'].includes(String(currentRole || '').toLowerCase())) && (
+                            (() => {
+                              const st = String(currentOrder?.status || '').toLowerCase().trim()
+                              const disableMove = new Set([
+                                'move_to_procurement',
+                                'move to procurement',
+                                'procurement',
+                                'ready_to_schedule',
+                                'ready to schedule',
+                                'scheduled',
+                                'in_progress',
+                                'in progress',
+                                'qa_hold',
+                                'qa hold',
+                                'ready_to_ship',
+                                'ready to ship',
+                                'completed',
+                                'allocated',
+                                'partial',
+                                'partially_shipped',
+                                'shipped',
+                                'submitted',
+                              ]).has(st)
+                              return (
                             <button
-                              className="w-full px-4 py-3 text-left text-sm text-neutral-dark hover:bg-neutral-light/60 transition-colors flex items-center space-x-3"
+                              className={`w-full px-4 py-3 text-left text-sm transition-colors flex items-center space-x-3 ${disableMove ? 'text-neutral-medium cursor-not-allowed opacity-60' : 'text-neutral-dark hover:bg-neutral-light/60'}`}
                               onClick={async () => {
+                                if (disableMove) return
                                 try {
                                   await supabase
                                     .from('purchase_orders')
@@ -2704,10 +2886,14 @@ const PurchaseOrders: React.FC = () => {
                                   setOpenMenuId(null)
                                 }
                               }}
+                              disabled={disableMove}
+                              title={disableMove ? 'Already in Procurement/Shipping stage' : 'Move to Procurement'}
                             >
-                              <Truck className="h-4 w-4 text-primary-medium" />
+                              <Truck className={`h-4 w-4 ${disableMove ? 'text-neutral-medium' : 'text-primary-medium'}`} />
                               <span>Move to Procurement</span>
                             </button>
+                              )
+                            })()
                           )}
                     
                     {/* Divider */}
@@ -3105,19 +3291,19 @@ const PurchaseOrders: React.FC = () => {
       {/* Table (redesigned as cards) */}
       <div className="bg-white rounded-2xl shadow-md border border-neutral-soft/20 p-6">
         {/* Local tabs row just above the list */}
-        <div className="mb-4 flex items-center justify-end">
+        <div className="mb-4 flex items-center justify-start">
           <div className="inline-flex items-center rounded-lg bg-neutral-light/60 p-1 border border-neutral-soft/60">
-            <button
-              className={`px-3 py-1.5 text-sm rounded-md ${poTab==='brand' ? 'bg-primary-medium text-white shadow' : 'text-neutral-dark hover:bg-white'}`}
-              onClick={() => setPoTab('brand')}
-            >
-              Brand
-            </button>
             <button
               className={`px-3 py-1.5 text-sm rounded-md ${poTab==='copack' ? 'bg-primary-medium text-white shadow' : 'text-neutral-dark hover:bg-white'}`}
               onClick={() => setPoTab('copack')}
             >
-              Copack
+              Co-Packing
+            </button>
+            <button
+              className={`px-3 py-1.5 text-sm rounded-md ${poTab==='brand' ? 'bg-primary-medium text-white shadow' : 'text-neutral-dark hover:bg-white'}`}
+              onClick={() => setPoTab('brand')}
+            >
+              Brands
             </button>
           </div>
         </div>
@@ -3164,9 +3350,15 @@ const PurchaseOrders: React.FC = () => {
                     <div key={o.id} className="rounded-2xl border border-neutral-soft/40 bg-gradient-to-br from-white to-neutral-light/30 p-5 shadow-sm hover:shadow-md transition-all">
                       <div className="flex items-start justify-between pb-3 border-b border-neutral-soft/60">
                         <div className="flex items-start gap-4">
-                          <div className="space-y-1">
-                            <div className="text-[11px] uppercase tracking-wide text-neutral-medium">PO Date</div>
-                            <div className="text-sm font-semibold text-neutral-dark">{o.date || '-'}</div>
+                          <div className="grid grid-cols-2 gap-6">
+                            <div className="space-y-1">
+                              <div className="text-[11px] uppercase tracking-wide text-neutral-medium">PO Date</div>
+                              <div className="text-sm font-semibold text-neutral-dark">{formatDate(o.date)}</div>
+                            </div>
+                            <div className="space-y-1">
+                              <div className="text-[11px] uppercase tracking-wide text-neutral-medium">PO #</div>
+                              <div className="text-sm font-semibold text-neutral-dark">{o.po_number || '-'}</div>
+                            </div>
                           </div>
                           {showsPriorityScore(o) && !o.is_copack && (
                             <div className="space-y-1">
@@ -3517,6 +3709,20 @@ const PurchaseOrders: React.FC = () => {
                       </label>
                       <input type="date" className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light" value={form.date} onChange={(e)=>setForm({...form,date:e.target.value})} />
                     </div>
+                    {!form.is_copack ? (
+                      <div className="space-y-2">
+                        <label className="flex items-center text-sm font-medium text-neutral-dark">
+                          <Calendar className="h-4 w-4 mr-2 text-primary-medium" />
+                          Requested Ship Date
+                        </label>
+                        <input type="date" className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light" value={form.requestedShipDate} onChange={(e)=>setForm({...form, requestedShipDate:e.target.value, ship_date: e.target.value})} />
+                      </div>
+                    ) : (
+                      <div />
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     <div className="space-y-2">
                       <label className="flex items-center text-sm font-medium text-neutral-dark">
                         <User className="h-4 w-4 mr-2 text-primary-medium" />
@@ -3532,13 +3738,17 @@ const PurchaseOrders: React.FC = () => {
                             {customers.map(c => (
                               <button key={c.id} type="button" className={`block w-full text-left px-4 py-2 hover:bg-neutral-light ${form.customer===c.name?'bg-neutral-light':''}`} onClick={()=>{setForm({...form, customer:c.name, customer_id: c.id}); setIsCustomerOpen(false)}}>{c.name}{(c.credit_hold || (c.overdue_balance??0)>0)? ' • On Hold Risk' : ''}</button>
                             ))}
+                            <button
+                              type="button"
+                              className="w-full text-left px-4 py-2 text-primary-medium hover:text-primary-dark hover:bg-neutral-light"
+                              onClick={() => { setNewCustomerName(''); setShowAddCustomer(true); setIsCustomerOpen(false) }}
+                            >
+                              + Add Customer
+                            </button>
                           </div>
                         )}
                       </div>
                     </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     <div className="space-y-2">
                       <label className="flex items-center text-sm font-medium text-neutral-dark">PO #</label>
                       <input
@@ -3549,7 +3759,6 @@ const PurchaseOrders: React.FC = () => {
                         onChange={(e) => setForm({ ...form, po_number: e.target.value })}
                       />
                     </div>
-                    <div />
                   </div>
 
                   {/* Copack Material Settings (hidden for Brand POs) */}
@@ -3581,6 +3790,14 @@ const PurchaseOrders: React.FC = () => {
                             value={form.product}
                             onFocus={() => setProductSuggestOpen(true)}
                             onChange={(e)=>{ setForm({...form, product:e.target.value}); setProductSuggestOpen(true) }}
+                            onBlur={() => {
+                              const n = String(form.product || '').trim()
+                              if (!n) return
+                              if (!isKnownProductName(n)) {
+                                setForm((prev: any) => ({ ...prev, product: '' }))
+                                setToast({ show: true, message: 'Please select a product from the Products list.', kind: 'warning' })
+                              }
+                            }}
                           />
                           {productSuggestOpen && productSuggestions.length > 0 && (
                             <div className="absolute z-50 mt-1 w-full bg-white border border-neutral-soft rounded-lg shadow-lg overflow-hidden">
@@ -3636,6 +3853,14 @@ const PurchaseOrders: React.FC = () => {
                                     setExtraLines(prev=> prev.map(x=> x.id===l.id? {...x, product:e.target.value}: x))
                                     setExtraSuggestId(l.id)
                                   }}
+                                  onBlur={() => {
+                                    const n = String(l.product || '').trim()
+                                    if (!n) return
+                                    if (!isKnownProductName(n)) {
+                                      setExtraLines(prev=> prev.map(x=> x.id===l.id? {...x, product: ''}: x))
+                                      setToast({ show: true, message: 'Please select a product from the Products list.', kind: 'warning' })
+                                    }
+                                  }}
                                 />
                                 {extraSuggestId === l.id && extraSuggestions.length > 0 && (
                                   <div className="absolute z-50 mt-1 w-full bg-white border border-neutral-soft rounded-lg shadow-lg overflow-hidden">
@@ -3689,19 +3914,6 @@ const PurchaseOrders: React.FC = () => {
                     </div>
                   )}
 
-                  {!form.is_copack && (
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                      <div className="space-y-2">
-                        <label className="flex items-center text-sm font-medium text-neutral-dark">
-                          <Calendar className="h-4 w-4 mr-2 text-primary-medium" />
-                          Requested Ship Date
-                        </label>
-                        <input type="date" className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light" value={form.requestedShipDate} onChange={(e)=>setForm({...form, requestedShipDate:e.target.value, ship_date: e.target.value})} />
-                      </div>
-                      <div />
-                    </div>
-                  )}
-
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     <div className="space-y-2">
@@ -3734,104 +3946,106 @@ const PurchaseOrders: React.FC = () => {
                         )}
                       </div>
                     </div>
-                    <div />
+
+                    {!form.is_copack ? (
+                      <div className="space-y-2">
+                        <label className="flex items-center text-sm font-medium text-neutral-dark">Payment Terms</label>
+                        <div className="relative" ref={paymentTermsRef}>
+                          <button
+                            type="button"
+                            onClick={() => setIsPaymentTermsOpen((v) => !v)}
+                            className="w-full flex items-center justify-between px-4 py-3 border border-neutral-soft rounded-lg text-left bg-white transition-all hover:border-neutral-medium focus:ring-2 focus:ring-primary-light focus:border-primary-light"
+                          >
+                            <span className={form.paymentTerms ? 'text-neutral-dark' : 'text-neutral-medium'}>
+                              {form.paymentTerms || 'Select Payment Terms'}
+                            </span>
+                            <span className="ml-2 text-neutral-medium">▼</span>
+                          </button>
+                          {isPaymentTermsOpen && (
+                            <div className="absolute z-[100] mt-2 w-full bg-white border border-neutral-soft rounded-xl shadow-xl max-h-56 overflow-auto">
+                              <div className="px-3 py-2 text-xs text-neutral-medium">Select Payment Terms</div>
+                              {[
+                                'Pay In Advance',
+                                '50% Down & 50% DOR',
+                                '50% Down & Net 15',
+                                'Net 15',
+                                'Net 30',
+                                'Net 60',
+                                'Net 90',
+                              ].map((t) => (
+                                <button
+                                  key={t}
+                                  type="button"
+                                  className={`block w-full text-left px-4 py-2 hover:bg-neutral-light ${form.paymentTerms===t ? 'bg-neutral-light' : ''}`}
+                                  onClick={() => { setForm({ ...form, paymentTerms: t }); setIsPaymentTermsOpen(false) }}
+                                >
+                                  {t}
+                                </button>
+                              ))}
+                              <button
+                                type="button"
+                                className="w-full text-left px-4 py-2 text-primary-medium hover:text-primary-dark hover:bg-neutral-light"
+                                onClick={() => { setNewPaymentTerms(''); setShowAddPaymentTerms(true); setIsPaymentTermsOpen(false) }}
+                              >
+                                + Add New Payment Terms
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ) : (
+                      <div />
+                    )}
                   </div>
 
                   {!form.is_copack && (
-                    <div className="space-y-2">
-                      <label className="flex items-center text-sm font-medium text-neutral-dark">Payment Terms</label>
-                      <div className="relative" ref={paymentTermsRef}>
-                        <button
-                          type="button"
-                          onClick={() => setIsPaymentTermsOpen((v) => !v)}
-                          className="w-full flex items-center justify-between px-4 py-3 border border-neutral-soft rounded-lg text-left bg-white transition-all hover:border-neutral-medium focus:ring-2 focus:ring-primary-light focus:border-primary-light"
-                        >
-                          <span className={form.paymentTerms ? 'text-neutral-dark' : 'text-neutral-medium'}>
-                            {form.paymentTerms || 'Select Payment Terms'}
-                          </span>
-                          <span className="ml-2 text-neutral-medium">▼</span>
-                        </button>
-                        {isPaymentTermsOpen && (
-                          <div className="absolute z-[100] mt-2 w-full bg-white border border-neutral-soft rounded-xl shadow-xl max-h-56 overflow-auto">
-                            <div className="px-3 py-2 text-xs text-neutral-medium">Select Payment Terms</div>
-                            {[
-                              'Pay In Advance',
-                              '50% Down',
-                              '50% DOR',
-                              '50% Down & Net 15',
-                              'Net 15',
-                              'Net 30',
-                              'Net 60',
-                              'Net 90',
-                            ].map((t) => (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                      <div className="space-y-2">
+                        <label className="flex items-center text-sm font-medium text-neutral-dark">Sales Representative</label>
+                        <div className="relative" ref={salesRepRef}>
+                          <button
+                            type="button"
+                            onClick={() => setIsSalesRepOpen((v) => !v)}
+                            className="w-full flex items-center justify-between px-4 py-3 border border-neutral-soft rounded-lg text-left bg-white transition-all hover:border-neutral-medium focus:ring-2 focus:ring-primary-light focus:border-primary-light"
+                          >
+                            <span className={form.salesRepresentative ? 'text-neutral-dark' : 'text-neutral-medium'}>
+                              {form.salesRepresentative || 'Select Sales Representative'}
+                            </span>
+                            <span className="ml-2 text-neutral-medium">▼</span>
+                          </button>
+                          {isSalesRepOpen && (
+                            <div className="absolute z-[100] mt-2 w-full bg-white border border-neutral-soft rounded-xl shadow-xl max-h-56 overflow-auto">
+                              <div className="px-3 py-2 text-xs text-neutral-medium">Select Sales Representative</div>
+                              {['Carol', 'Henry', 'Ezekiel', 'Edwin'].map((t) => (
+                                <button
+                                  key={t}
+                                  type="button"
+                                  className={`block w-full text-left px-4 py-2 hover:bg-neutral-light ${form.salesRepresentative===t ? 'bg-neutral-light' : ''}`}
+                                  onClick={() => { setForm({ ...form, salesRepresentative: t }); setIsSalesRepOpen(false) }}
+                                >
+                                  {t}
+                                </button>
+                              ))}
                               <button
-                                key={t}
                                 type="button"
-                                className={`block w-full text-left px-4 py-2 hover:bg-neutral-light ${form.paymentTerms===t ? 'bg-neutral-light' : ''}`}
-                                onClick={() => { setForm({ ...form, paymentTerms: t }); setIsPaymentTermsOpen(false) }}
+                                className="w-full text-left px-4 py-2 text-primary-medium hover:text-primary-dark hover:bg-neutral-light"
+                                onClick={() => { setNewSalesRep(''); setShowAddSalesRep(true); setIsSalesRepOpen(false) }}
                               >
-                                {t}
+                                + Add New Sales Representative
                               </button>
-                            ))}
-                            <button
-                              type="button"
-                              className="w-full text-left px-4 py-2 text-primary-medium hover:text-primary-dark hover:bg-neutral-light"
-                              onClick={() => { setNewPaymentTerms(''); setShowAddPaymentTerms(true); setIsPaymentTermsOpen(false) }}
-                            >
-                              + Add New Payment Terms
-                            </button>
-                          </div>
-                        )}
+                            </div>
+                          )}
+                        </div>
                       </div>
-                    </div>
-                  )}
-
-                  {!form.is_copack && (
-                    <div className="space-y-2">
-                      <label className="flex items-center text-sm font-medium text-neutral-dark">Sales Representative</label>
-                      <div className="relative" ref={salesRepRef}>
-                        <button
-                          type="button"
-                          onClick={() => setIsSalesRepOpen((v) => !v)}
-                          className="w-full flex items-center justify-between px-4 py-3 border border-neutral-soft rounded-lg text-left bg-white transition-all hover:border-neutral-medium focus:ring-2 focus:ring-primary-light focus:border-primary-light"
-                        >
-                          <span className={form.salesRepresentative ? 'text-neutral-dark' : 'text-neutral-medium'}>
-                            {form.salesRepresentative || 'Select Sales Representative'}
-                          </span>
-                          <span className="ml-2 text-neutral-medium">▼</span>
-                        </button>
-                        {isSalesRepOpen && (
-                          <div className="absolute z-[100] mt-2 w-full bg-white border border-neutral-soft rounded-xl shadow-xl max-h-56 overflow-auto">
-                            <div className="px-3 py-2 text-xs text-neutral-medium">Select Sales Representative</div>
-                            {['Carol', 'Henry', 'Ezekiel', 'Edwin'].map((t) => (
-                              <button
-                                key={t}
-                                type="button"
-                                className={`block w-full text-left px-4 py-2 hover:bg-neutral-light ${form.salesRepresentative===t ? 'bg-neutral-light' : ''}`}
-                                onClick={() => { setForm({ ...form, salesRepresentative: t }); setIsSalesRepOpen(false) }}
-                              >
-                                {t}
-                              </button>
-                            ))}
-                            <button
-                              type="button"
-                              className="w-full text-left px-4 py-2 text-primary-medium hover:text-primary-dark hover:bg-neutral-light"
-                              onClick={() => { setNewSalesRep(''); setShowAddSalesRep(true); setIsSalesRepOpen(false) }}
-                            >
-                              + Add New Sales Representative
-                            </button>
-                          </div>
-                        )}
+                      <div className="space-y-2">
+                        <label className="flex items-center text-sm font-medium text-neutral-dark">Status</label>
+                        <select className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light" value={form.status} onChange={(e)=>setForm({...form, status:e.target.value})}>
+                          {[Status.Draft, Status.Submitted, Status.Approved, Status.Allocated, Status.Backordered, { value: 'ready_to_ship', label: 'Completed' }, 'partially_shipped', 'shipped', Status.OnHold, Status.Canceled].map((s: any) => {
+                            if (typeof s === 'string') return <option key={s} value={s}>{s}</option>
+                            return <option key={String(s.value)} value={String(s.value)}>{String(s.label)}</option>
+                          })}
+                        </select>
                       </div>
-                    </div>
-                  )}
-
-                  {!form.is_copack && (
-                    <div className="space-y-2">
-                      <label className="flex items-center text-sm font-medium text-neutral-dark">Status</label>
-                      <select className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light" value={form.status} onChange={(e)=>setForm({...form, status:e.target.value})}>
-                        {[Status.Draft, Status.Submitted, Status.Approved, Status.Allocated, Status.Backordered, Status.OnHold, Status.Canceled].map(s=> <option key={s} value={s}>{s}</option>)}
-                      </select>
                     </div>
                   )}
 

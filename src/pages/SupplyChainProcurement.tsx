@@ -51,6 +51,13 @@ const SupplyChainProcurement: React.FC = () => {
   const [packagingMaterials, setPackagingMaterials] = useState<Array<{ material_id: string; material_name: string; uom: string; required_qty: number }>>([])
   const [missingFormulas, setMissingFormulas] = useState<Array<{ product_name: string; quantity: number }>>([])
   const [approvingId, setApprovingId] = useState<string | null>(null)
+
+  function formatWordDate(dateStr?: string | null): string {
+    if (!dateStr) return '—'
+    const d = new Date(dateStr)
+    if (Number.isNaN(d.getTime())) return '—'
+    return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
+  }
   const [roleLoading, setRoleLoading] = useState<boolean>(false)
   const [currentUserRole, setCurrentUserRole] = useState<string | null>(null)
   const [shippingOrders, setShippingOrders] = useState<any[]>([])
@@ -79,6 +86,10 @@ const SupplyChainProcurement: React.FC = () => {
       'Partial',
       'partially_shipped',
       'Partially Shipped',
+      'shipped',
+      'Shipped',
+      'submitted',
+      'Submitted',
       'completed',
       'Completed',
     ],
@@ -117,7 +128,10 @@ const SupplyChainProcurement: React.FC = () => {
     }
   }
 
-  const canShipWarehouse = useMemo(() => String(currentUserRole || '').toLowerCase() === 'warehouse', [currentUserRole])
+  const canShipWarehouse = useMemo(() => {
+    const r = String(currentUserRole || '').toLowerCase()
+    return r === 'warehouse' || r === 'admin'
+  }, [currentUserRole])
   const isWarehouseRole = useMemo(() => String(currentUserRole || '').toLowerCase() === 'warehouse', [currentUserRole])
 
   const markReadyToShip = async (poId: string) => {
@@ -523,7 +537,7 @@ const SupplyChainProcurement: React.FC = () => {
                   <div className="space-y-2">
                     {orders.map((po: any) => {
                       const id = String(po.id ?? '')
-                      const created = po.created_at ? new Date(po.created_at).toLocaleDateString() : '—'
+                      const created = po.created_at ? formatWordDate(po.created_at) : '—'
                       const poNumber = String(po.po_number ?? po.number ?? id.slice(0, 8))
                       const isSelected = selectedPo?.id != null && String(selectedPo.id) === id
                       return (

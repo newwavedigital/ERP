@@ -36,12 +36,17 @@ const ERPRegisterForm: React.FC<ERPRegisterFormProps> = ({ onShowSignIn }) => {
     return () => window.removeEventListener('storage', handleStorageChange)
   }, [onShowSignIn])
 
+  const getSiteUrl = () => {
+    const raw = (import.meta.env.VITE_SITE_URL as string) || window.location.origin
+    return raw.replace(/\/+$/, '')
+  }
+
   const resend = async () => {
     setMessage(null)
     setError(null)
     try {
       setResending(true)
-      const redirectTo = `${window.location.origin}/#/auth/callback`
+      const redirectTo = `${getSiteUrl()}/#/auth/callback`
       const { error: resendErr } = await supabase.auth.resend({
         type: 'signup',
         email,
@@ -66,7 +71,7 @@ const ERPRegisterForm: React.FC<ERPRegisterFormProps> = ({ onShowSignIn }) => {
     }
     try {
       setLoading(true)
-      const redirectTo = `${window.location.origin}/#/auth/callback`
+      const redirectTo = `${getSiteUrl()}/#/auth/callback`
       // Save pending profile locally in case email confirmation flow prevents immediate insert
       const pending = { first_name: firstName, last_name: lastName, company }
       try { localStorage.setItem('erp_pending_profile', JSON.stringify(pending)) } catch {}

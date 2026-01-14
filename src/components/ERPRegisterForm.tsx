@@ -40,7 +40,7 @@ const ERPRegisterForm: React.FC<ERPRegisterFormProps> = ({ onShowSignIn }) => {
     const raw = (import.meta.env.VITE_SITE_URL as string) || window.location.origin
     return raw.replace(/\/+$/, '')
   }
-
+//FDSAFSA
   const resend = async () => {
     setMessage(null)
     setError(null)

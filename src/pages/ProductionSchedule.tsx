@@ -29,8 +29,8 @@ const diffMinutes = (a?: string | null, b?: string | null): number | null => {
   if (!a || !b) return null
   try { return Math.max(0, Math.round((new Date(b).getTime() - new Date(a).getTime()) / 60000)) } catch { return null }
 }
-type Product = { id: string; product_name: string; product_image_url?: string; unit_of_measure?: string; allergen_profile?: string[] };
-type Formula = { id: string; formula_name: string; product_id: string | null };
+type Product = { id: string; product_name: string; product_image_url?: string; unit_of_measure?: string; allergen_profile?: string[]; formula_id?: string | null; formula_name?: string | null };
+type Formula = { id: string; formula_name: string };
 type ProductionLine = { id: string; line_name: string; allowed_allergens: string[] | null; sanitation_minutes?: number | null; needs_qa_signoff?: boolean | null };
 
 // QA Hold component type for modal display
@@ -401,10 +401,10 @@ const ProductionSchedule: React.FC = () => {
       supabase.from("customers").select("id, company_name").order("company_name"),
       supabase
         .from("products")
-        .select("id, product_name, product_image_url, unit_of_measure, product_type, allergen_profile")
+        .select("id, product_name, product_image_url, unit_of_measure, product_type, allergen_profile, formula_id, formula_name")
         .eq('product_type', 'Finished Goods')
         .order("product_name", { ascending: true }),
-      supabase.from("formulas").select("id, formula_name, product_id"),
+      supabase.from("formulas").select("id, formula_name"),
       supabase.from('production_lines').select('id, line_name, allowed_allergens, sanitation_minutes, needs_qa_signoff')
     ]);
     setCustomers(c || []);
@@ -553,30 +553,49 @@ const ProductionSchedule: React.FC = () => {
       let resolvedFormulaId: string | null = null
       try {
         if (selectedPo.product_id) {
-          const { data: fRow, error: fErr } = await supabase
-            .from('formulas')
-            .select('id, version')
-            .eq('product_id', selectedPo.product_id)
-            .order('version', { ascending: false })
-            .limit(1)
+          const { data: pRow, error: pErr } = await supabase
+            .from('products')
+            .select('formula_id, formula_name')
+            .eq('id', selectedPo.product_id)
             .maybeSingle()
-          if (!fErr && fRow?.id) resolvedFormulaId = String(fRow.id)
+          if (!pErr && pRow?.formula_id) resolvedFormulaId = String(pRow.formula_id)
+
+          if (!resolvedFormulaId) {
+            const baseName = String(pRow?.formula_name || selectedPo.product_name || '').trim()
+            if (baseName) {
+              const { data: fRow, error: fErr } = await supabase
+                .from('formulas')
+                .select('id, version')
+                .ilike('formula_name', `%${baseName}%`)
+                .order('version', { ascending: false })
+                .limit(1)
+                .maybeSingle()
+              if (!fErr && fRow?.id) resolvedFormulaId = String(fRow.id)
+            }
+          }
         }
+
         if (!resolvedFormulaId && selectedPo.product_name) {
           const { data: prod } = await supabase
             .from('products')
-            .select('id')
+            .select('id, formula_id, formula_name')
             .ilike('product_name', `%${selectedPo.product_name}%`)
             .maybeSingle()
-          if (prod?.id) {
-            const { data: fRow2, error: fErr2 } = await supabase
-              .from('formulas')
-              .select('id, version')
-              .eq('product_id', prod.id)
-              .order('version', { ascending: false })
-              .limit(1)
-              .maybeSingle()
-            if (!fErr2 && fRow2?.id) resolvedFormulaId = String(fRow2.id)
+
+          if (prod?.formula_id) resolvedFormulaId = String(prod.formula_id)
+
+          if (!resolvedFormulaId) {
+            const baseName = String(prod?.formula_name || selectedPo.product_name || '').trim()
+            if (baseName) {
+              const { data: fRow2, error: fErr2 } = await supabase
+                .from('formulas')
+                .select('id, version')
+                .ilike('formula_name', `%${baseName}%`)
+                .order('version', { ascending: false })
+                .limit(1)
+                .maybeSingle()
+              if (!fErr2 && fRow2?.id) resolvedFormulaId = String(fRow2.id)
+            }
           }
         }
       } catch {}
@@ -3623,21 +3642,15 @@ const ProductionSchedule: React.FC = () => {
                                 setSelectedProduct({ id: p.id, product_name: p.product_name })
                                 setSelectedProductId(p.id)
                                 // Auto-select formula if product has one
-                                const productFormula = formulas.find(f => f.product_id === p.id)
-                                if (productFormula) {
-                                  setSelectedFormulaId(productFormula.id)
-                                } else {
-                                  setSelectedFormulaId("")
-                                }
+                                setSelectedFormulaId(String((p as any)?.formula_id || ""))
                                 setIsProductOpen(false)
                               }}
                             >
                               <div className="flex flex-col items-start">
                                 <span className="text-neutral-dark font-medium">{p.product_name}</span>
                                 {(() => {
-                                  const productFormula = formulas.find(f => f.product_id === p.id)
-                                  return productFormula ? (
-                                    <span className="text-xs text-neutral-medium">Formula: {productFormula.formula_name}</span>
+                                  return (p as any)?.formula_id ? (
+                                    <span className="text-xs text-neutral-medium">Formula: {(p as any)?.formula_name || '—'}</span>
                                   ) : null
                                 })()}
                               </div>

@@ -33,6 +33,11 @@ function getStatusBadgeClass(raw?: string | null): string {
 const SupplyChainProcurement: React.FC = () => {
   const { user } = useAuth()
   const location = useLocation()
+  const formatQty2 = (n: any) => {
+    const v = Number(n)
+    if (!Number.isFinite(v)) return '0.00'
+    return v.toFixed(2)
+  }
   const [activeTab, setActiveTab] = useState<'procurement' | 'shipping'>(() => {
     try {
       const sp = new URLSearchParams(String(window?.location?.search || ''))
@@ -50,6 +55,8 @@ const SupplyChainProcurement: React.FC = () => {
   const [poLines, setPoLines] = useState<Array<{ id: string; product_id: string | null; product_name: string; quantity: number }>>([])
   const [rawMaterials, setRawMaterials] = useState<Array<{ material_id: string; material_name: string; uom: string; required_qty: number }>>([])
   const [packagingMaterials, setPackagingMaterials] = useState<Array<{ material_id: string; material_name: string; uom: string; required_qty: number }>>([])
+  const [calcBreakdown, setCalcBreakdown] = useState<Array<{ line_id: string; product_name: string; quantity: number; formula: { id: string; formula_name: string; version: number | null } | null; items: Array<{ material_id: string; material_name: string; category: string; uom: string; qty_per_unit: number; required_qty: number }> }>>([])
+  const [showCalcBreakdown, setShowCalcBreakdown] = useState<boolean>(false)
   const [missingFormulas, setMissingFormulas] = useState<Array<{ product_name: string; quantity: number }>>([])
   const [approvingId, setApprovingId] = useState<string | null>(null)
   const [copackSummary, setCopackSummary] = useState<any | null>(null)
@@ -106,6 +113,26 @@ const SupplyChainProcurement: React.FC = () => {
       total_allocated,
       total_shortfall,
       lines,
+    }
+  }
+
+  const approveBrandProcurement = async (po: any) => {
+    if (!canManageProcurement) return
+    const poId = String(po?.id || '')
+    if (!poId) return
+    setApprovingId(poId)
+    try {
+      setError(null)
+      const { error: upErr } = await supabase
+        .from('purchase_orders')
+        .update({ status: 'ready_to_schedule' })
+        .eq('id', poId)
+      if (upErr) throw upErr
+      await load()
+    } catch (e: any) {
+      setError(e?.message || 'Failed to approve PO')
+    } finally {
+      setApprovingId(null)
     }
   }
 
@@ -286,7 +313,7 @@ const SupplyChainProcurement: React.FC = () => {
   }
 
   const loadCalculator = async (po: any) => {
-    if (!canManageProcurement) return
+    if (!canViewProcurement) return
     const poId = String(po?.id || '')
     if (!poId) return
 
@@ -295,6 +322,8 @@ const SupplyChainProcurement: React.FC = () => {
     setPoLines([])
     setRawMaterials([])
     setPackagingMaterials([])
+    setCalcBreakdown([])
+    setShowCalcBreakdown(false)
     setMissingFormulas([])
 
     try {
@@ -304,7 +333,11 @@ const SupplyChainProcurement: React.FC = () => {
         .eq('purchase_order_id', poId)
         .order('created_at', { ascending: true })
       if (linesErr) throw linesErr
-      const baseLines = (linesData || []).map((r: any) => ({
+
+      const baseLines = ((linesData && linesData.length > 0)
+        ? linesData
+        : [{ id: poId, product_name: po?.product_name || '', quantity: po?.quantity || 0 }]
+      ).map((r: any) => ({
         id: String(r.id),
         product_id: null as string | null,
         product_name: String(r.product_name || ''),
@@ -314,7 +347,24 @@ const SupplyChainProcurement: React.FC = () => {
       // Resolve product_id by product_name (purchase_order_lines doesn't store product_id)
       const uniqueNames = Array.from(new Set(baseLines.map((l) => l.product_name).map((s) => String(s || '').trim()).filter(Boolean)))
       const idByName = new Map<string, string>()
-      for (const nm of uniqueNames) {
+
+      // Exact match first (fast + accurate)
+      if (uniqueNames.length > 0) {
+        try {
+          const { data: exactRows } = await supabase
+            .from('products')
+            .select('id, product_name')
+            .in('product_name', uniqueNames)
+          ;(exactRows || []).forEach((p: any) => {
+            const nm = String(p?.product_name || '').trim()
+            if (nm && p?.id) idByName.set(nm, String(p.id))
+          })
+        } catch {}
+      }
+
+      // Fallback: loose match for names not found via exact match
+      const missingNames = uniqueNames.filter((nm) => !idByName.get(nm))
+      for (const nm of missingNames) {
         try {
           const { data: prodRow } = await supabase
             .from('products')
@@ -336,23 +386,56 @@ const SupplyChainProcurement: React.FC = () => {
       // Resolve formulas for the products in this PO
       const formulasByProduct = new Map<string, any>()
       if (productIds.length > 0) {
-        const { data: formulas, error: fErr } = await supabase
-          .from('formulas')
-          .select('id, product_id, formula_name, version')
-          .in('product_id', productIds)
-        if (fErr) throw fErr
-        ;(formulas || []).forEach((f: any) => {
-          const pid = f.product_id != null ? String(f.product_id) : ''
+        const { data: prodRows, error: pErr } = await supabase
+          .from('products')
+          .select('id, formula_id, formula_name')
+          .in('id', productIds)
+        if (pErr) throw pErr
+
+        const formulaIdByProductId = new Map<string, string>()
+        const formulaNameByProductId = new Map<string, string>()
+        ;(prodRows || []).forEach((p: any) => {
+          const pid = p?.id != null ? String(p.id) : ''
           if (!pid) return
-          const prev = formulasByProduct.get(pid)
-          if (!prev) {
-            formulasByProduct.set(pid, f)
-            return
-          }
-          const pv = Number(prev.version ?? 0)
-          const nv = Number(f.version ?? 0)
-          if (nv >= pv) formulasByProduct.set(pid, f)
+          if (p?.formula_id) formulaIdByProductId.set(pid, String(p.formula_id))
+          if (p?.formula_name) formulaNameByProductId.set(pid, String(p.formula_name))
         })
+
+        const formulaIdsFromProducts = Array.from(new Set(Array.from(formulaIdByProductId.values()).filter(Boolean)))
+        if (formulaIdsFromProducts.length > 0) {
+          const { data: formulas, error: fErr } = await supabase
+            .from('formulas')
+            .select('id, formula_name, version')
+            .in('id', formulaIdsFromProducts)
+          if (fErr) throw fErr
+          ;(formulas || []).forEach((f: any) => {
+            const fid = f?.id != null ? String(f.id) : ''
+            if (!fid) return
+            ;(formulaIdByProductId as any).forEach((v: string, k: string) => {
+              if (String(v) === fid) formulasByProduct.set(String(k), f)
+            })
+          })
+        }
+
+        // Fallback: if product has no formula_id, try to find latest formula by formula_name (matching product name)
+        const missingProductIds = productIds.filter((pid) => !formulaIdByProductId.get(pid))
+        if (missingProductIds.length > 0) {
+          for (const pid of missingProductIds) {
+            const ln = lines.find((l) => String(l.product_id || '') === String(pid))
+            const baseName = String(formulaNameByProductId.get(pid) || ln?.product_name || '').trim()
+            if (!baseName) continue
+            try {
+              const { data: fRow } = await supabase
+                .from('formulas')
+                .select('id, formula_name, version')
+                .ilike('formula_name', `%${baseName}%`)
+                .order('version', { ascending: false })
+                .limit(1)
+                .maybeSingle()
+              if (fRow?.id) formulasByProduct.set(String(pid), fRow)
+            } catch {}
+          }
+        }
       }
 
       const formulaIds = Array.from(new Set(Array.from(formulasByProduct.values()).map((f: any) => String(f.id)).filter(Boolean)))
@@ -384,6 +467,7 @@ const SupplyChainProcurement: React.FC = () => {
       const rawAgg = new Map<string, { material_id: string; material_name: string; uom: string; required_qty: number }>()
       const packAgg = new Map<string, { material_id: string; material_name: string; uom: string; required_qty: number }>()
       const missing: Array<{ product_name: string; quantity: number }> = []
+      const breakdown: Array<{ line_id: string; product_name: string; quantity: number; formula: { id: string; formula_name: string; version: number | null } | null; items: Array<{ material_id: string; material_name: string; category: string; uom: string; qty_per_unit: number; required_qty: number }> }> = []
 
       lines.forEach((ln) => {
         const pid = ln.product_id ? String(ln.product_id) : ''
@@ -393,14 +477,33 @@ const SupplyChainProcurement: React.FC = () => {
 
         if (!pid || !fid || items.length === 0) {
           missing.push({ product_name: ln.product_name || '—', quantity: ln.quantity })
+          breakdown.push({
+            line_id: String(ln.id),
+            product_name: ln.product_name || '—',
+            quantity: Number(ln.quantity || 0),
+            formula: fid ? { id: fid, formula_name: String(formula?.formula_name || ''), version: (formula?.version ?? null) as any } : null,
+            items: [],
+          })
           return
         }
+
+        const lnItems: Array<{ material_id: string; material_name: string; category: string; uom: string; qty_per_unit: number; required_qty: number }> = []
 
         items.forEach((it) => {
           const required = Number(ln.quantity || 0) * Number(it.qty_per_unit || 0)
           const isPackaging = String(it.category || '').toLowerCase() === 'packaging'
           const target = isPackaging ? packAgg : rawAgg
           const prev = target.get(it.material_id)
+
+          lnItems.push({
+            material_id: it.material_id,
+            material_name: it.material_name || '—',
+            category: it.category || '',
+            uom: it.uom || '',
+            qty_per_unit: Number(it.qty_per_unit || 0),
+            required_qty: required,
+          })
+
           if (!prev) {
             target.set(it.material_id, {
               material_id: it.material_id,
@@ -415,12 +518,21 @@ const SupplyChainProcurement: React.FC = () => {
             })
           }
         })
+
+        breakdown.push({
+          line_id: String(ln.id),
+          product_name: ln.product_name || '—',
+          quantity: Number(ln.quantity || 0),
+          formula: { id: fid, formula_name: String(formula?.formula_name || ''), version: (formula?.version ?? null) as any },
+          items: lnItems,
+        })
       })
 
       const sortByName = (a: any, b: any) => String(a.material_name || '').localeCompare(String(b.material_name || ''))
       setRawMaterials(Array.from(rawAgg.values()).sort(sortByName))
       setPackagingMaterials(Array.from(packAgg.values()).sort(sortByName))
       setMissingFormulas(missing)
+      setCalcBreakdown(breakdown)
     } catch (e: any) {
       setCalcError(e?.message || 'Failed to calculate materials')
     } finally {
@@ -613,9 +725,7 @@ const SupplyChainProcurement: React.FC = () => {
                   <div className="min-w-0">
                     <div className="text-sm font-semibold text-neutral-dark">Materials Calculator</div>
                     <div className="text-sm text-neutral-medium">
-                      {canManageProcurement
-                        ? 'Select a PO from the Procurement Queue to calculate raw materials and packaging requirements.'
-                        : 'You can view moved POs here, but approval and calculations are restricted.'}
+                      Select a PO from the Procurement Queue to calculate raw materials and packaging requirements.
                     </div>
                   </div>
                 </div>
@@ -652,14 +762,14 @@ const SupplyChainProcurement: React.FC = () => {
                       return (
                         <div
                           key={id}
-                          role={canManageProcurement ? 'button' : undefined}
-                          tabIndex={canManageProcurement ? 0 : undefined}
+                          role={canViewProcurement ? 'button' : undefined}
+                          tabIndex={canViewProcurement ? 0 : undefined}
                           onClick={() => {
-                            if (!canManageProcurement) return
+                            if (!canViewProcurement) return
                             setSelectedPo(po)
                             loadCalculator(po)
                           }}
-                          className={`w-full text-left rounded-xl border border-neutral-soft/40 transition-colors p-3 sm:p-4 ${isSelected ? 'bg-primary-light/10 border-primary-light' : 'bg-white'} ${canManageProcurement ? 'hover:bg-neutral-light/20 cursor-pointer' : ''}`}
+                          className={`w-full text-left rounded-xl border border-neutral-soft/40 transition-colors p-3 sm:p-4 ${isSelected ? 'bg-primary-light/10 border-primary-light' : 'bg-white'} ${canViewProcurement ? 'hover:bg-neutral-light/20 cursor-pointer' : ''}`}
                         >
                           <div className="flex flex-col gap-3">
                             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
@@ -695,24 +805,41 @@ const SupplyChainProcurement: React.FC = () => {
                                     )
                                   }
                                   if (!isProcurementStage) return null
-                                  if (!isCopack) return null
+                                  if (isCopack) {
+                                    return (
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation()
+                                          approveCopackAllocation(po)
+                                        }}
+                                        disabled={approvingId === id}
+                                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-green-600 hover:bg-green-700 text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                                      >
+                                        <CheckCircle className="h-3.5 w-3.5" />
+                                        {approvingId === id ? 'Approving...' : 'Approve Copack Allocation'}
+                                      </button>
+                                    )
+                                  }
                                   return (
                                     <button
                                       type="button"
                                       onClick={(e) => {
                                         e.stopPropagation()
-                                        approveCopackAllocation(po)
+                                        approveBrandProcurement(po)
                                       }}
                                       disabled={approvingId === id}
                                       className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-green-600 hover:bg-green-700 text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                                     >
                                       <CheckCircle className="h-3.5 w-3.5" />
-                                      {approvingId === id ? 'Approving...' : 'Approve Copack Allocation'}
+                                      {approvingId === id ? 'Approving...' : 'Approve'}
                                     </button>
                                   )
                                 })()
                               ) : (
-                                <div className="text-xs text-neutral-medium">Approval restricted</div>
+                                <div className="inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold bg-amber-50 text-amber-700 border border-amber-200">
+                                  Approval restricted (Admin / Procurement (Finance))
+                                </div>
                               )}
                             </div>
                           </div>
@@ -724,7 +851,7 @@ const SupplyChainProcurement: React.FC = () => {
               </div>
             </div>
 
-            {selectedPo && canManageProcurement && (
+            {selectedPo && canViewProcurement && (
               <div className="bg-white rounded-xl shadow-md border border-neutral-soft/20 overflow-hidden mt-3 lg:mt-4">
                 <div className="px-3 sm:px-4 lg:px-6 py-2 sm:py-3 border-b border-neutral-soft/40 bg-neutral-light/30 flex items-center justify-between">
                   <div className="flex items-center gap-2">
@@ -768,6 +895,75 @@ const SupplyChainProcurement: React.FC = () => {
                         </div>
                       )}
 
+                      {calcBreakdown.length > 0 && (
+                        <div className="rounded-xl border border-neutral-soft/40 bg-white overflow-hidden">
+                          <div className="px-3 sm:px-4 py-2 border-b border-neutral-soft/40 bg-neutral-light/20 flex items-center justify-between gap-3">
+                            <div className="text-xs font-semibold text-neutral-dark">Calculation Details</div>
+                            <button
+                              type="button"
+                              onClick={() => setShowCalcBreakdown((v) => !v)}
+                              className="text-xs font-semibold text-primary-medium hover:text-primary-dark"
+                            >
+                              {showCalcBreakdown ? 'Hide' : 'Show'}
+                            </button>
+                          </div>
+
+                          {showCalcBreakdown && (
+                            <div className="p-3 sm:p-4 space-y-3">
+                              {calcBreakdown.map((b) => (
+                                <div key={b.line_id} className="rounded-xl border border-neutral-soft/40 bg-white overflow-hidden">
+                                  <div className="px-3 sm:px-4 py-2 border-b border-neutral-soft/40 bg-neutral-light/10 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                                    <div className="min-w-0">
+                                      <div className="text-sm font-semibold text-neutral-dark truncate">{b.product_name || '—'}</div>
+                                      <div className="text-xs text-neutral-medium">
+                                        Formula: {b.formula ? `${b.formula.formula_name || '—'}${b.formula.version != null ? ` (v${b.formula.version})` : ''}` : '—'}
+                                      </div>
+                                    </div>
+                                    <div className="text-xs text-neutral-dark font-semibold">Ordered Units: {Number(b.quantity || 0)}</div>
+                                  </div>
+
+                                  {b.items.length === 0 ? (
+                                    <div className="p-3 sm:p-4 text-sm text-neutral-medium">No formula items found for this line.</div>
+                                  ) : (
+                                    <div className="p-3 sm:p-4 overflow-x-auto">
+                                      <table className="min-w-full text-sm">
+                                        <thead className="text-neutral-medium">
+                                          <tr>
+                                            <th className="text-left py-2 pr-4">Material</th>
+                                            <th className="text-left py-2 pr-4">Category</th>
+                                            <th className="text-right py-2 pr-4">Qty / Unit</th>
+                                            <th className="text-right py-2 pr-4">Ordered Units</th>
+                                            <th className="text-right py-2">Required</th>
+                                          </tr>
+                                        </thead>
+                                        <tbody>
+                                          {b.items.map((it) => (
+                                            <tr key={`${b.line_id}-${it.material_id}`} className="border-t border-neutral-soft/40">
+                                              <td className="py-2 pr-4 text-neutral-dark">{it.material_name || '—'}</td>
+                                              <td className="py-2 pr-4 text-neutral-medium">{it.category || '—'}</td>
+                                              <td className="py-2 pr-4 text-right text-neutral-dark">
+                                                {formatQty2(it.qty_per_unit)}{it.uom ? ` ${it.uom}` : ''}
+                                              </td>
+                                              <td className="py-2 pr-4 text-right text-neutral-dark">{Number(b.quantity || 0)}</td>
+                                              <td className="py-2 text-right font-semibold text-neutral-dark">
+                                                {formatQty2(it.required_qty)}{it.uom ? ` ${it.uom}` : ''}
+                                              </td>
+                                            </tr>
+                                          ))}
+                                        </tbody>
+                                      </table>
+                                      <div className="mt-2 text-xs text-neutral-medium">
+                                        Required = Ordered Units × Qty / Unit
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
+
                       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 lg:gap-4">
                         <div className="rounded-xl border border-neutral-soft/40 bg-white overflow-hidden">
                           <div className="px-3 sm:px-4 py-2 border-b border-neutral-soft/40 bg-neutral-light/20 text-xs font-semibold text-neutral-dark">Raw Materials Required</div>
@@ -780,7 +976,7 @@ const SupplyChainProcurement: React.FC = () => {
                                   <div key={m.material_id} className="flex items-center justify-between gap-3">
                                     <div className="text-sm text-neutral-dark truncate">{m.material_name}</div>
                                     <div className="text-sm font-semibold text-neutral-dark">
-                                      {Number(m.required_qty || 0).toFixed(3)}{m.uom ? ` ${m.uom}` : ''}
+                                      {formatQty2(m.required_qty)}{m.uom ? ` ${m.uom}` : ''}
                                     </div>
                                   </div>
                                 ))}
@@ -800,7 +996,7 @@ const SupplyChainProcurement: React.FC = () => {
                                   <div key={m.material_id} className="flex items-center justify-between gap-3">
                                     <div className="text-sm text-neutral-dark truncate">{m.material_name}</div>
                                     <div className="text-sm font-semibold text-neutral-dark">
-                                      {Number(m.required_qty || 0).toFixed(3)}{m.uom ? ` ${m.uom}` : ''}
+                                      {formatQty2(m.required_qty)}{m.uom ? ` ${m.uom}` : ''}
                                     </div>
                                   </div>
                                 ))}

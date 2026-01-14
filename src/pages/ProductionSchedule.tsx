@@ -98,7 +98,6 @@ type ScheduleItem = {
 // ─────────────────────────────────────────────────────────────
 // UI helpers
 // ─────────────────────────────────────────────────────────────
-const roomsList = ["Main Room", "Bnutty Room", "Dilly's Room", "Room A", "Room B"];
 const statusList = ["Scheduled", "In Progress", "Production Complete", "Completed", "Quality Hold", "Ready to Ship", "Shipped", "COA Failed", "Delayed"];
 const yesNo = ["No", "Yes"];
 
@@ -189,18 +188,22 @@ const ProductionSchedule: React.FC = () => {
   const [formulas, setFormulas] = useState<Formula[]>([]);
   const [productionLines, setProductionLines] = useState<ProductionLine[]>([]);
 
+  const productionLineNames = useMemo(() => {
+    return (productionLines || [])
+      .map((pl) => String(pl?.line_name || '').trim())
+      .filter(Boolean)
+  }, [productionLines])
+
   // Batches table
   const [items, setItems] = useState<ScheduleItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [creatingFromPo, setCreatingFromPo] = useState(false)
 
-  // Filters / tabs
-  const tabs: Array<{ key: string; label: string; color?: string }> = [
-    { key: "All", label: "All" },
-    { key: "Main Room", label: "Main Room", color: "bg-blue-500" },
-    { key: "Bnutty Room", label: "Bnutty Room", color: "bg-green-500" },
-    { key: "Dilly's Room", label: "Dilly's Room", color: "bg-amber-500" },
-  ];
+  const tabs: Array<{ key: string; label: string; color?: string }> = useMemo(() => {
+    return [{ key: 'All', label: 'All' }].concat(
+      productionLineNames.map((n) => ({ key: n, label: n }))
+    )
+  }, [productionLineNames])
 
   // Batch type filter (Original vs Rework)
   const [batchKind, setBatchKind] = useState<'original' | 'rework'>('original')
@@ -215,7 +218,7 @@ const ProductionSchedule: React.FC = () => {
   const [selectedCustomerId, setSelectedCustomerId] = useState<string>("");
   const [selectedProductId, setSelectedProductId] = useState<string>("");
   const [selectedFormulaId, setSelectedFormulaId] = useState<string>("");
-  const [room, setRoom] = useState<string>("Main Room");
+  const [room, setRoom] = useState<string>("");
   const [qty, setQty] = useState<string>("");
   const [completedQty, setCompletedQty] = useState<string>("0");
   const [lot, setLot] = useState<string>("");
@@ -423,6 +426,7 @@ const ProductionSchedule: React.FC = () => {
       const raw = Array.isArray(data) ? data : []
       const allowed = new Set([
         'approved',
+        'allocated',
         'open',
         'backordered',
         'ready to schedule',
@@ -505,13 +509,20 @@ const ProductionSchedule: React.FC = () => {
     }
   };
 
+  const todayLocalISO = (() => {
+    const d = new Date()
+    d.setMinutes(d.getMinutes() - d.getTimezoneOffset())
+    return d.toISOString().slice(0, 10)
+  })()
+
   // ───────── Handle PO click for scheduling
   const handlePoClick = async (po: any) => {
     setSelectedPo(po);
     const scheduled = await calculateAlreadyScheduled(po.id);
     setAlreadyScheduled(scheduled);
-    setProductGoal(Number(po.quantity || 0) - scheduled);
-    setBatchGoal('');
+    const remaining = Number(po.quantity || 0) - scheduled
+    setProductGoal(remaining);
+    setBatchGoal(String(Math.max(0, remaining)));
     setScheduleFromPoOpen(true);
   };
 
@@ -524,6 +535,11 @@ const ProductionSchedule: React.FC = () => {
     if (!selectedPo || !batchGoal || !scheduledDate) {
       pushToast({ type: 'error', message: 'Please fill in all required fields' });
       return;
+    }
+
+    if (String(scheduledDate) < todayLocalISO) {
+      pushToast({ type: 'error', message: 'Scheduled Date cannot be in the past' })
+      return
     }
 
     const batchQty = Number(batchGoal);
@@ -565,31 +581,92 @@ const ProductionSchedule: React.FC = () => {
         }
       } catch {}
 
-      // Create batch with PO reference
-      const { data: createdBatch, error: createErr } = await supabase
-        .from('production_batches')
-        .insert({
-          product_sku: selectedPo.product_name,
-          qty: batchQty,
-          room: room,
-          start_date: scheduledDate,
-          end_date: scheduledDate,
-          status: 'Scheduled',
-          customer_id: selectedPo.customer_id,
-          po_number: selectedPo.po_number || String(selectedPo.id),
-          source_po_id: selectedPo.id,
-          formula_id: resolvedFormulaId,
-          lot_number: lot,
-          samples_received: samplesReceived === 'Yes',
-          samples_sent: samplesSent || null,
-          completed_qty: Number(completedQty) || 0
-        })
-        .select('id')
-        .maybeSingle();
+      const poId = String(selectedPo.id)
+      const isCopack = !!selectedPo.is_copack
+      const desiredPoNumber = selectedPo.po_number || poId
 
-      if (createErr) throw createErr;
+      // Copack: ensure batch exists via RPC, then update it with schedule info.
+      // Brand: create batch directly.
+      let createdBatchId: string | null = null
 
-      const createdBatchId = createdBatch?.id ? String(createdBatch.id) : null
+      if (isCopack) {
+        // If a batch already exists for this PO, re-use it.
+        const { data: existingBatch } = await supabase
+          .from('production_batches')
+          .select('id')
+          .eq('source_po_id', poId)
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle()
+
+        createdBatchId = existingBatch?.id ? String(existingBatch.id) : null
+
+        if (!createdBatchId) {
+          const { error: rpcErr } = await supabase.rpc('fn_auto_create_copack_batch_for_po', { p_po_id: poId })
+          if (rpcErr) throw rpcErr
+
+          const { data: createdByRpc, error: fetchErr } = await supabase
+            .from('production_batches')
+            .select('id')
+            .eq('source_po_id', poId)
+            .order('created_at', { ascending: false })
+            .limit(1)
+            .maybeSingle()
+          if (fetchErr) throw fetchErr
+          createdBatchId = createdByRpc?.id ? String(createdByRpc.id) : null
+        }
+
+        if (!createdBatchId) {
+          throw new Error('Copack batch was not created')
+        }
+
+        const { error: updErr } = await supabase
+          .from('production_batches')
+          .update({
+            product_sku: selectedPo.product_name,
+            qty: batchQty,
+            room: room,
+            start_date: scheduledDate,
+            end_date: scheduledDate,
+            status: 'Scheduled',
+            customer_id: selectedPo.customer_id,
+            po_number: desiredPoNumber,
+            source_po_id: poId,
+            formula_id: resolvedFormulaId,
+            lot_number: lot,
+            samples_received: samplesReceived === 'Yes',
+            samples_sent: samplesSent || null,
+            completed_qty: Number(completedQty) || 0,
+          })
+          .eq('id', createdBatchId)
+        if (updErr) throw updErr
+      } else {
+        // Create batch with PO reference
+        const { data: createdBatch, error: createErr } = await supabase
+          .from('production_batches')
+          .insert({
+            product_sku: selectedPo.product_name,
+            qty: batchQty,
+            room: room,
+            start_date: scheduledDate,
+            end_date: scheduledDate,
+            status: 'Scheduled',
+            customer_id: selectedPo.customer_id,
+            po_number: desiredPoNumber,
+            source_po_id: poId,
+            formula_id: resolvedFormulaId,
+            lot_number: lot,
+            samples_received: samplesReceived === 'Yes',
+            samples_sent: samplesSent || null,
+            completed_qty: Number(completedQty) || 0
+          })
+          .select('id')
+          .maybeSingle();
+
+        if (createErr) throw createErr;
+        createdBatchId = createdBatch?.id ? String(createdBatch.id) : null
+      }
+
       if (createdBatchId && resolvedFormulaId) {
         try {
           const { data: fiRows, error: fiErr } = await supabase
@@ -652,7 +729,7 @@ const ProductionSchedule: React.FC = () => {
       setScheduleFromPoOpen(false)
       setSelectedPo(null)
       setScheduledDate('')
-      setRoom('Main Room')
+      setRoom(productionLineNames[0] || '')
       setLot('')
       setSamplesReceived('No')
       setSamplesSent('')
@@ -1093,6 +1170,15 @@ const ProductionSchedule: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location.search, user?.id]);
 
+  useEffect(() => {
+    if (!room && productionLineNames.length > 0) {
+      setRoom(productionLineNames[0])
+    }
+    if (activeTab !== 'All' && productionLineNames.length > 0 && !productionLineNames.includes(activeTab)) {
+      setActiveTab('All')
+    }
+  }, [productionLineNames, room, activeTab])
+
   // ───────── Helpers for create
   const selectedProductName = useMemo(() => {
     if (!selectedProductId) return "";
@@ -1106,7 +1192,7 @@ const ProductionSchedule: React.FC = () => {
     setSelectedCustomerId("");
     setSelectedProductId("");
     setSelectedFormulaId("");
-    setRoom("Main Room");
+    setRoom(productionLineNames[0] || "");
     setQty("");
     setCompletedQty("0");
     setLot("");
@@ -3649,10 +3735,7 @@ const ProductionSchedule: React.FC = () => {
                         onChange={(e) => setRoom(e.target.value)}
                         className="w-full px-4 py-3 border border-neutral-soft rounded-xl bg-white"
                       >
-                        {(productionLines && productionLines.length > 0
-                          ? productionLines.map(pl => pl.line_name || '')
-                          : roomsList
-                        ).map((r) => (
+                        {productionLineNames.map((r) => (
                           <option key={r} value={r}>{r}</option>
                         ))}
                       </select>
@@ -3840,10 +3923,7 @@ const ProductionSchedule: React.FC = () => {
                         onChange={(e) => setEditItem({ ...editItem, room: e.target.value, assigned_line: e.target.value })}
                         className="w-full px-4 py-3 border border-neutral-soft rounded-lg bg-white focus:ring-2 focus:ring-primary-light focus:border-primary-light"
                       >
-                        {(productionLines && productionLines.length > 0
-                          ? productionLines.map(pl => pl.line_name || '')
-                          : roomsList
-                        ).map((r) => (
+                        {productionLineNames.map((r: string) => (
                           <option key={r} value={r}>{r}</option>
                         ))}
                       </select>
@@ -4217,6 +4297,7 @@ const ProductionSchedule: React.FC = () => {
                       type="date"
                       value={scheduledDate}
                       onChange={(e) => setScheduledDate(e.target.value)}
+                      min={todayLocalISO}
                       disabled={isScheduleFromPoViewOnly}
                       className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light bg-white text-neutral-dark"
                     />
@@ -4229,7 +4310,7 @@ const ProductionSchedule: React.FC = () => {
                       disabled={isScheduleFromPoViewOnly}
                       className="w-full px-4 py-3 border border-neutral-soft rounded-lg bg-white focus:ring-2 focus:ring-primary-light focus:border-primary-light"
                     >
-                      {roomsList.map(r => (
+                      {productionLineNames.map((r: string) => (
                         <option key={r} value={r}>{r}</option>
                       ))}
                     </select>

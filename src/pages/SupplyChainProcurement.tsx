@@ -4,6 +4,7 @@ import { useLocation } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../contexts/AuthContext'
 import ShippingTab from './SupplyChainProcurement/ShippingTab'
+import CopackAllocationSummary from '../components/CopackAllocationSummary'
 
 function formatStatusLabel(raw?: string | null): string {
   const s = String(raw || '').trim()
@@ -51,6 +52,62 @@ const SupplyChainProcurement: React.FC = () => {
   const [packagingMaterials, setPackagingMaterials] = useState<Array<{ material_id: string; material_name: string; uom: string; required_qty: number }>>([])
   const [missingFormulas, setMissingFormulas] = useState<Array<{ product_name: string; quantity: number }>>([])
   const [approvingId, setApprovingId] = useState<string | null>(null)
+  const [copackSummary, setCopackSummary] = useState<any | null>(null)
+
+  // RPC response typing (subset)
+  type AllocationSummary = { status?: string; total_shortfall?: number; lines?: any[] }
+
+  // Helper to run RPC with skip/error handling
+  const runRpc = async (name: string, poId: string) => {
+    const { data, error } = await supabase.rpc(name, { p_po_id: poId })
+    if (error) return { status: 'error', message: error.message, data: null }
+    const status = (data as any)?.status || (data ? 'ok' : 'ok')
+    const message = (data as any)?.message || null
+    return { status, message, data }
+  }
+
+  // Normalize various allocation RPC payloads to CopackAllocationSummary shape
+  const normalizeCopackSummary = (raw: any, poId: string) => {
+    let src = Array.isArray(raw?.lines)
+      ? raw.lines
+      : Array.isArray(raw?.lines_materials)
+        ? raw.lines_materials
+        : []
+    // Fallback: scan any array-valued fields for material-like rows
+    if (src.length === 0 && raw && typeof raw === 'object') {
+      const arrays = Object.values(raw).filter(Array.isArray) as any[]
+      const candidates = arrays.flat().filter((r: any) => r && (r.material_name || r.material || r.name))
+      if (candidates.length) src = candidates
+    }
+    const lines = src.map((ln: any) => {
+      const required = Number(ln.required_qty ?? ln.required ?? ln.required_total ?? 0)
+      const allocated = Number(ln.allocated_qty ?? ln.allocated ?? 0)
+      const shortfall = Number(ln.shortfall_qty ?? ln.shortfall ?? Math.max(0, required - allocated))
+      const isClient = !!(ln.is_client_material ?? ln.is_client ?? (typeof ln.client_inventory !== 'undefined'))
+      return {
+        po_line_id: String(ln.po_line_id ?? ln.line_id ?? ''),
+        product: String(ln.product ?? ln.product_name ?? ''),
+        material_id: String(ln.material_id ?? ln.id ?? ''),
+        material_name: String(ln.material_name ?? ln.material ?? ln.name ?? '-'),
+        required_qty: required,
+        allocated_qty: allocated,
+        shortfall_qty: shortfall,
+        is_client_material: isClient,
+      }
+    })
+    const total_required = lines.reduce((s: number, l: any) => s + Number(l.required_qty || 0), 0)
+    const total_allocated = lines.reduce((s: number, l: any) => s + Number(l.allocated_qty || 0), 0)
+    const total_shortfall = lines.reduce((s: number, l: any) => s + Number(l.shortfall_qty || 0), 0)
+    const status = String(raw?.status || (total_shortfall > 0 ? 'backordered' : 'allocated')).toLowerCase()
+    return {
+      po_id: String(raw?.po_id || poId),
+      status,
+      total_required,
+      total_allocated,
+      total_shortfall,
+      lines,
+    }
+  }
 
   function formatWordDate(dateStr?: string | null): string {
     if (!dateStr) return '—'
@@ -371,23 +428,71 @@ const SupplyChainProcurement: React.FC = () => {
     }
   }
 
-  const approvePO = async (po: any) => {
+  const approveCopackAllocation = async (po: any) => {
     if (!canManageProcurement) return
     const poId = String(po?.id || '')
     if (!poId) return
+
+    // This button/action is ONLY for Copack POs
+    if (!po?.is_copack) return
+
     setApprovingId(poId)
     try {
-      const { error } = await supabase
-        .from('purchase_orders')
-        .update({ status: 'ready_to_schedule' })
-        .eq('id', poId)
+      setError(null)
 
-      if (error) throw error
-      await load()
-      // keep current selection in sync
-      if (selectedPo?.id != null && String(selectedPo.id) === poId) {
-        setSelectedPo({ ...(selectedPo as any), status: 'ready_to_schedule' })
+      // Load the most recent PO to decide the flow
+      const { data: poRow, error: fetchErr } = await supabase
+        .from('purchase_orders')
+        .select('*')
+        .eq('id', poId)
+        .maybeSingle()
+      if (fetchErr) throw fetchErr
+      const poRec: any = poRow || po
+
+      // COPACK MODE — run same sequence used in PurchaseOrders.tsx
+      const seq = [
+        'fn_copack_material_check',
+        'allocate_copack_po_operations',
+        'allocate_copack_po_client_materials',
+        'allocate_copack_po_ops_dual_pr',
+      ]
+
+      let finalSummary: any = null
+      for (const name of seq) {
+        const res = await runRpc(name, poId)
+        if (res.status === 'error') {
+          setError(res.message || 'RPC Error')
+          break
+        }
+        if (name === 'allocate_copack_po_operations' && res.data) {
+          finalSummary = res.data
+        }
       }
+
+      // Ensure PO stays in Allocated state without transitioning through Approved (avoids auto-batch triggers)
+      try {
+        const sumStatus = String((finalSummary as any)?.status || '').toLowerCase().trim()
+        if (!sumStatus || sumStatus === 'allocated' || sumStatus === 'ok') {
+          await supabase.from('purchase_orders').update({ status: 'allocated' }).eq('id', poId)
+        }
+      } catch {}
+
+      // ─── Bundle/KIT packaging rule: block batch creation when shortfall exists ───
+      try {
+        const sum = (finalSummary || {}) as AllocationSummary
+        const isBundle = ['kit', 'bundle'].includes(String(poRec?.packaging_type || '').toLowerCase())
+        const notAllocated = String(sum.status || '').toLowerCase() !== 'allocated'
+        const hasShort = Number(sum.total_shortfall || 0) > 0
+        if (isBundle && (notAllocated || hasShort)) {
+          await load()
+          return
+        }
+      } catch {}
+
+      await load()
+      const normalized = normalizeCopackSummary(finalSummary || {}, poId)
+      setCopackSummary(normalized)
+
       // reset calculator panels
       setPoLines([])
       setRawMaterials([])
@@ -437,6 +542,9 @@ const SupplyChainProcurement: React.FC = () => {
   return (
     <div className="min-h-screen bg-gradient-to-br from-neutral-light/30 to-neutral-soft/20">
       <div className="p-2 sm:p-4 lg:p-6">
+        {copackSummary && (
+          <CopackAllocationSummary summary={copackSummary} onClose={() => setCopackSummary(null)} />
+        )}
         <div className="bg-white rounded-xl shadow-md border border-neutral-soft/20 p-3 sm:p-4 lg:p-6 mb-3 lg:mb-4">
           <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
             <div className="flex items-center gap-3">
@@ -540,6 +648,7 @@ const SupplyChainProcurement: React.FC = () => {
                       const created = po.created_at ? formatWordDate(po.created_at) : '—'
                       const poNumber = String(po.po_number ?? po.number ?? id.slice(0, 8))
                       const isSelected = selectedPo?.id != null && String(selectedPo.id) === id
+                      const isCopack = !!po.is_copack
                       return (
                         <div
                           key={id}
@@ -555,7 +664,12 @@ const SupplyChainProcurement: React.FC = () => {
                           <div className="flex flex-col gap-3">
                             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                               <div className="flex flex-col gap-1">
-                                <div className="text-sm font-semibold text-neutral-dark">PO #{poNumber}</div>
+                                <div className="text-sm font-semibold text-neutral-dark">
+                                  PO #{poNumber}
+                                  <span className={`ml-2 inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold border ${isCopack ? 'bg-indigo-100 text-indigo-700 border-indigo-200' : 'bg-neutral-light/60 text-neutral-dark border-neutral-soft/60'}`}>
+                                    {isCopack ? 'COPACK' : 'BRAND'}
+                                  </span>
+                                </div>
                                 <div className="text-xs text-neutral-medium">Customer: {String(po.customer_name || '—')}</div>
                               </div>
                               <div className="flex flex-col items-start sm:items-end gap-1">
@@ -581,18 +695,19 @@ const SupplyChainProcurement: React.FC = () => {
                                     )
                                   }
                                   if (!isProcurementStage) return null
+                                  if (!isCopack) return null
                                   return (
                                     <button
                                       type="button"
                                       onClick={(e) => {
                                         e.stopPropagation()
-                                        approvePO(po)
+                                        approveCopackAllocation(po)
                                       }}
                                       disabled={approvingId === id}
                                       className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-green-600 hover:bg-green-700 text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                                     >
                                       <CheckCircle className="h-3.5 w-3.5" />
-                                      {approvingId === id ? 'Approving...' : 'Approve for Scheduling'}
+                                      {approvingId === id ? 'Approving...' : 'Approve Copack Allocation'}
                                     </button>
                                   )
                                 })()

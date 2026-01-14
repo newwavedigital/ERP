@@ -158,11 +158,12 @@ const Inventory: React.FC = () => {
     eoq: '',
     docFiles: [] as File[]
   })
+  const [hasAttemptedSubmit, setHasAttemptedSubmit] = useState(false)
   const [editDocFiles, setEditDocFiles] = useState<File[]>([])
   const [docsLayout, setDocsLayout] = useState<'list' | 'grid'>('list')
   const [editDocDragOver, setEditDocDragOver] = useState(false)
   const [addDocDragOver, setAddDocDragOver] = useState(false)
-  const rawCategories = ['Ingredient', 'Packaging', 'Additive']
+  const rawCategories = ['Ingredient', 'Packaging']
   const [suppliers, setSuppliers] = useState<Supplier[]>([])
   const [suppliersLoading, setSuppliersLoading] = useState<boolean>(true)
   const [suppliersError, setSuppliersError] = useState<string | null>(null)
@@ -717,7 +718,13 @@ const Inventory: React.FC = () => {
     }
   }, [])
 
-  
+  const rawMaterials = useMemo(() => {
+    return (materials || []).filter((m) => String(m?.category || '').toLowerCase() !== 'packaging')
+  }, [materials])
+
+  const packagingMaterials = useMemo(() => {
+    return (materials || []).filter((m) => String(m?.category || '').toLowerCase() === 'packaging')
+  }, [materials])
 
   const titleByTab = {
     raw: 'Raw Materials',
@@ -726,7 +733,7 @@ const Inventory: React.FC = () => {
   } as const
 
   const addLabelByTab = {
-    raw: 'Add Raw Material',
+    raw: 'Add Material',
     packaging: 'Update Inventory',
     finished: 'Add Finished Good',
   } as const
@@ -780,200 +787,200 @@ const Inventory: React.FC = () => {
               </button>
             )}
 
-        {/* Replenishment Confirm Modal */}
-        {replModalFor && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-            <div className="absolute inset-0 bg-black/50" onClick={() => !replLoading && setReplModalFor(null)}></div>
-            <div className="relative z-10 w-full max-w-xl bg-white rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden">
-              <div className="px-6 py-4 bg-gradient-to-r from-neutral-light to-neutral-light/80 border-b border-neutral-soft/50 flex items-center justify-between">
-                <div className="text-lg font-semibold text-neutral-dark">Replenishment Recommendation</div>
-                <button className="p-2" onClick={() => !replLoading && setReplModalFor(null)}><X className="h-5 w-5"/></button>
-              </div>
-              <div className="p-6 space-y-4">
-                <div className="text-sm">
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                    <div className="flex items-center justify-between"><span className="text-neutral-medium">Material Name</span><span className="font-semibold text-neutral-dark">{replModalFor.product_name}</span></div>
-                    <div className="flex items-center justify-between"><span className="text-neutral-medium">Total Available</span><span className="font-semibold text-neutral-dark">{replModalFor.total_available ?? '0'}</span></div>
-                    <div className="flex items-center justify-between"><span className="text-neutral-medium">Reserved Qty</span><span className="font-semibold text-neutral-dark">{replModalFor.reserved_qty ?? 0}</span></div>
-                    <div className="flex items-center justify-between"><span className="text-neutral-medium">Net Available</span><span className="font-semibold text-neutral-dark">{Number(replModalFor.total_available || 0) - Number(replModalFor.reserved_qty || 0)}</span></div>
-                    <div className="flex items-center justify-between"><span className="text-neutral-medium">Reorder Point</span><span className="font-semibold text-neutral-dark">{replModalFor.reorder_point ?? '—'}</span></div>
-                    <div className="flex items-center justify-between"><span className="text-neutral-medium">Reorder To Level</span><span className="font-semibold text-neutral-dark">{replModalFor.reorder_to_level ?? '—'}</span></div>
-                    <div className="flex items-center justify-between"><span className="text-neutral-medium">MOQ</span><span className="font-semibold text-neutral-dark">{replModalFor.moq ?? '—'}</span></div>
-                    <div className="flex items-center justify-between"><span className="text-neutral-medium">EOQ</span><span className="font-semibold text-neutral-dark">{replModalFor.eoq ?? '—'}</span></div>
+            {/* Replenishment Confirm Modal */}
+            {replModalFor && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+                <div className="absolute inset-0 bg-black/50" onClick={() => !replLoading && setReplModalFor(null)}></div>
+                <div className="relative z-10 w-full max-w-xl bg-white rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden">
+                  <div className="px-6 py-4 bg-gradient-to-r from-neutral-light to-neutral-light/80 border-b border-neutral-soft/50 flex items-center justify-between">
+                    <div className="text-lg font-semibold text-neutral-dark">Replenishment Recommendation</div>
+                    <button className="p-2" onClick={() => !replLoading && setReplModalFor(null)}><X className="h-5 w-5"/></button>
                   </div>
-                </div>
-                <div className="text-sm bg-neutral-light/30 border border-neutral-soft rounded-xl p-3">
-                  {(() => {
-                    const net = Number(replModalFor.total_available || 0) - Number(replModalFor.reserved_qty || 0)
-                    const rto = Number(replModalFor.reorder_to_level || 0)
-                    const moq = Number(replModalFor.moq || 0)
-                    const eoq = Number(replModalFor.eoq || 0)
-                    const base = Math.max(moq, eoq, Math.max(0, rto - net))
-                    return (
-                      <>
-                        <div className="font-semibold text-neutral-dark">Suggested Qty: <span className="text-primary-medium">{base}</span></div>
-                        <div className="text-xs text-neutral-medium mt-1">Suggested Qty = max(MOQ, EOQ, ReorderToLevel − NetAvailable)</div>
-                      </>
-                    )
-                  })()}
-                </div>
-                {replRpcData && (
-                  <div className="text-xs text-neutral-medium border border-neutral-soft rounded-xl p-3">
-                    {replRpcData.suggested_qty !== undefined && (
-                      <div className="mb-1">RPC Suggested Qty: <span className="font-semibold text-neutral-dark">{replRpcData.suggested_qty}</span></div>
-                    )}
-                    {replRpcData.message && (
-                      <div className="text-[11px] leading-snug">{replRpcData.message}</div>
-                    )}
-                  </div>
-                )}
-              </div>
-              <div className="px-6 py-4 flex items-center justify-end gap-3 border-t border-neutral-soft/50">
-                <button className="px-4 py-2 rounded-lg border border-neutral-soft" onClick={() => !replLoading && setReplModalFor(null)}>Cancel</button>
-                <button
-                  className="px-5 py-2 rounded-lg bg-primary-dark hover:bg-primary-medium text-white text-sm disabled:opacity-60"
-                  disabled={replLoading}
-                  onClick={async () => {
-                    if (!replModalFor) return
-                    setReplLoading(true)
-                    try {
-                      const { data, error } = await supabase.rpc("fn_replenishment_check", { p_material_id: replModalFor.id })
-                      if (error) throw error
-                      const status = (data && (data.status || data.result || '')) as string
-                      if (status && status.toLowerCase().includes('created')) {
-                        setToast({ show: true, message: 'Purchase Requisition Created' })
-                      } else if (status && status.toLowerCase().includes('not') ) {
-                        setToast({ show: true, message: 'Stock level above reorder point' })
-                      } else {
-                        setToast({ show: true, message: 'Purchase Requisition processed' })
-                      }
-                    } catch (e) {
-                      setToast({ show: true, message: 'Failed to generate PR' })
-                    } finally {
-                      setReplLoading(false)
-                      setReplModalFor(null)
-                    }
-                  }}
-                >
-                  {replLoading ? 'Processing…' : 'Confirm'}
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-        {/* PR Details Modal */}
-        {prModalFor && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-            <div className="absolute inset-0 bg-black/50" onClick={() => setPrModalFor(null)} />
-            <div className="relative z-10 w-full max-w-2xl bg-white rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden">
-              <div className="px-6 py-4 bg-gradient-to-r from-neutral-light to-neutral-light/80 border-b border-neutral-soft/50 flex items-center justify-between">
-                <div className="text-lg font-semibold text-neutral-dark">Replenishment Details</div>
-                <button className="p-2" onClick={() => setPrModalFor(null)}><X className="h-5 w-5"/></button>
-              </div>
-              <div className="p-6 space-y-5 text-sm">
-                {(() => {
-                  const m = prModalFor
-                  const net = Number(m.total_available || 0) - Number(m.reserved_qty || 0)
-                  const rto = Number(m.reorder_to_level || 0)
-                  const moq = Number(m.moq || 0)
-                  const eoq = Number(m.eoq || 0)
-                  const suggested = Math.max(moq, eoq, Math.max(0, rto - net))
-                  const created = m.replenishmentStatus?.reqCreatedAt
-                    ? new Date(m.replenishmentStatus.reqCreatedAt).toLocaleString(undefined, {
-                        weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
-                        hour: 'numeric', minute: '2-digit', second: '2-digit'
-                      })
-                    : '—'
-                  const status = (m.replenishmentStatus?.reqStatus || '—') as string
-                  const statusCls = 'inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold ' +
-                    (String(status).toLowerCase() === 'open' ? 'bg-blue-100 text-blue-700' :
-                     String(status).toLowerCase() === 'approved' ? 'bg-emerald-100 text-emerald-700' :
-                     String(status).toLowerCase() === 'canceled' ? 'bg-red-100 text-red-700' : 'bg-neutral-100 text-neutral-700')
-                  return (
-                    <div className="space-y-4">
-                      <div>
-                        <div className="text-[11px] uppercase tracking-wider text-neutral-medium mb-1">Subject</div>
-                        <div className="text-base font-semibold text-neutral-dark">Purchase Requisition — {m.product_name}</div>
-                        <div className="mt-1 text-xs text-neutral-medium">Created {created}</div>
-                      </div>
-
-                      <div className="rounded-xl border border-neutral-soft bg-neutral-light/20">
-                        <div className="px-4 py-3 border-b border-neutral-soft/60 text-[12px] font-semibold text-neutral-dark">Details</div>
-                        <div className="p-4 space-y-2">
-                          <div><span className="text-neutral-medium">Material:</span> <span className="font-semibold text-neutral-dark">{m.product_name}</span></div>
-                          <div><span className="text-neutral-medium">Status:</span> <span className={statusCls}>{status}</span></div>
-                          <div><span className="text-neutral-medium">Suggested Qty:</span> <span className="font-semibold text-primary-medium">{suggested}</span></div>
-                        </div>
-                      </div>
-
-                      <div className="rounded-xl border border-neutral-soft bg-white">
-                        <div className="px-4 py-3 border-b border-neutral-soft/60 text-[12px] font-semibold text-neutral-dark">Inventory Snapshot</div>
-                        <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-y-2 gap-x-6">
-                          <div><span className="text-neutral-medium">Net Available:</span> <span className="font-semibold text-neutral-dark">{net}</span></div>
-                          <div><span className="text-neutral-medium">Reorder To Level:</span> <span className="font-semibold text-neutral-dark">{m.reorder_to_level ?? '—'}</span></div>
-                          <div><span className="text-neutral-medium">Reorder Point:</span> <span className="font-semibold text-neutral-dark">{m.reorder_point ?? '—'}</span></div>
-                          <div><span className="text-neutral-medium">MOQ:</span> <span className="font-semibold text-neutral-dark">{m.moq ?? '—'}</span></div>
-                          <div><span className="text-neutral-medium">EOQ:</span> <span className="font-semibold text-neutral-dark">{m.eoq ?? '—'}</span></div>
-                        </div>
+                  <div className="p-6 space-y-4">
+                    <div className="text-sm">
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <div className="flex items-center justify-between"><span className="text-neutral-medium">Material Name</span><span className="font-semibold text-neutral-dark">{replModalFor.product_name}</span></div>
+                        <div className="flex items-center justify-between"><span className="text-neutral-medium">Total Available</span><span className="font-semibold text-neutral-dark">{replModalFor.total_available ?? '0'}</span></div>
+                        <div className="flex items-center justify-between"><span className="text-neutral-medium">Reserved Qty</span><span className="font-semibold text-neutral-dark">{replModalFor.reserved_qty ?? 0}</span></div>
+                        <div className="flex items-center justify-between"><span className="text-neutral-medium">Net Available</span><span className="font-semibold text-neutral-dark">{Number(replModalFor.total_available || 0) - Number(replModalFor.reserved_qty || 0)}</span></div>
+                        <div className="flex items-center justify-between"><span className="text-neutral-medium">Reorder Point</span><span className="font-semibold text-neutral-dark">{replModalFor.reorder_point ?? '—'}</span></div>
+                        <div className="flex items-center justify-between"><span className="text-neutral-medium">Reorder To Level</span><span className="font-semibold text-neutral-dark">{replModalFor.reorder_to_level ?? '—'}</span></div>
+                        <div className="flex items-center justify-between"><span className="text-neutral-medium">MOQ</span><span className="font-semibold text-neutral-dark">{replModalFor.moq ?? '—'}</span></div>
+                        <div className="flex items-center justify-between"><span className="text-neutral-medium">EOQ</span><span className="font-semibold text-neutral-dark">{replModalFor.eoq ?? '—'}</span></div>
                       </div>
                     </div>
-                  )
-                })()}
-              </div>
-              <div className="px-6 py-4 flex items-center justify-end gap-3 border-t border-neutral-soft/50">
-                <button className="px-5 py-2.5 rounded-xl border border-neutral-soft text-neutral-dark hover:bg-neutral-light/60 transition-all" onClick={() => setPrModalFor(null)}>Close</button>
-              </div>
-            </div>
-          </div>
-        )}
-        {/* Reservation History Modal */}
-        {isHistoryOpen && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-            <div className="absolute inset-0 bg-black/50" onClick={() => setIsHistoryOpen(false)}></div>
-            <div className="relative z-10 w-full max-w-3xl bg-white rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden flex flex-col">
-              <div className="flex items-center justify-between px-8 py-6 bg-gradient-to-r from-neutral-light to-neutral-light/80 border-b border-neutral-soft/50">
-                <div>
-                  <h2 className="text-2xl font-semibold text-neutral-dark">Reservation History – {selectedMaterial}</h2>
-                  <p className="text-sm text-neutral-medium mt-1">Latest entries first</p>
-                </div>
-                <button onClick={() => setIsHistoryOpen(false)} className="p-3 text-neutral-medium hover:text-neutral-dark hover:bg-white/60 rounded-xl transition-all">✕</button>
-              </div>
-              <div className="p-6">
-                {historyLoading ? (
-                  <div className="p-6 text-center text-neutral-medium">Loading…</div>
-                ) : historyError ? (
-                  <div className="p-6 text-center text-accent-danger">{historyError}</div>
-                ) : historyData.length === 0 ? (
-                  <div className="p-6 text-center text-neutral-medium">No reservation history found</div>
-                ) : (
-                  <div className="overflow-x-auto">
-                    <table className="min-w-full">
-                      <thead>
-                        <tr className="bg-gradient-to-r from-neutral-light/60 via-neutral-light/40 to-neutral-soft/30 border-b-2 border-neutral-soft/50">
-                          <th className="px-6 py-3 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">Production Line</th>
-                          <th className="px-6 py-3 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">Quantity Reserved</th>
-                          <th className="px-6 py-3 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">Date Created</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-neutral-soft/20">
-                        {historyData.map((h, i) => (
-                          <tr key={i} className="group">
-                            <td className="px-6 py-3 text-sm text-neutral-dark">{h.line_name || h.line_id}</td>
-                            <td className="px-6 py-3 text-sm text-neutral-dark">{h.qty}</td>
-                            <td className="px-6 py-3 text-sm text-neutral-dark">{new Date(h.created_at).toLocaleString()}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                    <div className="text-sm bg-neutral-light/30 border border-neutral-soft rounded-xl p-3">
+                      {(() => {
+                        const net = Number(replModalFor.total_available || 0) - Number(replModalFor.reserved_qty || 0)
+                        const rto = Number(replModalFor.reorder_to_level || 0)
+                        const moq = Number(replModalFor.moq || 0)
+                        const eoq = Number(replModalFor.eoq || 0)
+                        const base = Math.max(moq, eoq, Math.max(0, rto - net))
+                        return (
+                          <>
+                            <div className="font-semibold text-neutral-dark">Suggested Qty: <span className="text-primary-medium">{base}</span></div>
+                            <div className="text-xs text-neutral-medium mt-1">Suggested Qty = max(MOQ, EOQ, ReorderToLevel − NetAvailable)</div>
+                          </>
+                        )
+                      })()}
+                    </div>
+                    {replRpcData && (
+                      <div className="text-xs text-neutral-medium border border-neutral-soft rounded-xl p-3">
+                        {replRpcData.suggested_qty !== undefined && (
+                          <div className="mb-1">RPC Suggested Qty: <span className="font-semibold text-neutral-dark">{replRpcData.suggested_qty}</span></div>
+                        )}
+                        {replRpcData.message && (
+                          <div className="text-[11px] leading-snug">{replRpcData.message}</div>
+                        )}
+                      </div>
+                    )}
                   </div>
-                )}
-                <div className="mt-6 flex justify-end">
-                  <button className="px-5 py-2.5 rounded-xl border border-neutral-soft text-neutral-dark hover:bg-neutral-light/60 transition-all" onClick={() => setIsHistoryOpen(false)}>Close</button>
+                  <div className="px-6 py-4 flex items-center justify-end gap-3 border-t border-neutral-soft/50">
+                    <button className="px-4 py-2 rounded-lg border border-neutral-soft" onClick={() => !replLoading && setReplModalFor(null)}>Cancel</button>
+                    <button
+                      className="px-5 py-2 rounded-lg bg-primary-dark hover:bg-primary-medium text-white text-sm disabled:opacity-60"
+                      disabled={replLoading}
+                      onClick={async () => {
+                        if (!replModalFor) return
+                        setReplLoading(true)
+                        try {
+                          const { data, error } = await supabase.rpc("fn_replenishment_check", { p_material_id: replModalFor.id })
+                          if (error) throw error
+                          const status = (data && (data.status || data.result || '')) as string
+                          if (status && status.toLowerCase().includes('created')) {
+                            setToast({ show: true, message: 'Purchase Requisition Created' })
+                          } else if (status && status.toLowerCase().includes('not') ) {
+                            setToast({ show: true, message: 'Stock level above reorder point' })
+                          } else {
+                            setToast({ show: true, message: 'Purchase Requisition processed' })
+                          }
+                        } catch (e) {
+                          setToast({ show: true, message: 'Failed to generate PR' })
+                        } finally {
+                          setReplLoading(false)
+                          setReplModalFor(null)
+                        }
+                      }}
+                    >
+                      {replLoading ? 'Processing…' : 'Confirm'}
+                    </button>
+                  </div>
                 </div>
               </div>
-            </div>
-          </div>
-        )}
+            )}
+            {/* PR Details Modal */}
+            {prModalFor && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+                <div className="absolute inset-0 bg-black/50" onClick={() => setPrModalFor(null)} />
+                <div className="relative z-10 w-full max-w-2xl bg-white rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden">
+                  <div className="px-6 py-4 bg-gradient-to-r from-neutral-light to-neutral-light/80 border-b border-neutral-soft/50 flex items-center justify-between">
+                    <div className="text-lg font-semibold text-neutral-dark">Replenishment Details</div>
+                    <button className="p-2" onClick={() => setPrModalFor(null)}><X className="h-5 w-5"/></button>
+                  </div>
+                  <div className="p-6 space-y-5 text-sm">
+                    {(() => {
+                      const m = prModalFor
+                      const net = Number(m.total_available || 0) - Number(m.reserved_qty || 0)
+                      const rto = Number(m.reorder_to_level || 0)
+                      const moq = Number(m.moq || 0)
+                      const eoq = Number(m.eoq || 0)
+                      const suggested = Math.max(moq, eoq, Math.max(0, rto - net))
+                      const created = m.replenishmentStatus?.reqCreatedAt
+                        ? new Date(m.replenishmentStatus.reqCreatedAt).toLocaleString(undefined, {
+                            weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+                            hour: 'numeric', minute: '2-digit', second: '2-digit'
+                          })
+                        : '—'
+                      const status = (m.replenishmentStatus?.reqStatus || '—') as string
+                      const statusCls = 'inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold ' +
+                        (String(status).toLowerCase() === 'open' ? 'bg-blue-100 text-blue-700' :
+                         String(status).toLowerCase() === 'approved' ? 'bg-emerald-100 text-emerald-700' :
+                         String(status).toLowerCase() === 'canceled' ? 'bg-red-100 text-red-700' : 'bg-neutral-100 text-neutral-700')
+                      return (
+                        <div className="space-y-4">
+                          <div>
+                            <div className="text-[11px] uppercase tracking-wider text-neutral-medium mb-1">Subject</div>
+                            <div className="text-base font-semibold text-neutral-dark">Purchase Requisition — {m.product_name}</div>
+                            <div className="mt-1 text-xs text-neutral-medium">Created {created}</div>
+                          </div>
+
+                          <div className="rounded-xl border border-neutral-soft bg-neutral-light/20">
+                            <div className="px-4 py-3 border-b border-neutral-soft/60 text-[12px] font-semibold text-neutral-dark">Details</div>
+                            <div className="p-4 space-y-2">
+                              <div><span className="text-neutral-medium">Material:</span> <span className="font-semibold text-neutral-dark">{m.product_name}</span></div>
+                              <div><span className="text-neutral-medium">Status:</span> <span className={statusCls}>{status}</span></div>
+                              <div><span className="text-neutral-medium">Suggested Qty:</span> <span className="font-semibold text-primary-medium">{suggested}</span></div>
+                            </div>
+                          </div>
+
+                          <div className="rounded-xl border border-neutral-soft bg-white">
+                            <div className="px-4 py-3 border-b border-neutral-soft/60 text-[12px] font-semibold text-neutral-dark">Inventory Snapshot</div>
+                            <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-y-2 gap-x-6">
+                              <div><span className="text-neutral-medium">Net Available:</span> <span className="font-semibold text-neutral-dark">{net}</span></div>
+                              <div><span className="text-neutral-medium">Reorder To Level:</span> <span className="font-semibold text-neutral-dark">{m.reorder_to_level ?? '—'}</span></div>
+                              <div><span className="text-neutral-medium">Reorder Point:</span> <span className="font-semibold text-neutral-dark">{m.reorder_point ?? '—'}</span></div>
+                              <div><span className="text-neutral-medium">MOQ:</span> <span className="font-semibold text-neutral-dark">{m.moq ?? '—'}</span></div>
+                              <div><span className="text-neutral-medium">EOQ:</span> <span className="font-semibold text-neutral-dark">{m.eoq ?? '—'}</span></div>
+                            </div>
+                          </div>
+                        </div>
+                      )
+                    })()}
+                  </div>
+                  <div className="px-6 py-4 flex items-center justify-end gap-3 border-t border-neutral-soft/50">
+                    <button className="px-5 py-2.5 rounded-xl border border-neutral-soft text-neutral-dark hover:bg-neutral-light/60 transition-all" onClick={() => setPrModalFor(null)}>Close</button>
+                  </div>
+                </div>
+              </div>
+            )}
+            {/* Reservation History Modal */}
+            {isHistoryOpen && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+                <div className="absolute inset-0 bg-black/50" onClick={() => setIsHistoryOpen(false)}></div>
+                <div className="relative z-10 w-full max-w-3xl bg-white rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden flex flex-col">
+                  <div className="flex items-center justify-between px-8 py-6 bg-gradient-to-r from-neutral-light to-neutral-light/80 border-b border-neutral-soft/50">
+                    <div>
+                      <h2 className="text-2xl font-semibold text-neutral-dark">Reservation History – {selectedMaterial}</h2>
+                      <p className="text-sm text-neutral-medium mt-1">Latest entries first</p>
+                    </div>
+                    <button onClick={() => setIsHistoryOpen(false)} className="p-3 text-neutral-medium hover:text-neutral-dark hover:bg-white/60 rounded-xl transition-all">✕</button>
+                  </div>
+                  <div className="p-6">
+                    {historyLoading ? (
+                      <div className="p-6 text-center text-neutral-medium">Loading…</div>
+                    ) : historyError ? (
+                      <div className="p-6 text-center text-accent-danger">{historyError}</div>
+                    ) : historyData.length === 0 ? (
+                      <div className="p-6 text-center text-neutral-medium">No reservation history found</div>
+                    ) : (
+                      <div className="overflow-x-auto">
+                        <table className="min-w-full">
+                          <thead>
+                            <tr className="bg-gradient-to-r from-neutral-light/60 via-neutral-light/40 to-neutral-soft/30 border-b-2 border-neutral-soft/50">
+                              <th className="px-6 py-3 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">Production Line</th>
+                              <th className="px-6 py-3 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">Quantity Reserved</th>
+                              <th className="px-6 py-3 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">Date Created</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-neutral-soft/20">
+                            {historyData.map((h, i) => (
+                              <tr key={i} className="group">
+                                <td className="px-6 py-3 text-sm text-neutral-dark">{h.line_name || h.line_id}</td>
+                                <td className="px-6 py-3 text-sm text-neutral-dark">{h.qty}</td>
+                                <td className="px-6 py-3 text-sm text-neutral-dark">{new Date(h.created_at).toLocaleString()}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                    <div className="mt-6 flex justify-end">
+                      <button className="px-5 py-2.5 rounded-xl border border-neutral-soft text-neutral-dark hover:bg-neutral-light/60 transition-all" onClick={() => setIsHistoryOpen(false)}>Close</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
             {mainTab !== 'finished' && canManageInventory && (
               <button onClick={() => { if (mainTab==='raw') setIsAddRawOpen(true) }} className="inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm text-white bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light shadow-md">
                 <Plus className="h-4 w-4" /> {addLabelByTab[mainTab]}
@@ -994,7 +1001,7 @@ const Inventory: React.FC = () => {
                 className={`${subTab === 'list' ? 'border-primary-medium text-primary-medium' : 'border-transparent text-neutral-medium hover:text-neutral-dark'} border-b-2 px-2 py-2 text-sm font-semibold`}
                 onClick={() => setSubTab('list')}
               >
-                Raw Materials ({materials.length})
+                Raw Materials ({rawMaterials.length})
               </button>
               <button
                 className={`${subTab === 'forecast' ? 'border-primary-medium text-primary-medium' : 'border-transparent text-neutral-medium hover:text-neutral-dark'} border-b-2 px-2 py-2 text-sm font-semibold`}
@@ -1041,45 +1048,11 @@ const Inventory: React.FC = () => {
             </nav>
           </div>
         )}
-        {mainTab === 'raw' && subTab === 'forecast' ? (
-          <div className="bg-white rounded-2xl border border-neutral-soft/20 shadow-md p-14 flex flex-col items-center justify-center">
-            <div className="mx-auto w-16 h-16 bg-primary-light/20 rounded-full flex items-center justify-center mb-4">
-              <LineChart className="h-8 w-8 text-primary-medium" />
-            </div>
-            <div className="text-neutral-dark font-semibold mb-1">No forecasts available</div>
-            <p className="text-sm text-neutral-medium mb-6 text-center">Generate monthly raw material forecasts to optimize planning.</p>
-            <button className="inline-flex items-center gap-2 rounded-xl px-5 py-2.5 text-sm text-white bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light shadow">
-              <Plus className="h-4 w-4" /> Generate First Forecast
-            </button>
-          </div>
-        ) : mainTab === 'packaging' && subTab === 'forecast' ? (
-          <div className="bg-white rounded-2xl border border-neutral-soft/20 shadow-md p-14 flex flex-col items-center justify-center">
-            <div className="mx-auto w-16 h-16 bg-primary-light/20 rounded-full flex items-center justify-center mb-4">
-              <LineChart className="h-8 w-8 text-primary-medium" />
-            </div>
-            <div className="text-neutral-dark font-semibold mb-1">No forecasts available</div>
-            <p className="text-sm text-neutral-medium mb-6 text-center">Generate monthly packaging forecasts to optimize planning.</p>
-            <button className="inline-flex items-center gap-2 rounded-xl px-5 py-2.5 text-sm text-white bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light shadow">
-              <Plus className="h-4 w-4" /> Generate Forecast
-            </button>
-          </div>
-        ) : mainTab === 'finished' && subTab === 'forecast' ? (
-          <div className="bg-white rounded-2xl border border-neutral-soft/20 shadow-md p-14 flex flex-col items-center justify-center">
-            <div className="mx-auto w-16 h-16 bg-primary-light/20 rounded-full flex items-center justify-center mb-4">
-              <LineChart className="h-8 w-8 text-primary-medium" />
-            </div>
-            <div className="text-neutral-dark font-semibold mb-1">No forecasts available</div>
-            <p className="text-sm text-neutral-medium mb-6 text-center">Generate monthly finished goods forecasts to optimize planning.</p>
-            <button className="inline-flex items-center gap-2 rounded-xl px-5 py-2.5 text-sm text-white bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light shadow">
-              <Plus className="h-4 w-4" /> Generate Forecast
-            </button>
-          </div>
-        ) : mainTab === 'finished' ? (
+        {mainTab === 'finished' ? (
           <div className="bg-white rounded-2xl shadow-md border border-neutral-soft/20 overflow-hidden">
             <div className="px-6 py-4 bg-gradient-to-r from-neutral-light/60 via-neutral-light/40 to-neutral-soft/30 border-b border-neutral-soft/40">
               <div className="flex items-center justify-between">
                 <h3 className="text-lg font-semibold text-neutral-dark">Finished Goods Inventory</h3>
-                <div />
               </div>
             </div>
 
@@ -1267,20 +1240,249 @@ const Inventory: React.FC = () => {
         ) : (
           <>
             {mainTab === 'packaging' && subTab === 'list' ? (
-              <div className="bg-white rounded-2xl border border-neutral-soft/20 shadow-md p-14 flex flex-col items-center justify-center">
-                <div className="mx-auto w-16 h-16 bg-primary-light/20 rounded-full flex items-center justify-center mb-4">
-                  <Landmark className="h-8 w-8 text-primary-medium" />
+              materialsLoading || packagingMaterials.length === 0 ? (
+                <div className="bg-white rounded-2xl border border-neutral-soft/20 shadow-md p-14 flex flex-col items-center justify-center">
+                  <div className="mx-auto w-16 h-16 bg-primary-light/20 rounded-full flex items-center justify-center mb-4">
+                    <Landmark className="h-8 w-8 text-primary-medium" />
+                  </div>
+                  <div className="text-neutral-dark font-semibold mb-1">{materialsLoading ? 'Loading packaging inventory...' : 'No inventory records found'}</div>
+                  {!materialsLoading && (
+                    <p className="text-sm text-neutral-medium mb-6 text-center">Packaging items appear here when their category is Packaging.</p>
+                  )}
                 </div>
-                <div className="text-neutral-dark font-semibold mb-1">No inventory records found</div>
-                <p className="text-sm text-neutral-medium mb-6 text-center">Start tracking your inventory by updating stock levels.</p>
-                {canManageInventory && (
-                  <button className="inline-flex items-center gap-2 rounded-xl px-5 py-2.5 text-sm text-white bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light shadow">
-                    <Plus className="h-4 w-4" /> Update Inventory
-                  </button>
-                )}
-              </div>
+              ) : (
+                <div className="bg-white rounded-2xl shadow-md border border-neutral-soft/20 overflow-hidden">
+                  <div className="px-6 py-4 bg-gradient-to-r from-neutral-light/60 via-neutral-light/40 to-neutral-soft/30 border-b border-neutral-soft/40">
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-lg font-semibold text-neutral-dark">Packaging Inventory</h3>
+                    </div>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full">
+                      <thead>
+                        <tr className="bg-gradient-to-r from-neutral-light/60 via-neutral-light/40 to-neutral-soft/30 border-b-2 border-neutral-soft/50">
+                          <th className="px-6 py-4 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">Product</th>
+                          <th className="px-6 py-4 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">Category</th>
+                          <th className="px-6 py-4 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">Supplier</th>
+                          <th className="px-6 py-4 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">UoM</th>
+                          <th className="px-6 py-4 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">Unit Weight</th>
+                          <th className="px-6 py-4 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">Cost/Unit</th>
+                          <th className="px-6 py-4 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">Total Available</th>
+                          <th className="px-6 py-4 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">Reserved</th>
+                          <th className="px-6 py-4 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">Net Available</th>
+                          <th className="px-6 py-4 text-center text-xs font-bold text-neutral-dark uppercase tracking-wider">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-neutral-soft/20">
+                        {packagingMaterials.map((m) => (
+                          <React.Fragment key={m.id}>
+                          <tr className="hover:bg-neutral-light/20 transition">
+                            <td className="px-6 py-4 text-sm text-neutral-dark font-medium">
+                              {m.product_name}
+                              {m.replenishmentStatus?.hasPending ? (
+                                <span className="ml-2 inline-flex items-center rounded-full bg-blue-100 px-2 py-0.5 text-[11px] font-semibold text-blue-700">
+                                  <Bell className="h-3.5 w-3.5 mr-1" /> Pending PR ({m.replenishmentStatus.qty})
+                                </span>
+                              ) : ((Number(m.total_available ?? 0) - Number(m.reserved_qty ?? 0)) <= Number(m.reorder_point ?? 0)) ? (
+                                <span className="ml-2 inline-flex items-center rounded-full bg-red-100 px-2 py-0.5 text-[11px] font-semibold text-red-700">Replenishment Required</span>
+                              ) : null}
+                            </td>
+                            <td className="px-6 py-4 text-sm text-neutral-dark">{m.category || '—'}</td>
+                            <td className="px-6 py-4 text-sm text-neutral-dark">{m.supplier_name || '—'}</td>
+                            <td className="px-6 py-4 text-sm text-neutral-dark">{m.unit_of_measure || '—'}</td>
+                            <td className="px-6 py-4 text-sm text-neutral-dark">{m.unit_weight || '—'}</td>
+                            <td className="px-6 py-4 text-sm text-neutral-dark">{m.cost_per_unit || '—'}</td>
+                            <td className="px-6 py-4 text-sm text-neutral-dark">{m.total_available || '—'}</td>
+                            <td className="px-6 py-4 text-sm text-neutral-dark">
+                              <div className="flex items-center gap-2">
+                                <span>{(m as any).reserved_qty ?? 0}</span>
+                                <button
+                                  type="button"
+                                  className="p-1.5 rounded-md border border-neutral-soft hover:border-neutral-medium hover:bg-neutral-light/40 text-neutral-medium hover:text-neutral-dark"
+                                  title="View reservation history"
+                                  onClick={() => { setSelectedMaterial(m.product_name); setIsHistoryOpen(true) }}
+                                >
+                                  <Clock className="h-4 w-4" />
+                                </button>
+                              </div>
+                            </td>
+                            <td className="px-6 py-4 text-sm text-neutral-dark">{Number(m.total_available || 0) - Number(m.reserved_qty || 0)}</td>
+                            <td className="px-6 py-4">
+                              <div className="flex items-center justify-center gap-2">
+                                <button type="button" onClick={() => { setViewData(m); setIsViewOpen(true) }} className="p-2 text-primary-medium hover:text-white hover:bg-primary-medium rounded-lg border border-primary-light/30">
+                                  <Eye className="h-4 w-4" />
+                                </button>
+                                {canManageInventory && (
+                                  <button type="button" onClick={() => { setEditId(m.id); setEditForm({
+                                    product_name: m.product_name || '',
+                                    category: m.category || '',
+                                    supplier_id: m.supplier_id || '',
+                                    supplier_name: m.supplier_name || '',
+                                    unit_of_measure: m.unit_of_measure || '',
+                                    unit_weight: m.unit_weight || '',
+                                    cost_per_unit: m.cost_per_unit || '',
+                                    total_available: String(m.total_available ?? ''),
+                                    lot_number: '',
+                                    manufacture_date: '',
+                                    expiry_date: '',
+                                    reorder_point: String((m as any).reorder_point ?? ''),
+                                    reorder_to_level: String((m as any).reorder_to_level ?? ''),
+                                    moq: String((m as any).moq ?? ''),
+                                    eoq: String((m as any).eoq ?? ''),
+                                    material_file_urls: (m as any).material_file_urls || [],
+                                  }); setEditDocFiles([]); setIsEditOpen(true) }} className="p-2 text-neutral-medium hover:text-white hover:bg-neutral-medium rounded-lg border border-neutral-soft">
+                                    <Edit className="h-4 w-4" />
+                                  </button>
+                                )}
+                                {(() => {
+                                  const hasPending = Boolean(m.replenishmentStatus?.hasPending)
+                                  const net = Number(m.total_available || 0) - Number((m as any).reserved_qty || 0)
+                                  const rp = Number((m as any).reorder_point || 0)
+                                  if (hasPending) {
+                                    return (
+                                      <button type="button" onClick={() => setOpenReplFor(openReplFor === m.id ? null : m.id)} className="px-3 py-1.5 text-xs inline-flex items-center gap-1 rounded-lg border border-primary-light text-primary-medium hover:bg-primary-light/20">
+                                        <ClipboardList className="h-4 w-4" /> View PR Details
+                                      </button>
+                                    )
+                                  }
+                                  if (net <= rp && canManageInventory) {
+                                    return (
+                                      <button type="button" onClick={() => handleReplenishmentClick(m)} className="px-3 py-1.5 text-xs inline-flex items-center gap-1 rounded-lg border border-primary-light text-primary-medium hover:bg-primary-light/20">
+                                        <ClipboardList className="h-4 w-4" /> Auto-Generate PR
+                                      </button>
+                                    )
+                                  }
+                                  return null
+                                })()}
+                                {canManageInventory && (
+                                  <button type="button" onClick={() => { setDeleteTarget(m); setIsDeleteOpen(true) }} className="p-2 text-accent-danger hover:text-white hover:bg-accent-danger rounded-lg border border-accent-danger/30">
+                                    <Trash2 className="h-4 w-4" />
+                                  </button>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                          {openReplFor === m.id && (
+                            <tr>
+                              <td colSpan={10} className="px-6 py-5 bg-gradient-to-br from-neutral-light/30 to-neutral-soft/20">
+                                <div className="rounded-2xl bg-white border border-neutral-soft/40 shadow-lg p-6">
+                                  <div className="flex items-center justify-between mb-6">
+                                    <div className="flex items-center gap-3">
+                                      <div className="p-2 rounded-lg bg-primary-light/20">
+                                        <Package className="h-5 w-5 text-primary-medium" />
+                                      </div>
+                                      <div>
+                                        <div className="text-lg font-semibold text-neutral-dark">Replenishment Panel</div>
+                                        <div className="text-xs text-neutral-medium">Material: {m.product_name}</div>
+                                      </div>
+                                    </div>
+                                    {m.replenishmentStatus?.hasPending ? (
+                                      <span className="inline-flex items-center px-3 py-1.5 rounded-full text-sm font-semibold bg-blue-100 text-blue-700 border border-blue-200">
+                                        <Bell className="h-4 w-4 mr-2"/> Pending PR ({m.replenishmentStatus.qty})
+                                      </span>
+                                    ) : (() => { const net = Number(m.total_available || 0) - Number(m.reserved_qty || 0); const rp = Number(m.reorder_point || 0); return net <= rp ? (
+                                      <span className="inline-flex items-center px-3 py-1.5 rounded-full text-sm font-semibold bg-red-100 text-red-700 border border-red-200">Replenishment Required</span>
+                                    ) : null })()}
+                                  </div>
+
+                                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                                    <div className="space-y-4">
+                                      <div className="rounded-xl border border-neutral-soft bg-gradient-to-r from-neutral-light/40 to-white p-4">
+                                        <div className="text-xs font-semibold text-neutral-dark uppercase tracking-wider mb-3 border-b border-neutral-soft/60 pb-2">Current Stock</div>
+                                        <div className="space-y-3">
+                                          <div className="flex items-center justify-between">
+                                            <span className="text-sm text-neutral-medium">Total Available</span>
+                                            <span className="text-lg font-semibold text-neutral-dark">{m.total_available ?? '0'}</span>
+                                          </div>
+                                          <div className="flex items-center justify-between">
+                                            <span className="text-sm text-neutral-medium">Reserved Qty</span>
+                                            <span className="text-lg font-semibold text-neutral-dark">{m.reserved_qty ?? 0}</span>
+                                          </div>
+                                          <div className="flex items-center justify-between pt-2 border-t border-neutral-soft/60">
+                                            <span className="text-sm font-semibold text-neutral-dark">Net Available</span>
+                                            <span className="text-xl font-semibold text-neutral-dark">{Number(m.total_available || 0) - Number(m.reserved_qty || 0)}</span>
+                                          </div>
+                                          <div className="flex items-center justify-between">
+                                            <span className="text-sm text-neutral-medium">Reorder Point</span>
+                                            <span className="text-lg font-semibold text-neutral-dark">{m.reorder_point ?? '—'}</span>
+                                          </div>
+                                        </div>
+                                      </div>
+                                    </div>
+
+                                    <div className="space-y-4">
+                                      <div className="rounded-xl border border-neutral-soft bg-gradient-to-r from-white to-neutral-light/40 p-4">
+                                        <div className="text-xs font-semibold text-neutral-dark uppercase tracking-wider mb-3 border-b border-neutral-soft/60 pb-2">Ordering Parameters</div>
+                                        <div className="space-y-3">
+                                          <div className="flex items-center justify-between">
+                                            <span className="text-sm text-neutral-medium">Reorder To Level</span>
+                                            <span className="text-lg font-semibold text-neutral-dark">{m.reorder_to_level ?? '—'}</span>
+                                          </div>
+                                          <div className="flex items-center justify-between">
+                                            <span className="text-sm text-neutral-medium">MOQ</span>
+                                            <span className="text-lg font-semibold text-neutral-dark">{m.moq ?? '—'}</span>
+                                          </div>
+                                          <div className="flex items-center justify-between">
+                                            <span className="text-sm text-neutral-medium">EOQ</span>
+                                            <span className="text-lg font-semibold text-neutral-dark">{m.eoq ?? '—'}</span>
+                                          </div>
+                                        </div>
+                                      </div>
+                                    </div>
+                                  </div>
+
+                                  {m.replenishmentStatus?.hasPending && (
+                                    <div className="mt-6 p-4 bg-blue-50 rounded-xl border border-blue-200">
+                                      <div className="flex items-start gap-3">
+                                        <div className="p-1.5 rounded-lg bg-blue-200">
+                                          <Bell className="h-4 w-4 text-blue-700" />
+                                        </div>
+                                        <div className="flex-1">
+                                          <div className="font-semibold text-blue-800 mb-1">Pending Requisition</div>
+                                          <div className="grid grid-cols-2 gap-4 text-sm">
+                                            <div><span className="text-neutral-medium">Qty:</span> <span className="font-semibold text-neutral-dark">{m.replenishmentStatus.qty}</span></div>
+                                            <div><span className="text-neutral-medium">Status:</span> <span className="font-semibold text-neutral-dark">{m.replenishmentStatus.reqStatus || '—'}</span></div>
+                                          </div>
+                                        </div>
+                                      </div>
+                                    </div>
+                                  )}
+
+                                  <div className="mt-6 pt-4 border-t border-neutral-soft/60 flex items-center justify-end">
+                                    {(() => {
+                                      const hasPending = Boolean(m.replenishmentStatus?.hasPending)
+                                      const net = Number(m.total_available || 0) - Number(m.reserved_qty || 0)
+                                      const rp = Number(m.reorder_point || 0)
+                                      if (hasPending) {
+                                        return (
+                                          <button type="button" onClick={() => setPrModalFor(m)} className="px-4 py-2.5 text-sm inline-flex items-center gap-2 rounded-xl border-2 border-primary-medium text-primary-medium hover:bg-primary-medium hover:text-white transition-all duration-200 font-semibold">
+                                            <ClipboardList className="h-4 w-4" /> View PR Details
+                                          </button>
+                                        )
+                                      }
+                                      if (net <= rp && canManageInventory) {
+                                        return (
+                                          <button type="button" disabled={isGenerating} onClick={() => handleReplenishmentClick(m)} className={`px-4 py-2.5 text-sm inline-flex items-center gap-2 rounded-xl border-2 border-primary-medium text-primary-medium hover:bg-primary-medium hover:text-white transition-all duration-200 font-semibold ${isGenerating ? 'opacity-60 cursor-not-allowed' : ''}`}>
+                                            <ClipboardList className="h-4 w-4" /> Auto-Generate PR
+                                          </button>
+                                        )
+                                      }
+                                      return null
+                                    })()}
+                                  </div>
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                          </React.Fragment>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )
             ) : (
-              materialsLoading || materials.length === 0 ? (
+              materialsLoading || rawMaterials.length === 0 ? (
                 <div className="bg-white rounded-2xl border border-neutral-soft/20 shadow-md p-12 flex flex-col items-center justify-center">
                   <div className="mx-auto w-16 h-16 bg-primary-light/20 rounded-full flex items-center justify-center mb-4">
                     <Inbox className="h-8 w-8 text-primary-medium" />
@@ -1321,7 +1523,7 @@ const Inventory: React.FC = () => {
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-neutral-soft/20">
-                        {materials.map((m) => (
+                        {rawMaterials.map((m) => (
                           <React.Fragment key={m.id}>
                           <tr className="hover:bg-neutral-light/20 transition">
                             <td className="px-6 py-4 text-sm text-neutral-dark font-medium">
@@ -2099,14 +2301,14 @@ const Inventory: React.FC = () => {
         {/* Add Raw Material Modal */}
         {isAddRawOpen && mainTab==='raw' && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-            <div className="absolute inset-0 bg-black/50" onClick={() => setIsAddRawOpen(false)}></div>
+            <div className="absolute inset-0 bg-black/50" onClick={() => { setIsAddRawOpen(false); setHasAttemptedSubmit(false) }}></div>
             <div className="relative z-10 w-full max-w-5xl max-h-[85vh] bg-white rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden flex flex-col">
               <div className="flex items-center justify-between px-8 py-6 bg-gradient-to-r from-neutral-light to-neutral-light/80 border-b border-neutral-soft/50">
                 <div>
                   <h2 className="text-2xl font-semibold text-neutral-dark">Add New Raw Material</h2>
                   <p className="text-sm text-neutral-medium mt-1">Create a new material for your inventory</p>
                 </div>
-                <button onClick={() => setIsAddRawOpen(false)} className="p-3 text-neutral-medium hover:text-neutral-dark hover:bg-white/60 rounded-xl transition-all duration-200 hover:shadow-sm">
+                <button onClick={() => { setIsAddRawOpen(false); setHasAttemptedSubmit(false) }} className="p-3 text-neutral-medium hover:text-neutral-dark hover:bg-white/60 rounded-xl transition-all duration-200 hover:shadow-sm">
                   <X className="h-6 w-6" />
                 </button>
               </div>
@@ -2116,6 +2318,20 @@ const Inventory: React.FC = () => {
                   onSubmit={async (e) => {
                     e.preventDefault()
                     if (isSavingRaw) return
+                    
+                    // Mark that user has attempted to submit
+                    setHasAttemptedSubmit(true)
+                    
+                    // Validate Total Available field
+                    if (!rawForm.totalAvailable || rawForm.totalAvailable.trim() === '') {
+                      const totalAvailableField = document.querySelector('[data-field="totalAvailable"]') as HTMLElement
+                      if (totalAvailableField) {
+                        totalAvailableField.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                        totalAvailableField.focus()
+                      }
+                      return
+                    }
+                    
                     setIsSavingRaw(true)
                     try {
                       const category = (rawForm.newCategory || '').trim() || rawForm.category || null
@@ -2173,7 +2389,12 @@ const Inventory: React.FC = () => {
                       }
                       const { error } = await supabase.from('inventory_materials').insert(payload)
                       if (error) throw error
+                      const cleanedName = String(rawForm.name || '').trim()
+                      const catLower = String(category || '').trim().toLowerCase()
+                      const tabLabel = catLower === 'packaging' ? 'Packaging' : 'Raw Materials'
+                      setToast({ show: true, message: `${cleanedName || 'Material'} added. View it in ${tabLabel} tab.` })
                       setIsAddRawOpen(false)
+                      setHasAttemptedSubmit(false)
                       setRawForm({ name: '', category: '', newCategory: '', supplier: '', supplierId: '', uom: 'Kilograms (kg)', unitWeight: '', costPerUnit: '', totalAvailable: '', lotNumber: '', manufactureDate: '', expiryDate: '', reorderPoint: '', reorderToLevel: '', moq: '', eoq: '', docFiles: [] })
                     } catch (err) {
                       console.error('Failed to insert inventory material', err)
@@ -2307,8 +2528,22 @@ const Inventory: React.FC = () => {
                   </div>
 
                   <div className="space-y-2">
-                    <label className="flex items-center text-sm font-medium text-neutral-dark"><ClipboardList className="h-4 w-4 mr-2 text-primary-medium"/>Total Available</label>
-                    <input type="number" placeholder="Can be added later with the pencil icon" className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium" value={rawForm.totalAvailable} onChange={(e)=>setRawForm({...rawForm, totalAvailable:e.target.value})} />
+                    <label className="flex items-center text-sm font-medium text-neutral-dark">
+                      <ClipboardList className="h-4 w-4 mr-2 text-primary-medium"/>
+                      Total Available <span className="text-accent-danger ml-1">*</span>
+                    </label>
+                    <input 
+                      type="number" 
+                      placeholder="Enter quantity (required)" 
+                      className={`w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium ${hasAttemptedSubmit && (!rawForm.totalAvailable || rawForm.totalAvailable.trim() === '') ? 'border-accent-danger' : 'border-neutral-soft'}`}
+                      value={rawForm.totalAvailable} 
+                      onChange={(e)=>setRawForm({...rawForm, totalAvailable:e.target.value})}
+                      data-field="totalAvailable"
+                      required
+                    />
+                    {(hasAttemptedSubmit && (!rawForm.totalAvailable || rawForm.totalAvailable.trim() === '')) && (
+                      <p className="text-xs text-accent-danger">Total Available quantity is required</p>
+                    )}
                   </div>
 
                   {/* Lot Traceability Section */}

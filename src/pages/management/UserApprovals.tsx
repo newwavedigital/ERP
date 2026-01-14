@@ -43,6 +43,11 @@ const UserApprovals: React.FC<UserApprovalsProps> = ({ embedded }) => {
   const [addSubmitting, setAddSubmitting] = useState(false)
   const [addError, setAddError] = useState<string | null>(null)
 
+  const getSiteUrl = () => {
+    const raw = (import.meta.env.VITE_SITE_URL as string) || window.location.origin
+    return raw.replace(/\/+$/, '')
+  }
+
   const [editOpen, setEditOpen] = useState(false)
   const [editTarget, setEditTarget] = useState<UserProfile | null>(null)
   const [editForm, setEditForm] = useState<{ first_name: string; last_name: string; role: string; approval_status: string } | null>(null)
@@ -643,7 +648,7 @@ const UserApprovals: React.FC<UserApprovalsProps> = ({ embedded }) => {
                       setAddError('Email is required')
                       return
                     }
-                    const redirect_to = `${window.location.origin}/#/auth/callback`
+                    const redirect_to = `${getSiteUrl()}/#/auth/callback`
                     await invokeAdminUserManagement({
                       action: 'create_user',
                       payload: {

@@ -311,13 +311,12 @@ const Products: React.FC = () => {
         setFormulasLoading(true)
         const { data, error } = await supabase
           .from('formulas')
-          .select('id, formula_name, products:formulas_product_id_fkey ( product_name ), customers:formulas_customer_id_fkey ( company_name )')
+          .select('id, formula_name, customers:formulas_customer_id_fkey ( company_name )')
           .order('created_at', { ascending: false })
         if (!error) {
           const items: FormulaItem[] = (data ?? []).map((f: any) => ({
             id: String(f.id),
             formula_name: String(f.formula_name ?? ''),
-            product_name: String(f.products?.product_name ?? ''),
             customer_name: String(f.customers?.company_name ?? ''),
           }))
           setFormulas(items)

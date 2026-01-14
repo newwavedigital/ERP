@@ -67,19 +67,18 @@ const PurchaseOrders: React.FC = () => {
   const [products, setProducts] = useState<Array<{
     id:string;
     name:string;
-    sku?:string;
     is_discontinued?: boolean;
     substitute_sku?: string | null;
+    case_qty?: number | null;
     formula?: {
       id: string;
-      product_id: string | null;
       formula_name: string;
       version?: number | null;
       comments?: string | null;
       customer_id?: string | null;
-      standard_yield?: string | null;
-      scrap_percent?: string | null;
-      items?: Array<{ material_id: string; qty_per_unit: string | null; uom: string | null; percentage: string | null }>
+      standard_yield?: number | null;
+      scrap_percent?: number | null;
+      items?: Array<{ material_id: string; qty_per_unit: string | null; uom: string | null; percentage: string | null }>;
     } | null;
     meta?: { has_client_supplied?: boolean; all_ops_supplied?: boolean };
   }>>([])
@@ -984,23 +983,16 @@ const PurchaseOrders: React.FC = () => {
           .eq('po_id', poId)
           .or('bucket.eq.copack_materials,bucket.eq.copack,bucket.eq.client_materials,bucket.eq.copack_client')
         setViewCopackRes(res || [])
-        // 2) Formula by product_id (fallback: find product id by product_name)
-        let productId: string | null = isViewOpen.product_id ? String(isViewOpen.product_id) : null
-        if (!productId && isViewOpen.product_name) {
-          const nm = String(isViewOpen.product_name || '').trim()
-          const { data: prodRow } = await supabase
-            .from('products')
-            .select('id')
-            .ilike('product_name', `%${nm}%`)
-            .maybeSingle()
-          productId = prodRow?.id ? String(prodRow.id) : null
-        }
+        // 2) Formula by formula_name (match product name)
+        const productName = String(isViewOpen.product_name || '').trim()
         let formula: any = null
-        if (productId) {
+        if (productName) {
           const { data: f, error: fErr } = await supabase
             .from('formulas')
-            .select('id, formula_name')
-            .eq('product_id', productId)
+            .select('id, formula_name, version')
+            .ilike('formula_name', productName)
+            .order('version', { ascending: false })
+            .limit(1)
             .maybeSingle()
           formula = fErr ? null : (f as any)
         }
@@ -1478,8 +1470,7 @@ const PurchaseOrders: React.FC = () => {
       try {
         if (!form.is_copack) return
         const name = String(form.product || '').trim()
-        if (!name) return
-        if (!isKnownProductName(name)) return
+        if (!name || !isKnownProductName(name)) return
         if (lastCopackAutoSourceProductRef.current === name) return
 
         // only auto-set when a source hasn't been selected yet
@@ -1490,46 +1481,11 @@ const PurchaseOrders: React.FC = () => {
           return
         }
 
-        // Resolve product id
-        let productId: string | null = null
-        try {
-          const idx = productsIndex[name] || null
-          if (idx?.id) productId = String(idx.id)
-        } catch {}
-
-        if (!productId) {
-          const { data: prod } = await supabase
-            .from('products')
-            .select('id')
-            .eq('product_name', name)
-            .maybeSingle()
-          if (prod?.id) productId = String(prod.id)
-        }
-
-        if (!productId) {
-          const { data: prod2 } = await supabase
-            .from('products')
-            .select('id')
-            .ilike('product_name', name)
-            .maybeSingle()
-          if (prod2?.id) productId = String(prod2.id)
-        }
-
-        if (!productId) {
-          lastCopackAutoSourceProductRef.current = name
-          setForm((prev: any) => ({
-            ...prev,
-            client_materials_required: false,
-            operation_supplies_materials: true,
-          }))
-          return
-        }
-
-        // Get latest formula
+        // Get latest formula by name
         const { data: formulaRow } = await supabase
           .from('formulas')
           .select('id, version')
-          .eq('product_id', productId)
+          .ilike('formula_name', name)
           .order('version', { ascending: false })
           .limit(1)
           .maybeSingle()
@@ -1602,7 +1558,7 @@ const PurchaseOrders: React.FC = () => {
         supabase.from('customers').select('id, company_name, credit_hold, overdue_balance, credit_limit, current_balance').order('company_name', { ascending: true }),
         supabase.from('products').select('id, product_name, is_discontinued, substitute_sku, case_qty').order('product_name', { ascending: true }),
         supabase.from('purchase_orders').select('*, risk_flag').order('created_at', { ascending: false }),
-        supabase.from('formulas').select('id, product_id, formula_name, version, comments, customer_id, standard_yield, scrap_percent'),
+        supabase.from('formulas').select('id, formula_name, version, created_at, comments, customer_id, standard_yield, scrap_percent'),
         supabase.from('formula_items').select('formula_id, material_id, qty_per_unit, uom, percentage'),
         supabase.from('inventory_materials').select('id, is_client_supplied'),
         supabase.from('production_lines').select('id, line_name').order('line_name', { ascending: true }),
@@ -1624,23 +1580,24 @@ const PurchaseOrders: React.FC = () => {
             percentage: it.percentage ?? null,
           })
         })
-        // pick the latest formula per product_id (fallback: first)
-        const byProduct = new Map<string, any>()
+        // pick the latest formula per formula_name (match product_name)
+        const byName = new Map<string, any>()
         formulas.forEach((f:any) => {
-          const pid = f.product_id ? String(f.product_id) : ''
-          const prev = byProduct.get(pid)
-          if (!prev) byProduct.set(pid, f)
+          const key = String(f.formula_name || '').trim().toLowerCase()
+          if (!key) return
+          const prev = byName.get(key)
+          if (!prev) byName.set(key, f)
           else {
-            const ta = new Date(f.created_at || 0).getTime()
-            const tb = new Date(prev.created_at || 0).getTime()
-            if (ta >= tb) byProduct.set(pid, f)
+            const va = Number(f.version ?? 0)
+            const vb = Number(prev.version ?? 0)
+            if (va >= vb) byName.set(key, f)
           }
         })
         const matFlag: Record<string, boolean> = {}
         ;(mats ?? []).forEach((m:any)=> { matFlag[String(m.id)] = !!m.is_client_supplied })
         const mapped = (pData ?? []).map((r:any) => {
           const pid = String(r.id)
-          const f = byProduct.get(pid) || null
+          const f = byName.get(String(r.product_name || '').trim().toLowerCase()) || null
           const items = f ? (itemsByFormula.get(String(f.id)) || []) : []
           const hasClient = items.some((it:any)=> matFlag[String(it.material_id)] === true)
           const allOps = items.length > 0 && items.every((it:any)=> matFlag[String(it.material_id)] === false)
@@ -1652,7 +1609,7 @@ const PurchaseOrders: React.FC = () => {
             case_qty: r.case_qty ?? null,
             formula: f ? {
               id: String(f.id),
-              product_id: f.product_id ? String(f.product_id) : null,
+              product_id: null,
               formula_name: String(f.formula_name || ''),
               version: f.version ?? null,
               comments: f.comments ?? null,

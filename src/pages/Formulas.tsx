@@ -34,7 +34,6 @@ const Formulas: React.FC<FormulasProps> = ({ openSignal, embedded = false }) => 
   const [saving, setSaving] = useState(false);
 
   const [form, setForm] = useState({
-    product_id: "",
     product_name: "",
     customer_id: "",
     comments: "",
@@ -45,7 +44,7 @@ const Formulas: React.FC<FormulasProps> = ({ openSignal, embedded = false }) => 
   ]);
 
   const resetForm = () => {
-    setForm({ product_id: "", product_name: "", customer_id: "", comments: "" });
+    setForm({ product_name: "", customer_id: "", comments: "" });
     setIngredients([{ ...emptyIngredient }]);
   };
 
@@ -113,7 +112,6 @@ const Formulas: React.FC<FormulasProps> = ({ openSignal, embedded = false }) => 
         formula_name,
         version,
         created_at,
-        products:formulas_product_id_fkey ( product_name ),
         customers:formulas_customer_id_fkey ( company_name )
       `)
       .order("created_at", { ascending: false });
@@ -152,7 +150,6 @@ const Formulas: React.FC<FormulasProps> = ({ openSignal, embedded = false }) => 
         .from("formulas")
         .insert([
           {
-            product_id: form.product_id || null,
             customer_id: form.customer_id,
             formula_name: form.product_name.trim(),
             comments: form.comments,
@@ -192,7 +189,6 @@ const Formulas: React.FC<FormulasProps> = ({ openSignal, embedded = false }) => 
       // Optimistic add to list so user sees result instantly (no full reload needed)
       setFormulasList(prev => [{
         ...fdata,
-        products: { product_name: form.product_name || '' },
         customers: { company_name: customersList.find(c=>c.id===form.customer_id)?.company_name || '' },
       }, ...prev]);
 
@@ -236,7 +232,6 @@ const Formulas: React.FC<FormulasProps> = ({ openSignal, embedded = false }) => 
               <thead>
                 <tr className="text-left text-sm text-neutral-medium border-b">
                   <th className="py-3">Formula Name</th>
-                  <th className="py-3">Product</th>
                   <th className="py-3">Customer</th>
                   <th className="py-3">Version</th>
                   <th className="py-3">Created</th>
@@ -247,7 +242,6 @@ const Formulas: React.FC<FormulasProps> = ({ openSignal, embedded = false }) => 
                 {formulasList.map((f) => (
                   <tr key={f.id} className="border-b text-sm">
                     <td className="py-3">{f.formula_name}</td>
-                    <td className="py-3">{f.products?.product_name}</td>
                     <td className="py-3">{f.customers?.company_name}</td>
                     <td className="py-3">{f.version}</td>
                     <td className="py-3">
@@ -314,7 +308,7 @@ const Formulas: React.FC<FormulasProps> = ({ openSignal, embedded = false }) => 
                       value={form.product_name}
                       onChange={(e) => {
                         const name = e.target.value;
-                        setForm({ ...form, product_name: name, product_id: "" });
+                        setForm({ ...form, product_name: name });
                       }}
                     />
                     

@@ -11,7 +11,7 @@ type Ingredient = {
   uom: string;
   percentage: string;
 };
-
+//
 const emptyIngredient: Ingredient = {
   material_id: "",
   qty: "",

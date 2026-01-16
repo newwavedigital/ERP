@@ -6,7 +6,7 @@ import { supabase } from '../lib/supabase'
 interface ERPLoginFormProps {
   onShowSignUp?: () => void
 }
-//fdsafsa
+
 const ERPLoginForm: React.FC<ERPLoginFormProps> = ({ onShowSignUp }) => {
   const navigate = useNavigate()
   const [showPassword, setShowPassword] = useState(false)

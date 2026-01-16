@@ -11,7 +11,7 @@ type Ingredient = {
   uom: string;
   percentage: string;
 };
-
+//fdsafsafa
 const emptyIngredient: Ingredient = {
   material_id: "",
   qty: "",
@@ -237,7 +237,6 @@ const Formulas: React.FC<FormulasProps> = ({ openSignal, embedded = false }) => 
                   <th className="py-3">Created</th>
                 </tr>
               </thead>
-
               <tbody>
                 {formulasList.map((f) => (
                   <tr key={f.id} className="border-b text-sm">

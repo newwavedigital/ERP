@@ -2331,6 +2331,32 @@ const Inventory: React.FC = () => {
                       }
                       return
                     }
+
+                    // Validate Lot Traceability fields
+                    if (!rawForm.lotNumber || rawForm.lotNumber.trim() === '') {
+                      const lotNumberField = document.querySelector('[data-field="lotNumber"]') as HTMLElement
+                      if (lotNumberField) {
+                        lotNumberField.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                        lotNumberField.focus()
+                      }
+                      return
+                    }
+                    if (!rawForm.manufactureDate || rawForm.manufactureDate.trim() === '') {
+                      const manufactureDateField = document.querySelector('[data-field="manufactureDate"]') as HTMLElement
+                      if (manufactureDateField) {
+                        manufactureDateField.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                        manufactureDateField.focus()
+                      }
+                      return
+                    }
+                    if (!rawForm.expiryDate || rawForm.expiryDate.trim() === '') {
+                      const expiryDateField = document.querySelector('[data-field="expiryDate"]') as HTMLElement
+                      if (expiryDateField) {
+                        expiryDateField.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                        expiryDateField.focus()
+                      }
+                      return
+                    }
                     
                     setIsSavingRaw(true)
                     try {
@@ -2554,32 +2580,47 @@ const Inventory: React.FC = () => {
                     </h3>
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                       <div className="space-y-2">
-                        <label className="flex items-center text-sm font-medium text-neutral-dark">Lot Number</label>
+                        <label className="flex items-center text-sm font-medium text-neutral-dark">Lot Number <span className="text-accent-danger ml-1">*</span></label>
                         <input 
                           type="text" 
                           placeholder="e.g., LOT-2024-001" 
-                          className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium" 
+                          className={`w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium ${hasAttemptedSubmit && (!rawForm.lotNumber || rawForm.lotNumber.trim() === '') ? 'border-accent-danger' : 'border-neutral-soft'}`}
                           value={rawForm.lotNumber} 
                           onChange={(e)=>setRawForm({...rawForm, lotNumber:e.target.value})} 
+                          data-field="lotNumber"
+                          required
                         />
+                        {(hasAttemptedSubmit && (!rawForm.lotNumber || rawForm.lotNumber.trim() === '')) && (
+                          <p className="text-xs text-accent-danger">Lot Number is required</p>
+                        )}
                       </div>
                       <div className="space-y-2">
-                        <label className="flex items-center text-sm font-medium text-neutral-dark">Manufacture Date</label>
+                        <label className="flex items-center text-sm font-medium text-neutral-dark">Manufacture Date <span className="text-accent-danger ml-1">*</span></label>
                         <input 
                           type="date" 
-                          className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium" 
+                          className={`w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium ${hasAttemptedSubmit && (!rawForm.manufactureDate || rawForm.manufactureDate.trim() === '') ? 'border-accent-danger' : 'border-neutral-soft'}`}
                           value={rawForm.manufactureDate} 
                           onChange={(e)=>setRawForm({...rawForm, manufactureDate:e.target.value})} 
+                          data-field="manufactureDate"
+                          required
                         />
+                        {(hasAttemptedSubmit && (!rawForm.manufactureDate || rawForm.manufactureDate.trim() === '')) && (
+                          <p className="text-xs text-accent-danger">Manufacture Date is required</p>
+                        )}
                       </div>
                       <div className="space-y-2">
-                        <label className="flex items-center text-sm font-medium text-neutral-dark">Expiry Date</label>
+                        <label className="flex items-center text-sm font-medium text-neutral-dark">Expiry Date <span className="text-accent-danger ml-1">*</span></label>
                         <input 
                           type="date" 
-                          className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium" 
+                          className={`w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light bg-white text-neutral-dark placeholder-neutral-medium hover:border-neutral-medium ${hasAttemptedSubmit && (!rawForm.expiryDate || rawForm.expiryDate.trim() === '') ? 'border-accent-danger' : 'border-neutral-soft'}`}
                           value={rawForm.expiryDate} 
                           onChange={(e)=>setRawForm({...rawForm, expiryDate:e.target.value})} 
+                          data-field="expiryDate"
+                          required
                         />
+                        {(hasAttemptedSubmit && (!rawForm.expiryDate || rawForm.expiryDate.trim() === '')) && (
+                          <p className="text-xs text-accent-danger">Expiry Date is required</p>
+                        )}
                       </div>
                     </div>
                   </div>

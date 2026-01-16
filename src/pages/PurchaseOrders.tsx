@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 import { Plus, X, User, Package, Calendar, FileText, Eye, Pencil, Trash2, MapPin, BadgeCheck, Search, CheckCircle2, Truck, AlertTriangle } from 'lucide-react'
@@ -800,6 +800,8 @@ const PurchaseOrders: React.FC = () => {
   const productSuggestRef = useRef<HTMLDivElement>(null)
   const extraSuggestRef = useRef<HTMLDivElement>(null)
   const lastCopackAutoSourceProductRef = useRef<string>('')
+  const copackWatchedFormulaIdRef = useRef<string | null>(null)
+  const copackWatchedMaterialIdsRef = useRef<Set<string>>(new Set())
 
   const customerRef = useRef<HTMLDivElement>(null)
   const locationRef = useRef<HTMLDivElement>(null)
@@ -983,22 +985,50 @@ const PurchaseOrders: React.FC = () => {
           .eq('po_id', poId)
           .or('bucket.eq.copack_materials,bucket.eq.copack,bucket.eq.client_materials,bucket.eq.copack_client')
         setViewCopackRes(res || [])
-        // 2) Formula by formula_name (match product name)
+        // 2) Resolve formula (prefer products.formula_id via PO product_id)
+        const poProductId = isViewOpen?.product_id ? String(isViewOpen.product_id) : ''
         const productName = String(isViewOpen.product_name || '').trim()
         let formula: any = null
-        if (productName) {
+        let formulaId: string | null = null
+
+        if (poProductId) {
+          try {
+            const { data: prodRow, error: prodErr } = await supabase
+              .from('products')
+              .select(`
+                id,
+                formula_id,
+                formula_name,
+                formulas:formulas!products_formula_id_fkey ( id, formula_name, version )
+              `)
+              .eq('id', poProductId)
+              .maybeSingle()
+
+            if (!prodErr && prodRow) {
+              formulaId = (prodRow as any)?.formula_id ? String((prodRow as any).formula_id) : null
+              formula = (prodRow as any)?.formulas || (formulaId ? { id: formulaId, formula_name: (prodRow as any)?.formula_name || null } : null)
+            }
+          } catch {}
+        }
+
+        if (!formulaId && productName) {
           const { data: f, error: fErr } = await supabase
             .from('formulas')
             .select('id, formula_name, version')
-            .ilike('formula_name', productName)
+            .ilike('formula_name', `%${productName}%`)
             .order('version', { ascending: false })
             .limit(1)
             .maybeSingle()
-          formula = fErr ? null : (f as any)
+          if (!fErr && f) {
+            formula = f as any
+            formulaId = f?.id != null ? String(f.id) : null
+          }
         }
+
         setViewFormula(formula)
+
         // 3) Formula items + inventory material names (explicit FK alias for reliability)
-        if (formula?.id) {
+        if (formulaId) {
           const { data: items } = await supabase
             .from('formula_items')
             .select(`
@@ -1007,7 +1037,7 @@ const PurchaseOrders: React.FC = () => {
               uom,
               inventory_materials:inventory_materials!formula_items_material_id_fkey ( id, product_name )
             `)
-            .eq('formula_id', formula.id)
+            .eq('formula_id', formulaId)
           setViewFormulaItems(items || [])
         }
       } catch {}
@@ -1465,31 +1495,36 @@ const PurchaseOrders: React.FC = () => {
     setForm(prev => ({ ...prev, lines }))
   }, [form.product, form.quantity, extraLines, productsIndex])
 
-  useEffect(() => {
-    const run = async () => {
+  const detectCopackSourcing = useCallback(
+    async (productName: string, opts?: { force?: boolean }) => {
       try {
-        if (!form.is_copack) return
-        const name = String(form.product || '').trim()
+        const name = String(productName || '').trim()
         if (!name || !isKnownProductName(name)) return
-        if (lastCopackAutoSourceProductRef.current === name) return
 
-        // only auto-set when a source hasn't been selected yet
-        const cmr = !!form.client_materials_required
-        const ops = !!form.operation_supplies_materials
-        if (cmr || ops) {
-          lastCopackAutoSourceProductRef.current = name
-          return
+        if (!opts?.force) {
+          // only auto-set when a source hasn't been selected yet
+          const cmr = !!form.client_materials_required
+          const ops = !!form.operation_supplies_materials
+          if (cmr || ops) {
+            lastCopackAutoSourceProductRef.current = name
+            return
+          }
         }
 
-        // Get latest formula by name
-        const { data: formulaRow } = await supabase
-          .from('formulas')
-          .select('id, version')
-          .ilike('formula_name', name)
-          .order('version', { ascending: false })
-          .limit(1)
-          .maybeSingle()
-        const formulaId = formulaRow?.id ? String(formulaRow.id) : null
+        // Resolve formula via selected product id (products.formula_id)
+        const prod = productsIndex[name] || {}
+        const productId = (prod as any)?.id ? String((prod as any).id) : ''
+
+        let formulaId: string | null = null
+        if (productId) {
+          const { data: prodRow, error: prodErr } = await supabase
+            .from('products')
+            .select('id, formula_id')
+            .eq('id', productId)
+            .maybeSingle()
+          if (!prodErr && prodRow?.formula_id) formulaId = String((prodRow as any).formula_id)
+        }
+
         if (!formulaId) {
           lastCopackAutoSourceProductRef.current = name
           setForm((prev: any) => ({
@@ -1497,8 +1532,12 @@ const PurchaseOrders: React.FC = () => {
             client_materials_required: false,
             operation_supplies_materials: true,
           }))
+          copackWatchedFormulaIdRef.current = null
+          copackWatchedMaterialIdsRef.current = new Set()
           return
         }
+
+        copackWatchedFormulaIdRef.current = formulaId
 
         // Inspect formula items material source
         const { data: items } = await supabase
@@ -1507,15 +1546,11 @@ const PurchaseOrders: React.FC = () => {
           .eq('formula_id', formulaId)
 
         const rows = Array.isArray(items) ? items : []
-        if (rows.length === 0) {
-          lastCopackAutoSourceProductRef.current = name
-          setForm((prev: any) => ({
-            ...prev,
-            client_materials_required: false,
-            operation_supplies_materials: true,
-          }))
-          return
-        }
+        copackWatchedMaterialIdsRef.current = new Set(
+          rows
+            .map((r: any) => String((r as any)?.material_id ?? (r as any)?.inventory_materials?.id ?? ''))
+            .filter(Boolean)
+        )
 
         const anyClient = rows.some((r: any) => {
           const mat = (r as any)?.inventory_materials
@@ -1531,9 +1566,55 @@ const PurchaseOrders: React.FC = () => {
       } catch {
         // do nothing; manual selection remains available
       }
+    },
+    [form.client_materials_required, form.operation_supplies_materials, productsIndex]
+  )
+
+  useEffect(() => {
+    const run = async () => {
+      if (!form.is_copack) return
+      const name = String(form.product || '').trim()
+      if (!name || !isKnownProductName(name)) return
+      if (lastCopackAutoSourceProductRef.current === name) return
+      await detectCopackSourcing(name)
     }
     run()
-  }, [form.is_copack, form.product, form.client_materials_required, form.operation_supplies_materials, productsIndex])
+  }, [form.is_copack, form.product, detectCopackSourcing])
+
+  // Realtime: auto-update copack source tag when DB flags change (no refresh required)
+  useEffect(() => {
+    if (!isAddOpen) return
+    if (!form.is_copack) return
+    const name = String(form.product || '').trim()
+    if (!name || !isKnownProductName(name)) return
+
+    const prod = productsIndex[name] || {}
+    const productId = (prod as any)?.id ? String((prod as any).id) : ''
+
+    const rerun = async () => {
+      // always recompute from DB while modal is open
+      lastCopackAutoSourceProductRef.current = ''
+      await detectCopackSourcing(name, { force: true })
+    }
+
+    const channel = supabase
+      .channel(`copack_source_${productId || name}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'products', filter: productId ? `id=eq.${productId}` : undefined as any }, async () => {
+        await rerun()
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'formula_items', filter: copackWatchedFormulaIdRef.current ? `formula_id=eq.${copackWatchedFormulaIdRef.current}` : undefined as any }, async () => {
+        await rerun()
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'inventory_materials' }, async (payload: any) => {
+        const id = String((payload?.new as any)?.id ?? (payload?.old as any)?.id ?? '')
+        if (!id) return
+        if (!copackWatchedMaterialIdsRef.current.has(id)) return
+        await rerun()
+      })
+      .subscribe()
+
+    return () => { try { supabase.removeChannel(channel) } catch {} }
+  }, [isAddOpen, form.is_copack, form.product, productsIndex, detectCopackSourcing])
 
   useEffect(() => {
     if (toast.show) {
@@ -3773,8 +3854,8 @@ const PurchaseOrders: React.FC = () => {
                           if (!n) return null
                           if (!isKnownProductName(n)) return null
                           return (
-                          <span className={`ml-2 inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold border ${form.client_materials_required ? 'bg-indigo-100 text-indigo-700 border-indigo-200' : 'bg-emerald-100 text-emerald-700 border-emerald-200'}`}>
-                            {form.client_materials_required ? 'CLIENT' : 'OPS'}
+                          <span className={`ml-2 inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold border ${form.operation_supplies_materials ? 'bg-emerald-100 text-emerald-700 border-emerald-200' : form.client_materials_required ? 'bg-indigo-100 text-indigo-700 border-indigo-200' : 'bg-neutral-100 text-neutral-700 border-neutral-200'}`}>
+                            {form.operation_supplies_materials ? 'OPS' : form.client_materials_required ? 'CLIENT' : '—'}
                           </span>
                           )
                         })()}
@@ -4377,16 +4458,14 @@ const PurchaseOrders: React.FC = () => {
                         <CopackAllocatedMaterials data={viewCopackRes} />
                       </div>
                     )}
-                    {Array.isArray(viewFormulaItems) && viewFormulaItems.length > 0 && (
-                      <div className="mt-6">
-                        <CopackBOMMaterials
-                          data={viewFormulaItems}
-                          poQty={Number(isViewOpen.quantity || 0)}
-                          formulaName={viewFormula?.formula_name}
-                          opsMode={!!isViewOpen.operation_supplies_materials}
-                        />
-                      </div>
-                    )}
+                    <div className="mt-6">
+                      <CopackBOMMaterials
+                        data={Array.isArray(viewFormulaItems) ? viewFormulaItems : []}
+                        poQty={Number(isViewOpen.quantity || 0)}
+                        formulaName={viewFormula?.formula_name}
+                        opsMode={!!isViewOpen.operation_supplies_materials}
+                      />
+                    </div>
                   </>
                 )}
 

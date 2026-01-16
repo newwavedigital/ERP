@@ -2949,7 +2949,14 @@ const ProductionSchedule: React.FC = () => {
                             </span>
                           </div>
                           <div className="text-xs text-neutral-medium">{po.customer_name || po.customer_company || po.customer || '—'}</div>
-                          <div className="text-sm font-medium text-neutral-dark truncate">{po.product_name || po.product || '—'}</div>
+                          <div className="text-sm font-medium text-neutral-dark truncate flex items-center gap-2">
+                            <span className="truncate">{po.product_name || po.product || '—'}</span>
+                            {!!po.is_copack && (
+                              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold border bg-violet-100 text-violet-700 border-violet-200">
+                                CoPack
+                              </span>
+                            )}
+                          </div>
                           <div className="text-xs text-neutral-medium mt-1">
                             Qty: {Number(po.quantity || 0).toLocaleString()}
                           </div>

@@ -581,11 +581,11 @@ const SupplyChainProcurement: React.FC = () => {
         }
       }
 
-      // Ensure PO stays in Allocated state without transitioning through Approved (avoids auto-batch triggers)
+      // Move PO to Ready to Schedule after successful allocation (batch creation happens later in Production Schedule)
       try {
         const sumStatus = String((finalSummary as any)?.status || '').toLowerCase().trim()
         if (!sumStatus || sumStatus === 'allocated' || sumStatus === 'ok') {
-          await supabase.from('purchase_orders').update({ status: 'allocated' }).eq('id', poId)
+          await supabase.from('purchase_orders').update({ status: 'ready_to_schedule' }).eq('id', poId)
         }
       } catch {}
 

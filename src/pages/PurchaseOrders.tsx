@@ -1867,9 +1867,17 @@ const PurchaseOrders: React.FC = () => {
       // Replace lines for this PO
       await supabase.from('purchase_order_lines').delete().eq('purchase_order_id', po_id)
 
+      const getProductIdFromName = (name: string) => {
+        const key = String(name || '').trim().toLowerCase()
+        if (!key) return null
+        const p = (products || []).find((row: any) => String(row?.name || '').trim().toLowerCase() === key)
+        return p?.id != null ? String(p.id) : null
+      }
+
       let linesPayload = (draft.lines || []).map(l => ({
         purchase_order_id: po_id,
         product_name: resolveSub(l.product_name),
+        product_id: getProductIdFromName(resolveSub(l.product_name)),
         quantity: l.qty,
       }))
 
@@ -1877,7 +1885,7 @@ const PurchaseOrders: React.FC = () => {
       if (draft.is_copack) {
         const baseName = resolveSub(form.product || mainProd?.name || '')
         const qty = Number(form.quantity || 0)
-        linesPayload = [{ purchase_order_id: po_id, product_name: baseName, quantity: qty }]
+        linesPayload = [{ purchase_order_id: po_id, product_name: baseName, product_id: resolved.id ?? mainProd?.id ?? getProductIdFromName(baseName), quantity: qty }]
       }
 
       if (linesPayload.length === 0) throw new Error('PO must have at least one line.')

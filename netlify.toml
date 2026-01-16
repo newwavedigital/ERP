@@ -1,0 +1,7 @@
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+# Optional: ensure Netlify uses a modern Node version compatible with Vite
+[build.environment]
+  NODE_VERSION = "18"

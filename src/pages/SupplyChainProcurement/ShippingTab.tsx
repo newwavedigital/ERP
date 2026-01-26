@@ -9,6 +9,9 @@ interface ShippingTabProps {
   formatStatusLabel: (status?: string | null) => string
   getStatusBadgeClass: (status?: string | null) => string
   canShipWarehouse: boolean
+  canApproveAllocation: boolean
+  approvingId: string | null
+  onApproveAllocation: (poId: string) => void | Promise<void>
   onReadyToShip: (poId: string) => void | Promise<void>
   onPartialShip: (poId: string) => void | Promise<void>
   onShipOrder: (poId: string) => void | Promise<void>
@@ -21,6 +24,9 @@ const ShippingTab: React.FC<ShippingTabProps> = ({
   formatStatusLabel,
   getStatusBadgeClass,
   canShipWarehouse,
+  canApproveAllocation,
+  approvingId,
+  onApproveAllocation,
   onReadyToShip,
   onPartialShip,
   onShipOrder
@@ -116,6 +122,7 @@ const ShippingTab: React.FC<ShippingTabProps> = ({
                 const poNumber = String(po.po_number ?? po.number ?? id.slice(0, 8))
                 const st = String(po.status || '').toLowerCase().trim()
                 const isAllocated = st === 'allocated'
+                const isCompleted = st === 'completed'
                 const isReadyToShip = st === 'ready_to_ship' || st === 'ready to ship'
                 const isPartial = st === 'partial'
                 const isPartiallyShipped = st === 'partially_shipped'
@@ -125,6 +132,8 @@ const ShippingTab: React.FC<ShippingTabProps> = ({
                 const hasPickPackComplete = flags.some((f) => String(f || '').toLowerCase().trim() === 'pick_pack_complete')
                 const readyFlag = (po as any).ready_to_ship === true
                 const canShowShipOrder = isReadyToShip && readyFlag && hasPickPackComplete
+                const needsAllocationApproval = isCompleted || (isReadyToShip && !readyFlag)
+                const showAwaitingPickPack = isReadyToShip && readyFlag && !hasPickPackComplete
                 
                 return (
                   <div
@@ -153,6 +162,16 @@ const ShippingTab: React.FC<ShippingTabProps> = ({
                           Product: {String(po.product_name || '—')} • Qty: {Number(po.quantity || 0)}
                         </div>
                         <div className="flex items-center gap-2 flex-wrap">
+                          {needsAllocationApproval && (
+                            <button
+                              className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold shadow-sm transition-all ${canApproveAllocation ? 'bg-primary-light hover:bg-primary-medium text-white' : 'bg-neutral-light/40 text-neutral-medium cursor-not-allowed'}`}
+                              onClick={() => { if (!canApproveAllocation) return; onApproveAllocation(String(po.id)) }}
+                              disabled={!canApproveAllocation || approvingId === id}
+                              title={canApproveAllocation ? 'Approve allocation (finished goods first)' : 'Only Procurement/Admin can approve'}
+                            >
+                              <Package className="h-3.5 w-3.5" /> {approvingId === id ? 'Approving…' : 'Approve'}
+                            </button>
+                          )}
                           {isAllocated && (
                             <button
                               className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold shadow-sm transition-all ${canShipWarehouse ? 'bg-primary-light hover:bg-primary-medium text-white' : 'bg-neutral-light/40 text-neutral-medium cursor-not-allowed'}`}
@@ -184,12 +203,14 @@ const ShippingTab: React.FC<ShippingTabProps> = ({
                                 <Package className="h-3.5 w-3.5" /> Ship Order
                               </button>
                             ) : (
-                              <span
-                                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-neutral-light/40 text-neutral-medium border border-neutral-soft/50"
-                                title="Awaiting allocation approval / pick-pack completion"
-                              >
-                                <Package className="h-3.5 w-3.5" /> Awaiting Approval
-                              </span>
+                              showAwaitingPickPack ? (
+                                <span
+                                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-neutral-light/40 text-neutral-medium border border-neutral-soft/50"
+                                  title="Awaiting pick-pack completion"
+                                >
+                                  <Package className="h-3.5 w-3.5" /> Awaiting Pick/Pack
+                                </span>
+                              ) : null
                             )
                           )}
                           {(isPartiallyShipped || isShipped) && (

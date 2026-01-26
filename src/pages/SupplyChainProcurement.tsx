@@ -233,6 +233,54 @@ const SupplyChainProcurement: React.FC = () => {
     if (error) throw error
   }
 
+  const approveShippingAllocation = async (poId: string) => {
+    if (!canManageProcurement) return
+    if (!poId) return
+    setApprovingId(poId)
+    try {
+      setError(null)
+      let isCopack = false
+      let currentStatus = ''
+      try {
+        const { data: poRow, error: poErr } = await supabase
+          .from('purchase_orders')
+          .select('is_copack, status')
+          .eq('id', poId)
+          .maybeSingle()
+        if (poErr) throw poErr
+        isCopack = !!(poRow as any)?.is_copack
+        currentStatus = String((poRow as any)?.status || '')
+      } catch {}
+
+      const rpcName = isCopack ? 'allocate_copack_po_finished_first' : 'allocate_brand_po_finished_first'
+      const res = await runRpc(rpcName, poId)
+      if (res.status === 'error') {
+        const msg = String(res.message || '')
+        const isOneTime = msg.toLowerCase().includes('allocator is one-time only') || msg.toLowerCase().includes('allocator is one time only')
+          || msg.toLowerCase().includes('already fg-allocated') || msg.toLowerCase().includes('already fg allocated')
+        if (!isOneTime) {
+          setError(res.message || 'Allocation failed')
+          return
+        }
+      }
+
+      try {
+        const st = String(currentStatus || '').toLowerCase().trim()
+        const shouldMoveToAllocated = st === 'completed' || st === 'ready_to_ship' || st === 'ready to ship'
+        if (shouldMoveToAllocated) {
+          await supabase.from('purchase_orders').update({ status: 'allocated' }).eq('id', poId)
+        }
+      } catch {}
+
+      await loadShippingOrders()
+      await load()
+    } catch (e: any) {
+      setError(e?.message || 'Failed to approve allocation')
+    } finally {
+      setApprovingId(null)
+    }
+  }
+
   const handleShippingAction = async (action: 'ready_to_ship' | 'ship' | 'partial_ship', poId: string) => {
     try {
       setError(null)
@@ -1020,6 +1068,9 @@ const SupplyChainProcurement: React.FC = () => {
             formatStatusLabel={formatStatusLabel}
             getStatusBadgeClass={getStatusBadgeClass}
             canShipWarehouse={canShipWarehouse}
+            canApproveAllocation={canManageProcurement}
+            approvingId={approvingId}
+            onApproveAllocation={(poId: string) => approveShippingAllocation(poId)}
             onReadyToShip={(poId: string) => handleShippingAction('ready_to_ship', poId)}
             onPartialShip={(poId: string) => handleShippingAction('partial_ship', poId)}
             onShipOrder={(poId: string) => handleShippingAction('ship', poId)}

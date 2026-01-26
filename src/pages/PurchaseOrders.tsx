@@ -492,13 +492,74 @@ const PurchaseOrders: React.FC = () => {
 
   const handleApproveCompletedPo = async (poId: string) => {
     try {
-      const res = await runRpc('allocate_brand_po_finished_first', poId)
+      let isCopack = false
+      let currentStatus = ''
+      try {
+        const { data: poRow } = await supabase
+          .from('purchase_orders')
+          .select('is_copack, status')
+          .eq('id', poId)
+          .maybeSingle()
+        isCopack = !!(poRow as any)?.is_copack
+        currentStatus = String((poRow as any)?.status || '')
+      } catch {}
+
+      const rpcName = isCopack ? 'allocate_copack_po_finished_first' : 'allocate_brand_po_finished_first'
+      const res = await runRpc(rpcName, poId)
       if (res.status === 'error') {
+        const msg = String(res.message || '')
+        const isOneTime = msg.toLowerCase().includes('allocator is one-time only') || msg.toLowerCase().includes('allocator is one time only')
+          || msg.toLowerCase().includes('already fg-allocated') || msg.toLowerCase().includes('already fg allocated')
+        if (isOneTime) {
+          try {
+            const st = String(currentStatus || '').toLowerCase().trim()
+            const shouldMoveToAllocated = st === 'completed' || st === 'ready_to_ship' || st === 'ready to ship'
+            if (shouldMoveToAllocated) {
+              await supabase.from('purchase_orders').update({ status: 'allocated' }).eq('id', poId)
+            }
+          } catch {}
+          setToast({ show: true, message: 'Already allocated. No changes were needed.', kind: 'success' })
+          await refreshPOs()
+          return
+        }
         setToast({ show: true, message: res.message || 'Allocation failed', kind: 'error' })
         return
       }
+
+      try {
+        const st = String(currentStatus || '').toLowerCase().trim()
+        const shouldMoveToAllocated = st === 'completed' || st === 'ready_to_ship' || st === 'ready to ship'
+        if (shouldMoveToAllocated) {
+          await supabase.from('purchase_orders').update({ status: 'allocated' }).eq('id', poId)
+        }
+      } catch {}
+
       setToast({ show: true, message: 'Approved: allocation updated (finished goods first).', kind: 'success' })
       await refreshPOs()
+
+      // Load purchase_order_lines for this PO (for UI display)
+      try {
+        const { data: pol } = await supabase
+          .from('purchase_order_lines')
+          .select('product_name, quantity, allocated_qty, shortfall_qty, status')
+          .eq('purchase_order_id', poId)
+          .order('created_at', { ascending: true })
+        const rows = Array.isArray(pol) ? pol.map((r: any) => ({
+          product_name: String(r.product_name || ''),
+          quantity: Number(r.quantity || 0),
+          allocated_qty: Number(r.allocated_qty || 0),
+          shortfall_qty: Number(r.shortfall_qty || 0),
+          status: String(r.status || ''),
+        })) : []
+        setAllocLines(rows)
+      } catch {
+        setAllocLines([])
+      }
+
+      setAllocContext({ is_copack: false, operation_supplies_materials: false })
+      setAllocSummary(res.data || null)
+      setLastApprovedId(poId)
+      setIsAllocOpen(true)
     } catch (e: any) {
       setToast({ show: true, message: e?.message || 'Allocation failed', kind: 'error' })
     }
@@ -1518,51 +1579,6 @@ const PurchaseOrders: React.FC = () => {
     return idx
   }, [products])
 
-  // RPC response typing (subset)
-  type AllocationSummary = { status?: string; total_shortfall?: number; lines?: any[] }
-  // Normalize various allocation RPC payloads to CopackAllocationSummary shape
-  const normalizeCopackSummary = (raw: any, poId: string) => {
-    let src = Array.isArray(raw?.lines)
-      ? raw.lines
-      : Array.isArray(raw?.lines_materials)
-        ? raw.lines_materials
-        : []
-    // Fallback: scan any array-valued fields for material-like rows
-    if (src.length === 0 && raw && typeof raw === 'object') {
-      const arrays = Object.values(raw).filter(Array.isArray) as any[]
-      const candidates = arrays.flat().filter((r: any) => r && (r.material_name || r.material || r.name))
-      if (candidates.length) src = candidates
-    }
-    const lines = src.map((ln: any) => {
-      const required = Number(ln.required_qty ?? ln.required ?? ln.required_total ?? 0)
-      const allocated = Number(ln.allocated_qty ?? ln.allocated ?? 0)
-      const shortfall = Number(ln.shortfall_qty ?? ln.shortfall ?? Math.max(0, required - allocated))
-      const isClient = !!(ln.is_client_material ?? ln.is_client ?? (typeof ln.client_inventory !== 'undefined'))
-      return {
-        po_line_id: String(ln.po_line_id ?? ln.line_id ?? ''),
-        product: String(ln.product ?? ln.product_name ?? ''),
-        material_id: String(ln.material_id ?? ln.id ?? ''),
-        material_name: String(ln.material_name ?? ln.material ?? ln.name ?? '-'),
-        required_qty: required,
-        allocated_qty: allocated,
-        shortfall_qty: shortfall,
-        is_client_material: isClient,
-      }
-    })
-    const total_required = lines.reduce((s: number, l: any) => s + Number(l.required_qty || 0), 0)
-    const total_allocated = lines.reduce((s: number, l: any) => s + Number(l.allocated_qty || 0), 0)
-    const total_shortfall = lines.reduce((s: number, l: any) => s + Number(l.shortfall_qty || 0), 0)
-    const status = String(raw?.status || (total_shortfall > 0 ? 'backordered' : 'allocated')).toLowerCase()
-    return {
-      po_id: String(raw?.po_id || poId),
-      status,
-      total_required,
-      total_allocated,
-      total_shortfall,
-      lines,
-    }
-  }
-
   // When allocation summary opens with backordered status, detect full shortfall and absence of finished_goods
   useEffect(() => {
     const check = async () => {
@@ -2376,6 +2392,12 @@ const PurchaseOrders: React.FC = () => {
       if (fetchErr) throw fetchErr
       const poRec: any = poRow || po
 
+      // Copack allocation is handled in SupplyChainProcurement. In this screen, Copack "Approve" is FG allocation only.
+      if (!!poRec.is_copack) {
+        setToast({ show: true, message: 'Co-Pack materials allocation is handled in Supply Chain & Procurement. Use the Approve button here only for Finished Goods allocation after production.', kind: 'warning' })
+        return
+      }
+
       // 1) Mark as approved (idempotent)
       await supabase.from('purchase_orders').update({ status: 'approved' }).eq('id', poId)
 
@@ -2386,103 +2408,6 @@ const PurchaseOrders: React.FC = () => {
         const { data: beforeB } = await supabase.from('production_batches').select('id').eq('source_po_id', poId)
         dbg._before_batches = (beforeB || []).map((r:any)=>String(r.id))
       } catch {}
-
-   if (!!poRec.is_copack) {
-  // COPACK MODE — call the new unified RPC
-  const seq = [
-    'fn_copack_material_check',
-    'allocate_copack_po_operations',        // ✅ NEW main allocator
-  ]
-
-  let finalSummary: any = null
-
-  for (const name of seq) {
-    const res = await runRpc(name, poId)
-
-    if (res.status === 'error') {
-      setToast({ show: true, message: res.message || 'RPC Error', kind: 'error' })
-      break
-    }
-
-    if (DEBUG_PO)
-      dbg.sql_notices.push(`${name}: ${res.status}${res.message ? ` – ${res.message}` : ''}`)
-
-    // capture allocator output
-    if (name === 'allocate_copack_po_operations' && res.data) {
-      finalSummary = res.data
-      if (DEBUG_PO) dbg.allocator_executed = name
-    }
-  }
-
-  if (DEBUG_PO) dbg.trigger_fired = 'trg_copack_po_on_approve'
-
-  // ─── Bundle/KIT packaging rule: block batch creation when shortfall exists ───
-  try {
-    const sum = (finalSummary || {}) as AllocationSummary
-    const isBundle = ['kit', 'bundle'].includes(String(poRec?.packaging_type || '').toLowerCase())
-    const notAllocated = String(sum.status || '').toLowerCase() !== 'allocated'
-    const hasShort = Number(sum.total_shortfall || 0) > 0
-    if (isBundle && (notAllocated || hasShort)) {
-      setIsBundleBlocked(true)
-      const missing = Array.isArray(sum.lines) ? sum.lines.filter((l:any)=> Number(l.shortfall_qty||0) > 0) : []
-      setBundleBlockInfo({
-        title: 'Bundle Packaging Requires Full Materials',
-        message: 'This product is a KIT/BUNDLE. All components must be fully available before a Production Order can start.',
-        missing: missing.map((m:any)=>({ material: m.material_name || m.product_name, product_name: m.product_name, shortfall_qty: m.shortfall_qty }))
-      })
-      if (DEBUG_PO) { dbg.bundle_blocked = true; dbg.bundle_missing = Number(sum.total_shortfall || 0) }
-      // STOP approval flow
-      if (DEBUG_PO) setDebugMap(prev => ({ ...prev, [poId]: dbg }))
-      return
-    }
-  } catch {}
-
-  // refresh PO list
-  const { data: poRows } = await supabase
-    .from('purchase_orders')
-    .select('*, risk_flag')
-    .order('created_at', { ascending: false })
-
-  setOrders(poRows ?? [])
-
-  // summary modal
-  setAllocContext({
-    is_copack: true,
-    operation_supplies_materials: !!poRec.operation_supplies_materials
-  })
-
-  const normalized = normalizeCopackSummary(finalSummary || {}, poId)
-  setCopackSummary(normalized)
-  setLastApprovedId(poId)
-
-  // detect new batches
-  try {
-    const { data: afterB } = await supabase
-      .from('production_batches')
-      .select('id')
-      .eq('source_po_id', poId)
-
-    const after = (afterB || []).map((r: any) => String(r.id))
-    const before = Array.isArray(dbg._before_batches) ? dbg._before_batches : []
-    const newOnes = after.filter((id: string) => !before.includes(id))
-
-    if (DEBUG_PO) {
-      dbg.batch_created = newOnes.length > 0
-      dbg.batch_ids = newOnes
-    }
-  } catch {}
-
-  if (DEBUG_PO) setDebugMap(prev => ({ ...prev, [poId]: dbg }))
-
-  setToast({
-    show: true,
-    message: `Allocation result: ${String(finalSummary?.status || 'done')}`,
-    kind: finalSummary?.status === 'allocated' ? 'success' : 'warning'
-  })
-
-  return
-}
-
 
       // BRAND MODE — call the single allocation RPC (finished-first)
       const brandSeq = [
@@ -3791,7 +3716,7 @@ const PurchaseOrders: React.FC = () => {
                         )}
                       </div>
 
-                      <div className="mt-3 flex items-center justify-start">
+                      <div className="mt-3 flex items-center justify-between gap-3">
                         <button
                           type="button"
                           className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-semibold border shadow-sm bg-white border-neutral-soft text-neutral-dark hover:border-primary-medium hover:text-primary-medium"
@@ -3803,41 +3728,68 @@ const PurchaseOrders: React.FC = () => {
                           <FileText className="h-4 w-4" />
                           Notes & Files
                         </button>
+
+                        {o.is_copack && (() => {
+                          const st = String(o.status || '').toLowerCase().trim()
+                          const isCompleted = st === 'completed' || st === 'ready_to_ship' || st === 'ready to ship'
+                          if (!isCompleted) return null
+
+                          return (
+                            <button
+                              type="button"
+                              className="inline-flex items-center px-3.5 py-2 rounded-lg text-xs font-semibold border shadow-sm bg-white border-neutral-soft text-neutral-dark hover:border-primary-medium hover:text-primary-medium"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                handleApproveCompletedPo(String(o.id))
+                              }}
+                              title="Approve (allocate finished goods first)"
+                            >
+                              Approve
+                            </button>
+                          )
+                        })()}
                       </div>
 
                       {(nfText || (nfFiles && nfFiles.length > 0)) && (
-                        <div className="mt-3 rounded-lg border border-neutral-soft/60 bg-white p-3">
-                          {nfText && (
-                            <div className="text-xs text-neutral-dark">
-                              <span className="font-semibold">Notes:</span>{' '}
-                              <span className="text-neutral-medium">{nfText.length > 140 ? `${nfText.slice(0, 140)}…` : nfText}</span>
-                            </div>
-                          )}
-                          {nfFiles && nfFiles.length > 0 && (
-                            <div className="mt-2">
-                              <div className="text-xs text-neutral-dark">
-                                <span className="font-semibold">Files:</span>{' '}
-                                <span className="text-neutral-medium">{nfFiles.length}</span>
-                              </div>
-                              <div className="mt-2 flex flex-wrap gap-2">
-                                {nfFiles.slice(0, 3).map((url: string, idx: number) => (
-                                  <button
-                                    key={`po-nf-${o.id}-${idx}`}
-                                    type="button"
-                                    className="inline-flex items-center gap-2 px-2.5 py-1 rounded-md text-[11px] border border-neutral-soft bg-neutral-light/30 text-neutral-dark hover:border-primary-medium"
-                                    onClick={(e) => { e.stopPropagation(); window.open(url, '_blank') }}
-                                    title={prettyFileName(url)}
-                                  >
-                                    <span className="truncate max-w-[180px]">{prettyFileName(url)}</span>
-                                    <span className="text-primary-medium">View</span>
-                                  </button>
-                                ))}
-                                {nfFiles.length > 3 && (
-                                  <span className="text-[11px] text-neutral-medium self-center">+{nfFiles.length - 3} more</span>
-                                )}
+                        <div className="mt-3 rounded-xl border border-neutral-soft/60 bg-gradient-to-br from-white to-neutral-light/20 p-4">
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div className="rounded-lg border border-neutral-soft/50 bg-white p-3">
+                              <div className="text-[11px] font-semibold uppercase tracking-wide text-neutral-medium">Notes</div>
+                              <div className="mt-1 text-sm text-neutral-dark leading-snug whitespace-pre-wrap">
+                                {nfText ? (nfText.length > 140 ? `${nfText.slice(0, 140)}…` : nfText) : <span className="text-neutral-medium">—</span>}
                               </div>
                             </div>
-                          )}
+
+                            <div className="rounded-lg border border-neutral-soft/50 bg-white p-3">
+                              <div className="flex items-center justify-between">
+                                <div className="text-[11px] font-semibold uppercase tracking-wide text-neutral-medium">Files</div>
+                                <div className="text-[11px] text-neutral-medium">{nfFiles?.length || 0}</div>
+                              </div>
+
+                              {nfFiles && nfFiles.length > 0 ? (
+                                <div className="mt-2 flex flex-wrap gap-2">
+                                  {nfFiles.slice(0, 3).map((url: string, idx: number) => (
+                                    <button
+                                      key={`po-nf-${o.id}-${idx}`}
+                                      type="button"
+                                      className="inline-flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-[11px] border border-neutral-soft bg-neutral-light/30 text-neutral-dark hover:border-primary-medium hover:bg-primary-light/10"
+                                      onClick={(e) => { e.stopPropagation(); window.open(url, '_blank') }}
+                                      title={prettyFileName(url)}
+                                    >
+                                      <FileText className="h-3.5 w-3.5 text-primary-medium" />
+                                      <span className="truncate max-w-[180px]">{prettyFileName(url)}</span>
+                                      <span className="ml-1 text-primary-medium font-semibold">View</span>
+                                    </button>
+                                  ))}
+                                  {nfFiles.length > 3 && (
+                                    <span className="text-[11px] text-neutral-medium self-center">+{nfFiles.length - 3} more</span>
+                                  )}
+                                </div>
+                              ) : (
+                                <div className="mt-2 text-sm text-neutral-medium">—</div>
+                              )}
+                            </div>
+                          </div>
                         </div>
                       )}
 
@@ -3871,16 +3823,11 @@ const PurchaseOrders: React.FC = () => {
                       <div className="mt-6 pt-4 border-t border-neutral-soft/60 flex items-center justify-end">
                         <div className="flex items-center gap-8">
                           <div className="flex items-center gap-2">
-                            {!o.is_copack && (o.status === "Shipped" || String(o.status).toLowerCase() === 'submitted') && (
-                              <button
-                                className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-semibold bg-accent-success hover:bg-accent-success/90 text-white shadow-sm transition-all"
-                                onClick={() => { setOpenMenuId(null); setAsnPoStatus('shipped'); viewASN(o.id) }}
-                              >
-                                <Eye className="h-4 w-4" />
-                                View ASN
-                              </button>
-                            )}
-                            {!o.is_copack && String(o.status || '').toLowerCase() === 'completed' && (
+                            {!o.is_copack && (() => {
+                              const st = String(o.status || '').toLowerCase().trim()
+                              const isCompleted = st === 'completed' || st === 'ready_to_ship' || st === 'ready to ship'
+                              if (!isCompleted) return null
+                              return (
                               <button
                                 className="inline-flex items-center px-3.5 py-2 rounded-lg text-xs font-semibold border shadow-sm bg-white border-neutral-soft text-neutral-dark hover:border-primary-medium hover:text-primary-medium"
                                 onClick={() => { setOpenMenuId(null); handleApproveCompletedPo(String(o.id)) }}
@@ -3888,8 +3835,9 @@ const PurchaseOrders: React.FC = () => {
                               >
                                 Approve
                               </button>
-                            )}
-                            {(o.status === "Open" || !o.status) && (() => {
+                              )
+                            })()}
+                            {!o.is_copack && (o.status === "Open" || !o.status) && (() => {
                               const hasConflict = hasPlannerConflict(o)
                               const isDisabled = !!fefoWarning || hasConflict
                               const disabledReason = fefoWarning ? 'FEFO warning active' : hasConflict ? 'Cannot auto-allocate. Escalation to Planner is required.' : ''
@@ -3947,15 +3895,20 @@ const PurchaseOrders: React.FC = () => {
                                 </div>
                               )
                             })()}
-                            {!o.is_copack && String(o.status) === 'partially_shipped' && (
+                            {(o.status === "Shipped" || String(o.status).toLowerCase().trim() === 'submitted' || String(o.status).toLowerCase().trim() === 'shipped' || String(o.status) === 'partially_shipped') && (
                               <button
-                                className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-semibold bg-accent-warning hover:bg-accent-warning/90 text-white shadow-sm transition-all"
-                                onClick={() => { setOpenMenuId(null); setAsnPoStatus('partially_shipped'); viewASN(o.id) }}
+                                className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-semibold bg-accent-success hover:bg-accent-success/90 text-white shadow-sm transition-all"
+                                onClick={() => {
+                                  setOpenMenuId(null)
+                                  setAsnPoStatus(String(o.status) === 'partially_shipped' ? 'partially_shipped' : 'shipped')
+                                  viewASN(o.id)
+                                }}
                               >
-                                <Eye className="h-4 w-4" /> View ASN
+                                <Eye className="h-4 w-4" />
+                                View ASN
                               </button>
                             )}
-                            {!o.is_copack && String(o.status) === 'partially_shipped' && (
+                            {(o.status === "Shipped" || String(o.status).toLowerCase().trim() === 'submitted' || String(o.status).toLowerCase().trim() === 'shipped' || String(o.status) === 'partially_shipped') && (
                               // Show Ship Remaining only if there's remaining quantity to ship
                               (shippedSum === null ? Number(o.backorder_qty ?? 0) > 0 : shippedSum < orderedQty)
                             ) && (
@@ -3967,12 +3920,10 @@ const PurchaseOrders: React.FC = () => {
                                 Ship Remaining
                               </button>
                             )}
-                            {!o.is_copack && String(o.status) === 'partially_shipped' && (
+                            {(o.status === "Shipped" || String(o.status).toLowerCase().trim() === 'submitted' || String(o.status).toLowerCase().trim() === 'shipped' || String(o.status) === 'partially_shipped') && (
                               shippedSum !== null ? shippedSum >= orderedQty : Number(o.backorder_qty ?? 0) === 0
                             ) && (
-                              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-medium bg-accent-success/10 text-accent-success border border-accent-success/20">
-                                <CheckCircle2 className="h-3.5 w-3.5" /> Completed
-                              </span>
+                              null
                             )}
                             {!o.is_copack && (() => {
                               const hasConflict = hasPlannerConflict(o)

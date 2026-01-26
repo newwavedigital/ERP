@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
-import { Plus, X, User, Package, Calendar, FileText, Eye, Pencil, Trash2, MapPin, BadgeCheck, Search, CheckCircle2, Truck, AlertTriangle } from 'lucide-react'
+import { Plus, X, User, Package, Calendar, FileText, Eye, Pencil, Trash2, MapPin, BadgeCheck, Search, CheckCircle2, Truck, AlertTriangle, Upload } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 import { Status } from '../domain/enums'
 import { validatePODraft } from '../rules/po.rules'
@@ -760,6 +760,35 @@ const PurchaseOrders: React.FC = () => {
   // Bundle/KIT packaging rule state
   const [isBundleBlocked, setIsBundleBlocked] = useState(false)
   const [bundleBlockInfo, setBundleBlockInfo] = useState<{ title: string; message: string; missing: Array<{ material?: string; product_name?: string; shortfall_qty?: number }> } | null>(null)
+  const parseUrlArray = (v: any): string[] => {
+    try {
+      if (!v) return []
+      if (Array.isArray(v)) return v.filter(Boolean).map(String)
+      if (typeof v === 'string') {
+        const parsed = JSON.parse(v)
+        if (Array.isArray(parsed)) return parsed.filter(Boolean).map(String)
+      }
+      return []
+    } catch {
+      return []
+    }
+  }
+
+  const prettyFileName = (url: string) => {
+    try {
+      const u = String(url || '')
+      const q = u.split('?')[0]
+      const parts = q.split('/')
+      return decodeURIComponent(parts[parts.length - 1] || u)
+    } catch {
+      return String(url || '')
+    }
+  }
+
+  const [poDocFiles, setPoDocFiles] = useState<File[]>([])
+  const [poDocDragOver, setPoDocDragOver] = useState(false)
+  const poDocInputRef = useRef<HTMLInputElement>(null)
+
   const [form, setForm] = useState({
     date: '',
     customer: '',
@@ -780,13 +809,9 @@ const PurchaseOrders: React.FC = () => {
     client_materials_required: false,
     operation_supplies_materials: false,
     deposit_paid: false,
+    po_file_urls: [] as string[],
     lines: [] as Array<{ sku?: string; product_name: string; qty: number; is_discontinued?: boolean; substitute_sku?: string | null }>
   })
-
-  const getTodayStr = () => {
-    const d = new Date()
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-  }
 
   const fetchProductionLines = async () => {
     const { data } = await supabase.from('production_lines').select('id, line_name').order('line_name', { ascending: true })
@@ -1748,8 +1773,10 @@ const PurchaseOrders: React.FC = () => {
       client_materials_required: false,
       operation_supplies_materials: false,
       deposit_paid: false,
+      po_file_urls: [],
       lines: []
     })
+    setPoDocFiles([])
   }
 
   const saveOrder = async () => {
@@ -1944,6 +1971,42 @@ const PurchaseOrders: React.FC = () => {
         if (headErr) throw headErr
         po_id = String(poHead.id)
       }
+
+      try {
+        const bucket = 'ERP_storage'
+        const existingUrls = Array.isArray(form.po_file_urls) ? form.po_file_urls : []
+        let uploadedUrls: string[] = []
+        if (poDocFiles.length) {
+          const uploads = await Promise.all(
+            poDocFiles.map(async (file) => {
+              const safeName = `${Date.now()}-${file.name}`.replace(/[^a-zA-Z0-9._-]/g, '-')
+              const path = `po_docs/${po_id}/${safeName}`
+              const { error: upErr } = await supabase.storage.from(bucket).upload(path, file, {
+                upsert: true,
+                contentType: file.type || 'application/octet-stream',
+              })
+              if (upErr) return null
+              const { data: pub } = supabase.storage.from(bucket).getPublicUrl(path)
+              let url = pub?.publicUrl || ''
+              if (!url) {
+                const { data: signed } = await supabase.storage.from(bucket).createSignedUrl(path, 60 * 60 * 24 * 365)
+                url = signed?.signedUrl || ''
+              }
+              return url || null
+            })
+          )
+          uploadedUrls = uploads.filter((u): u is string => !!u)
+        }
+        const merged = [...existingUrls, ...uploadedUrls]
+        await supabase
+          .from('purchase_orders')
+          .update({ po_file_url: merged.length ? JSON.stringify(merged) : null })
+          .eq('id', po_id)
+        if (uploadedUrls.length) {
+          setForm((prev) => ({ ...prev, po_file_urls: merged }))
+          setPoDocFiles([])
+        }
+      } catch {}
 
       // Replace lines for this PO
       await supabase.from('purchase_order_lines').delete().eq('purchase_order_id', po_id)
@@ -2885,11 +2948,13 @@ const PurchaseOrders: React.FC = () => {
                             additionalPackaging: currentOrder.additional_packaging || '',
                             location: currentOrder.location || '',
                             comments: currentOrder.notes || '',
+                            po_file_urls: parseUrlArray(currentOrder.po_file_url),
                             is_copack: Boolean(currentOrder.is_copack),
                             po_number: currentOrder.po_number || '',
                             status: currentOrder.status || 'Draft',
                             deposit_paid: !!currentOrder.deposit_paid,
                           }));
+                          setPoDocFiles([])
                           // Load additional items from purchase_order_items
                           try {
                             const { data: items } = await supabase
@@ -3738,7 +3803,7 @@ const PurchaseOrders: React.FC = () => {
             <div className="relative z-10 w-full max-w-3xl h-[80vh] bg-white rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden flex flex-col">
               <div className="flex items-center justify-between px-8 py-6 bg-gradient-to-r from-neutral-light to-neutral-light/80 border-b border-neutral-soft/50">
                 <div>
-                  <h2 className="text-2xl font-semibold text-neutral-dark">{isEditOpen ? 'Update Purchase Order' : (form.is_copack ? 'Allocate Copack Materials (Raw + Packaging)' : 'Add Brand Purchase Order')}</h2>
+                  <h2 className="text-2xl font-semibold text-neutral-dark">{isEditOpen ? 'Update Purchase Order' : (form.is_copack ? 'Add Co-Pack Purchase Order' : 'Add Brand Purchase Order')}</h2>
                 </div>
                 <button onClick={() => { setIsAddOpen(false); setIsEditOpen(null); setExtraLines([]); }} className="p-3 text-neutral-medium hover:text-neutral-dark hover:bg-white/60 rounded-xl transition-all duration-200 hover:shadow-sm">
                   <X className="h-6 w-6" />
@@ -3775,12 +3840,9 @@ const PurchaseOrders: React.FC = () => {
                         type="date"
                         className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light"
                         value={form.date}
-                        min={getTodayStr()}
-                        max={getTodayStr()}
                         onChange={(e) => {
-                          const today = getTodayStr()
                           const next = e.target.value
-                          setForm({ ...form, date: next === today ? next : today })
+                          setForm({ ...form, date: next })
                         }}
                       />
                     </div>
@@ -3793,12 +3855,9 @@ const PurchaseOrders: React.FC = () => {
                         type="date"
                         className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light"
                         value={form.requestedShipDate}
-                        min={getTodayStr()}
                         onChange={(e) => {
-                          const today = getTodayStr()
                           const next = e.target.value
-                          const clamped = next && next < today ? today : next
-                          setForm({ ...form, requestedShipDate: clamped, ship_date: clamped })
+                          setForm({ ...form, requestedShipDate: next, ship_date: next })
                         }}
                       />
                     </div>
@@ -3992,9 +4051,9 @@ const PurchaseOrders: React.FC = () => {
 
                   {/* Additional Packaging field - after Products section */}
                   <div className="space-y-2">
-                    <label className="flex items-center text-sm font-medium text-neutral-dark">Additional Packaging</label>
+                    <label className="flex items-center text-sm font-medium text-neutral-dark">Notes</label>
                     <textarea
-                      placeholder="Additional packaging requirements or notes..."
+                      placeholder="Notes..."
                       className="w-full min-h-[80px] px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light resize-none"
                       value={form.additionalPackaging}
                       onChange={(e)=>setForm({...form, additionalPackaging: e.target.value})}
@@ -4166,8 +4225,91 @@ const PurchaseOrders: React.FC = () => {
                     </button>
                   </div>
 
+                  <div className="space-y-3">
+                    <label className="flex items-center text-sm font-medium text-neutral-dark">
+                      <Upload className="h-5 w-5 mr-3 text-primary-medium" />
+                      Attachments
+                    </label>
+                    <div
+                      className={`relative border-2 border-dashed rounded-xl p-4 transition-all duration-300 cursor-pointer ${poDocDragOver ? 'border-primary-light bg-primary-light/10' : 'border-neutral-soft bg-gradient-to-br from-neutral-light/20 to-white hover:from-primary-light/10 hover:to-primary-medium/5'}`}
+                      onDragOver={(e) => { e.preventDefault(); setPoDocDragOver(true) }}
+                      onDragLeave={() => setPoDocDragOver(false)}
+                      onDrop={(e) => {
+                        e.preventDefault()
+                        setPoDocDragOver(false)
+                        const files = Array.from(e.dataTransfer.files || [])
+                        if (files.length) setPoDocFiles((prev) => [...prev, ...files])
+                      }}
+                      onClick={() => poDocInputRef.current?.click()}
+                    >
+                      <div className="flex items-center justify-between mb-2">
+                        <p className="text-sm text-neutral-medium">PDF, DOCX, XLSX, PPTX, TXT</p>
+                        <button type="button" onClick={() => poDocInputRef.current?.click()} className="px-4 py-2 rounded-lg bg-primary-dark hover:bg-primary-medium text-white text-sm font-medium shadow-sm">Browse File</button>
+                      </div>
 
+                      {(Array.isArray(form.po_file_urls) && form.po_file_urls.length > 0) && (
+                        <div className="space-y-2 mb-3">
+                          {form.po_file_urls.map((url, idx) => (
+                            <div key={`po-exist-${idx}`} className="flex items-center justify-between bg-white border border-neutral-soft rounded-lg px-4 py-3">
+                              <span className="text-sm text-neutral-dark truncate">{prettyFileName(url)}</span>
+                              <div className="flex items-center gap-2">
+                                <button type="button" className="px-2 py-1 text-xs rounded-md bg-white/90 hover:bg-white border border-neutral-soft shadow-sm" onClick={(e) => { e.stopPropagation(); window.open(url, '_blank') }}>View</button>
+                                <button
+                                  type="button"
+                                  className="px-2 py-1 text-xs rounded-md bg-white/90 hover:bg-white border border-neutral-soft shadow-sm"
+                                  onClick={async (e) => {
+                                    e.stopPropagation()
+                                    try {
+                                      const next = form.po_file_urls.filter((_, i) => i !== idx)
+                                      setForm((prev) => ({ ...prev, po_file_urls: next }))
+                                      if (isEditOpen?.id) {
+                                        try {
+                                          await supabase.from('purchase_orders').update({ po_file_url: next.length ? JSON.stringify(next) : null }).eq('id', isEditOpen.id)
+                                        } catch {}
+                                      }
+                                      try {
+                                        const marker = '/storage/v1/object/public/ERP_storage/'
+                                        const at = String(url || '').indexOf(marker)
+                                        if (at >= 0) {
+                                          const key = String(url || '').substring(at + marker.length)
+                                          if (key) await supabase.storage.from('ERP_storage').remove([key])
+                                        }
+                                      } catch {}
+                                    } catch {}
+                                  }}
+                                >
+                                  Delete
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
 
+                      {(poDocFiles.length > 0) && (
+                        <div className="space-y-2 mb-3">
+                          {poDocFiles.map((f, idx) => (
+                            <div key={`po-new-${idx}`} className="flex items-center justify-between bg-white border border-neutral-soft rounded-lg px-4 py-3">
+                              <span className="text-sm text-neutral-dark truncate">{f.name}</span>
+                              <button type="button" className="px-2 py-1 text-xs rounded-md bg-white/90 hover:bg-white border border-neutral-soft shadow-sm" onClick={(e) => { e.stopPropagation(); setPoDocFiles((prev) => prev.filter((_, i) => i !== idx)) }}>Remove</button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {((!form.po_file_urls || form.po_file_urls.length === 0) && poDocFiles.length === 0) && (
+                        <div className="text-center py-4">
+                          <div className="mx-auto w-10 h-10 bg-primary-light/20 rounded-full flex items-center justify-center mb-2">
+                            <Upload className="h-5 w-5 text-primary-medium" />
+                          </div>
+                          <p className="text-sm text-neutral-dark font-semibold">Drag & drop file here, or click to upload</p>
+                          <p className="text-xs text-neutral-medium">Files will save when you click Create/Save</p>
+                        </div>
+                      )}
+
+                      <input ref={poDocInputRef} type="file" multiple onChange={(e)=> setPoDocFiles(Array.from(e.target.files || []))} accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,image/*" className="hidden" />
+                    </div>
+                  </div>
 
                   <div className="flex items-center justify-end gap-3 pt-2">
                     <button type="submit" className="px-5 py-2.5 rounded-lg bg-primary-dark hover:bg-primary-medium text-white font-semibold shadow-sm">

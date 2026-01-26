@@ -79,6 +79,7 @@ type ScheduleItem = {
   qty: number;
   completedQty: number;
   room: string;
+  assignedLine?: string | null;
   startDate: string;
   status: string;
   lot?: string | null;
@@ -100,6 +101,8 @@ type ScheduleItem = {
 // ─────────────────────────────────────────────────────────────
 const statusList = ["Scheduled", "In Progress", "Production Complete", "Completed", "Quality Hold", "Ready to Ship", "Shipped", "COA Failed", "Delayed"];
 const yesNo = ["No", "Yes"];
+
+const fixedRooms = ["Main Room", "Bnutty Room", "Dilly's Room"];
 
 const statusChip = (status: string) => {
   switch (status) {
@@ -194,6 +197,11 @@ const ProductionSchedule: React.FC = () => {
       .filter(Boolean)
   }, [productionLines])
 
+  const hasAvailableLineRooms = useMemo(() => {
+    const taken = new Set((productionLineNames || []).map((n) => String(n).toLowerCase()))
+    return fixedRooms.some((r) => !taken.has(String(r).toLowerCase()))
+  }, [productionLineNames])
+
   // Batches table
   const [items, setItems] = useState<ScheduleItem[]>([]);
   const [loading, setLoading] = useState(false);
@@ -201,9 +209,9 @@ const ProductionSchedule: React.FC = () => {
 
   const tabs: Array<{ key: string; label: string; color?: string }> = useMemo(() => {
     return [{ key: 'All', label: 'All' }].concat(
-      productionLineNames.map((n) => ({ key: n, label: n }))
+      fixedRooms.map((n) => ({ key: n, label: n }))
     )
-  }, [productionLineNames])
+  }, [])
 
   // Batch type filter (Original vs Rework)
   const [batchKind, setBatchKind] = useState<'original' | 'rework'>('original')
@@ -219,6 +227,7 @@ const ProductionSchedule: React.FC = () => {
   const [selectedProductId, setSelectedProductId] = useState<string>("");
   const [selectedFormulaId, setSelectedFormulaId] = useState<string>("");
   const [room, setRoom] = useState<string>("");
+  const [assignedLine, setAssignedLine] = useState<string>("");
   const [qty, setQty] = useState<string>("");
   const [completedQty, setCompletedQty] = useState<string>("0");
   const [lot, setLot] = useState<string>("");
@@ -656,6 +665,7 @@ const ProductionSchedule: React.FC = () => {
             samples_received: samplesReceived === 'Yes',
             samples_sent: samplesSent || null,
             completed_qty: Number(completedQty) || 0,
+            assigned_line: assignedLine || null,
           })
           .eq('id', createdBatchId)
         if (updErr) throw updErr
@@ -677,7 +687,8 @@ const ProductionSchedule: React.FC = () => {
             lot_number: lot,
             samples_received: samplesReceived === 'Yes',
             samples_sent: samplesSent || null,
-            completed_qty: Number(completedQty) || 0
+            completed_qty: Number(completedQty) || 0,
+            assigned_line: assignedLine || null,
           })
           .select('id')
           .maybeSingle();
@@ -748,7 +759,8 @@ const ProductionSchedule: React.FC = () => {
       setScheduleFromPoOpen(false)
       setSelectedPo(null)
       setScheduledDate('')
-      setRoom(productionLineNames[0] || '')
+      setRoom(fixedRooms[0] || '')
+      setAssignedLine(productionLineNames[0] || '')
       setLot('')
       setSamplesReceived('No')
       setSamplesSent('')
@@ -1047,7 +1059,7 @@ const ProductionSchedule: React.FC = () => {
 
       const mapped: ScheduleItem[] =
         (data || []).map((r: any) => {
-          const lineName = String(r.room || r.assigned_line || "")
+          const lineName = String(r.assigned_line || "")
           const line = productionLineByName.get(lineName)
           const needsQaSignoff = Boolean((line as any)?.needs_qa_signoff)
           return {
@@ -1057,7 +1069,8 @@ const ProductionSchedule: React.FC = () => {
             formula: formulasMap.get(String(r.formula_id || "")) || "",
             qty: Number(r.qty || 0),
             completedQty: Number(r.completed_qty || 0),
-            room: lineName,
+            room: String(r.room || ""),
+            assignedLine: r.assigned_line || null,
             startDate: r.start_date || "",
             status: r.status || "Scheduled",
             lot: r.lot_number || "",
@@ -1190,13 +1203,16 @@ const ProductionSchedule: React.FC = () => {
   }, [location.search, user?.id]);
 
   useEffect(() => {
-    if (!room && productionLineNames.length > 0) {
-      setRoom(productionLineNames[0])
+    if (!room && fixedRooms.length > 0) {
+      setRoom(fixedRooms[0])
     }
-    if (activeTab !== 'All' && productionLineNames.length > 0 && !productionLineNames.includes(activeTab)) {
+    if (!assignedLine && productionLineNames.length > 0) {
+      setAssignedLine(productionLineNames[0])
+    }
+    if (activeTab !== 'All' && fixedRooms.length > 0 && !fixedRooms.includes(activeTab)) {
       setActiveTab('All')
     }
-  }, [productionLineNames, room, activeTab])
+  }, [productionLineNames, room, assignedLine, activeTab])
 
   // ───────── Helpers for create
   const selectedProductName = useMemo(() => {
@@ -1211,7 +1227,8 @@ const ProductionSchedule: React.FC = () => {
     setSelectedCustomerId("");
     setSelectedProductId("");
     setSelectedFormulaId("");
-    setRoom(productionLineNames[0] || "");
+    setRoom(fixedRooms[0] || "");
+    setAssignedLine(productionLineNames[0] || "");
     setQty("");
     setCompletedQty("0");
     setLot("");
@@ -1239,7 +1256,7 @@ const ProductionSchedule: React.FC = () => {
         end_date: scheduledDate,
         status: "Scheduled",
         required_capacity: goalQty,
-        assigned_line: room || null,
+        assigned_line: assignedLine || null,
         flags: null,
         formula_id: selectedFormulaId || null,
         customer_id: selectedCustomerId || null,
@@ -1370,7 +1387,8 @@ const ProductionSchedule: React.FC = () => {
           formula: formulasMap.get(String(updated.formula_id || "")) || "",
           qty: Number(updated.qty || 0),
           completedQty: Number(updated.completed_qty || 0),
-          room: String(updated.room || updated.assigned_line || ""),
+          room: String(updated.room || ""),
+          assignedLine: (updated as any).assigned_line || null,
           startDate: updated.start_date || "",
           status: updated.status || "Scheduled",
           lot: updated.lot_number || "",
@@ -2608,7 +2626,7 @@ const ProductionSchedule: React.FC = () => {
         {allergenModalBatchId && (() => {
           const row = (items || []).find(r => String(r.id) === String(allergenModalBatchId))
           const product = row ? productByName.get(String(row.product || '')) : undefined
-          const line = row ? productionLineByName.get(String(row.room || '')) : undefined
+          const line = row ? productionLineByName.get(String((row as any).assignedLine || '')) : undefined
           const productAllergens = (product?.allergen_profile || []) as string[]
           const lineAllowed = (line?.allowed_allergens || []) as string[]
           const minutes = sanitationDetailsMap[allergenModalBatchId]?.minutes ?? null
@@ -2824,7 +2842,7 @@ const ProductionSchedule: React.FC = () => {
                   >
                     Reload
                   </button>
-                  {canManageProduction(currentUserRole) && (
+                  {canManageProduction(currentUserRole) && hasAvailableLineRooms && (
                     <button
                       onClick={() => setLinesOpenCreateSignal((s)=> s + 1)}
                       className="px-6 py-3 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold transition-all shadow-lg hover:shadow-xl flex items-center"
@@ -3746,13 +3764,26 @@ const ProductionSchedule: React.FC = () => {
                     </div>
                   </div>
 
-                  {/* Room / Qty / Completed */}
+                  {/* Room / Line / Qty */}
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                     <div className="space-y-3">
                       <label className="text-sm font-semibold text-neutral-dark">Production Room</label>
                       <select
                         value={room}
                         onChange={(e) => setRoom(e.target.value)}
+                        className="w-full px-4 py-3 border border-neutral-soft rounded-xl bg-white"
+                      >
+                        {fixedRooms.map((r) => (
+                          <option key={r} value={r}>{r}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="space-y-3">
+                      <label className="text-sm font-semibold text-neutral-dark">Production Line</label>
+                      <select
+                        value={assignedLine}
+                        onChange={(e) => setAssignedLine(e.target.value)}
                         className="w-full px-4 py-3 border border-neutral-soft rounded-xl bg-white"
                       >
                         {productionLineNames.map((r) => (
@@ -3934,15 +3965,29 @@ const ProductionSchedule: React.FC = () => {
                     </div>
                   </div>
 
-                  {/* Row: Production Room / Goal (Qty) / Completed */}
+                  {/* Row: Production Room / Line / Goal (Qty) */}
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                     <div>
                       <label className="flex items-center text-sm font-semibold text-neutral-dark">Production Room</label>
                       <select
                         value={editItem.room || ''}
-                        onChange={(e) => setEditItem({ ...editItem, room: e.target.value, assigned_line: e.target.value })}
+                        onChange={(e) => setEditItem({ ...editItem, room: e.target.value })}
                         className="w-full px-4 py-3 border border-neutral-soft rounded-lg bg-white focus:ring-2 focus:ring-primary-light focus:border-primary-light"
                       >
+                        {fixedRooms.map((r: string) => (
+                          <option key={r} value={r}>{r}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="flex items-center text-sm font-semibold text-neutral-dark">Production Line</label>
+                      <select
+                        value={editItem.assigned_line || ''}
+                        onChange={(e) => setEditItem({ ...editItem, assigned_line: e.target.value || null })}
+                        className="w-full px-4 py-3 border border-neutral-soft rounded-lg bg-white focus:ring-2 focus:ring-primary-light focus:border-primary-light"
+                      >
+                        <option value="">Select Line</option>
                         {productionLineNames.map((r: string) => (
                           <option key={r} value={r}>{r}</option>
                         ))}
@@ -4327,6 +4372,20 @@ const ProductionSchedule: React.FC = () => {
                     <select
                       value={room}
                       onChange={(e) => setRoom(e.target.value)}
+                      disabled={isScheduleFromPoViewOnly}
+                      className="w-full px-4 py-3 border border-neutral-soft rounded-lg bg-white focus:ring-2 focus:ring-primary-light focus:border-primary-light"
+                    >
+                      {fixedRooms.map((r: string) => (
+                        <option key={r} value={r}>{r}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-semibold text-neutral-dark mb-2">Production Line</label>
+                    <select
+                      value={assignedLine}
+                      onChange={(e) => setAssignedLine(e.target.value)}
                       disabled={isScheduleFromPoViewOnly}
                       className="w-full px-4 py-3 border border-neutral-soft rounded-lg bg-white focus:ring-2 focus:ring-primary-light focus:border-primary-light"
                     >

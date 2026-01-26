@@ -14,6 +14,8 @@ type ProductionLine = {
   needs_qa_signoff: boolean;
 };
 
+const fixedRooms = ["Main Room", "Bnutty Room", "Dilly's Room"];
+
 type FormState = {
   id?: string | null;
   line_name: string;
@@ -161,7 +163,7 @@ export default function ProductionLines({ embedded = false, refreshSignal = 0, o
 
   const [form, setForm] = useState<FormState>({
     id: null,
-    line_name: "",
+    line_name: fixedRooms[0],
     allowed_allergens: [],
     sanitation_minutes: 30,
     needs_qa_signoff: true,
@@ -170,7 +172,23 @@ export default function ProductionLines({ embedded = false, refreshSignal = 0, o
   const duplicateNames = useMemo(() => new Set(rows.map((r) => r.line_name.toLowerCase())), [rows]);
   const isEdit = !!form.id;
 
-  const resetForm = () => setForm({ id: null, line_name: "", allowed_allergens: [], sanitation_minutes: 30, needs_qa_signoff: true });
+  const availableRooms = useMemo(() => {
+    const taken = new Set(rows.map((r) => String(r.line_name || '').toLowerCase()))
+    const current = String(form.line_name || '').toLowerCase()
+    return fixedRooms.filter((r) => {
+      const low = r.toLowerCase()
+      if (isEdit && low === current) return true
+      return !taken.has(low)
+    })
+  }, [rows, form.line_name, isEdit])
+
+  const hasAvailableRooms = availableRooms.length > 0
+
+  const resetForm = () => {
+    const taken = new Set(rows.map((r) => String(r.line_name || '').toLowerCase()))
+    const firstAvailable = fixedRooms.find((r) => !taken.has(r.toLowerCase())) || fixedRooms[0]
+    setForm({ id: null, line_name: firstAvailable, allowed_allergens: [], sanitation_minutes: 30, needs_qa_signoff: true })
+  }
 
   // Load user role
   const loadUserRole = async () => {
@@ -233,6 +251,10 @@ export default function ProductionLines({ embedded = false, refreshSignal = 0, o
   }, [openCreateSignal]);
 
   const openCreate = () => {
+    if (!hasAvailableRooms) {
+      addToast('error', 'All rooms already have production lines.')
+      return
+    }
     resetForm();
     setIsModalOpen(true);
   };
@@ -263,7 +285,7 @@ export default function ProductionLines({ embedded = false, refreshSignal = 0, o
     if (!form.line_name.trim()) return "Line name is required";
     const lower = form.line_name.trim().toLowerCase();
     const exists = rows.some((r) => r.line_name.toLowerCase() === lower && r.id !== form.id);
-    if (exists) return "A production line with this name already exists";
+    if (exists) return "This room is already in use";
     const minutes = Number(form.sanitation_minutes);
     if (Number.isNaN(minutes) || minutes < 0) return "Sanitation minutes must be a non-negative number";
     return null;
@@ -336,7 +358,7 @@ export default function ProductionLines({ embedded = false, refreshSignal = 0, o
                 <button onClick={fetchRows} className="px-5 py-3 rounded-xl bg-neutral-light hover:bg-neutral-soft text-neutral-dark text-sm font-semibold transition-all shadow-sm hover:shadow-md" disabled={loading}>
                   {loading ? "Refreshing…" : "Reload"}
                 </button>
-                {!roleLoading && canManageProductionLines && (
+                {!roleLoading && canManageProductionLines && hasAvailableRooms && (
                   <button onClick={openCreate} className="px-6 py-3 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold transition-all shadow-lg hover:shadow-xl flex items-center">
                     <Plus className="h-5 w-5 mr-2" />
                     Add Line
@@ -462,22 +484,32 @@ export default function ProductionLines({ embedded = false, refreshSignal = 0, o
         }
       >
         <div className="space-y-5">
-          <div>
-            <label className="block text-sm font-medium text-neutral-800 mb-1">Line Name <span className="text-rose-600">*</span></label>
-            <input
-              className={`w-full rounded-xl border px-4 py-3 bg-white text-neutral-dark placeholder-neutral-medium outline-none focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all duration-200 ${
-                form.line_name && duplicateNames.has(form.line_name.trim().toLowerCase()) && (!isEdit || rows.find((r) => r.line_name.toLowerCase() === form.line_name.trim().toLowerCase())?.id !== form.id)
-                  ? "border-rose-300"
-                  : "border-neutral-soft"
-              }`}
-              value={form.line_name}
-              onChange={(e) => setForm((f) => ({ ...f, line_name: e.target.value }))}
-              placeholder="e.g., Line A"
-            />
-            {form.line_name && duplicateNames.has(form.line_name.trim().toLowerCase()) && (!isEdit || rows.find((r) => r.line_name.toLowerCase() === form.line_name.trim().toLowerCase())?.id !== form.id) && (
-              <p className="mt-1 text-xs text-rose-600">This name is already in use</p>
-            )}
-          </div>
+          {!isEdit && (
+            <div>
+              <label className="block text-sm font-medium text-neutral-800 mb-1">Line Name <span className="text-rose-600">*</span></label>
+              <select
+                className={`w-full rounded-xl border px-4 py-3 bg-white text-neutral-dark outline-none focus:ring-2 focus:ring-primary-light focus:border-primary-light transition-all duration-200 ${
+                  form.line_name && duplicateNames.has(form.line_name.trim().toLowerCase()) && (!isEdit || rows.find((r) => r.line_name.toLowerCase() === form.line_name.trim().toLowerCase())?.id !== form.id)
+                    ? "border-rose-300"
+                    : "border-neutral-soft"
+                }`}
+                value={form.line_name}
+                onChange={(e) => setForm((f) => ({ ...f, line_name: e.target.value }))}
+              >
+                {fixedRooms.map((r) => {
+                  const isTaken = !availableRooms.includes(r)
+                  return (
+                    <option key={r} value={r} disabled={!isEdit && isTaken}>
+                      {r}{!isEdit && isTaken ? ' (In use)' : ''}
+                    </option>
+                  )
+                })}
+              </select>
+              {form.line_name && duplicateNames.has(form.line_name.trim().toLowerCase()) && (!isEdit || rows.find((r) => r.line_name.toLowerCase() === form.line_name.trim().toLowerCase())?.id !== form.id) && (
+                <p className="mt-1 text-xs text-rose-600">This name is already in use</p>
+              )}
+            </div>
+          )}
 
           <div>
             <label className="block text-sm font-medium text-neutral-800 mb-1">Allowed Allergens</label>

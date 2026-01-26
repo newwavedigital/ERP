@@ -60,6 +60,13 @@ const PurchaseOrders: React.FC = () => {
   const [isAddOpen, setIsAddOpen] = useState(false)
   const [isViewOpen, setIsViewOpen] = useState<any>(null)
   const [isEditOpen, setIsEditOpen] = useState<any>(null)
+  const [notesFilesOpen, setNotesFilesOpen] = useState<any>(null)
+  const [notesFilesText, setNotesFilesText] = useState<string>('')
+  const [notesFilesUrls, setNotesFilesUrls] = useState<string[]>([])
+  const [notesFilesNew, setNotesFilesNew] = useState<File[]>([])
+  const [notesFilesDragOver, setNotesFilesDragOver] = useState(false)
+  const [notesFilesSaving, setNotesFilesSaving] = useState(false)
+  const notesFilesInputRef = useRef<HTMLInputElement>(null)
   const [isCustomerOpen, setIsCustomerOpen] = useState(false)
   
   const [isLocationOpen, setIsLocationOpen] = useState(false)
@@ -783,6 +790,102 @@ const PurchaseOrders: React.FC = () => {
     } catch {
       return String(url || '')
     }
+  }
+
+  const openNotesFiles = (po: any) => {
+    setNotesFilesOpen(po)
+    setNotesFilesText(String(po?.notes || ''))
+    setNotesFilesUrls(parseUrlArray(po?.po_file_url))
+    setNotesFilesNew([])
+    setNotesFilesDragOver(false)
+  }
+
+  const saveNotesFiles = async () => {
+    if (!notesFilesOpen?.id) return
+    setNotesFilesSaving(true)
+    try {
+      const poId = String(notesFilesOpen.id)
+      await supabase
+        .from('purchase_orders')
+        .update({ notes: notesFilesText || null })
+        .eq('id', poId)
+
+      let mergedUrls = [...(notesFilesUrls || [])]
+
+      if (notesFilesNew.length > 0) {
+        const bucket = 'ERP_storage'
+        const uploads = await Promise.all(
+          notesFilesNew.map(async (file: File) => {
+            try {
+              const safeName = `${Date.now()}-${file.name}`.replace(/[^a-zA-Z0-9._-]/g, '-')
+              const path = `po_docs/${poId}/${safeName}`
+              const { error: upErr } = await supabase.storage.from(bucket).upload(path, file, {
+                upsert: true,
+                contentType: file.type || 'application/octet-stream',
+              })
+              if (upErr) return null
+              const { data: pub } = supabase.storage.from(bucket).getPublicUrl(path)
+              let url = pub?.publicUrl || ''
+              if (!url) {
+                const { data: signed } = await supabase.storage.from(bucket).createSignedUrl(path, 60 * 60 * 24 * 365)
+                url = signed?.signedUrl || ''
+              }
+              return url || null
+            } catch {
+              return null
+            }
+          })
+        )
+        const uploadedUrls = uploads.filter((u): u is string => !!u)
+        mergedUrls = [...mergedUrls, ...uploadedUrls]
+        await supabase
+          .from('purchase_orders')
+          .update({ po_file_url: mergedUrls.length ? JSON.stringify(mergedUrls) : null })
+          .eq('id', poId)
+        setNotesFilesUrls(mergedUrls)
+        setNotesFilesNew([])
+      }
+
+      // Optimistically update list row
+      setOrders((prev) => prev.map((o: any) => (
+        String(o.id) === poId
+          ? { ...o, notes: notesFilesText || null, po_file_url: mergedUrls.length ? JSON.stringify(mergedUrls) : null }
+          : o
+      )))
+
+      setToast({ show: true, message: 'Notes & files updated.', kind: 'success' })
+      setNotesFilesOpen(null)
+    } catch (e: any) {
+      setToast({ show: true, message: e?.message || 'Failed to update notes/files.', kind: 'error' })
+    } finally {
+      setNotesFilesSaving(false)
+    }
+  }
+
+  const deleteNotesFile = async (url: string) => {
+    if (!notesFilesOpen?.id) return
+    try {
+      const poId = String(notesFilesOpen.id)
+      const next = (notesFilesUrls || []).filter((u) => u !== url)
+      setNotesFilesUrls(next)
+      await supabase
+        .from('purchase_orders')
+        .update({ po_file_url: next.length ? JSON.stringify(next) : null })
+        .eq('id', poId)
+      setOrders((prev) => prev.map((o: any) => (
+        String(o.id) === poId
+          ? { ...o, po_file_url: next.length ? JSON.stringify(next) : null }
+          : o
+      )))
+      try {
+        const marker = '/storage/v1/object/public/ERP_storage/'
+        const at = String(url || '').indexOf(marker)
+        if (at >= 0) {
+          const key = String(url || '').substring(at + marker.length)
+          if (key) await supabase.storage.from('ERP_storage').remove([key])
+        }
+      } catch {}
+    } catch {}
   }
 
   const [poDocFiles, setPoDocFiles] = useState<File[]>([])
@@ -1964,7 +2067,6 @@ const PurchaseOrders: React.FC = () => {
             payment_terms: form.paymentTerms || null,
             sales_representative: form.salesRepresentative || null,
             additional_packaging: form.additionalPackaging || null,
-            notes: form.comments || null,
           })
           .select()
           .single()
@@ -1972,41 +2074,43 @@ const PurchaseOrders: React.FC = () => {
         po_id = String(poHead.id)
       }
 
-      try {
-        const bucket = 'ERP_storage'
-        const existingUrls = Array.isArray(form.po_file_urls) ? form.po_file_urls : []
-        let uploadedUrls: string[] = []
-        if (poDocFiles.length) {
-          const uploads = await Promise.all(
-            poDocFiles.map(async (file) => {
-              const safeName = `${Date.now()}-${file.name}`.replace(/[^a-zA-Z0-9._-]/g, '-')
-              const path = `po_docs/${po_id}/${safeName}`
-              const { error: upErr } = await supabase.storage.from(bucket).upload(path, file, {
-                upsert: true,
-                contentType: file.type || 'application/octet-stream',
+      if (isEditOpen?.id) {
+        try {
+          const bucket = 'ERP_storage'
+          const existingUrls = Array.isArray(form.po_file_urls) ? form.po_file_urls : []
+          let uploadedUrls: string[] = []
+          if (poDocFiles.length) {
+            const uploads = await Promise.all(
+              poDocFiles.map(async (file) => {
+                const safeName = `${Date.now()}-${file.name}`.replace(/[^a-zA-Z0-9._-]/g, '-')
+                const path = `po_docs/${po_id}/${safeName}`
+                const { error: upErr } = await supabase.storage.from(bucket).upload(path, file, {
+                  upsert: true,
+                  contentType: file.type || 'application/octet-stream',
+                })
+                if (upErr) return null
+                const { data: pub } = supabase.storage.from(bucket).getPublicUrl(path)
+                let url = pub?.publicUrl || ''
+                if (!url) {
+                  const { data: signed } = await supabase.storage.from(bucket).createSignedUrl(path, 60 * 60 * 24 * 365)
+                  url = signed?.signedUrl || ''
+                }
+                return url || null
               })
-              if (upErr) return null
-              const { data: pub } = supabase.storage.from(bucket).getPublicUrl(path)
-              let url = pub?.publicUrl || ''
-              if (!url) {
-                const { data: signed } = await supabase.storage.from(bucket).createSignedUrl(path, 60 * 60 * 24 * 365)
-                url = signed?.signedUrl || ''
-              }
-              return url || null
-            })
-          )
-          uploadedUrls = uploads.filter((u): u is string => !!u)
-        }
-        const merged = [...existingUrls, ...uploadedUrls]
-        await supabase
-          .from('purchase_orders')
-          .update({ po_file_url: merged.length ? JSON.stringify(merged) : null })
-          .eq('id', po_id)
-        if (uploadedUrls.length) {
-          setForm((prev) => ({ ...prev, po_file_urls: merged }))
-          setPoDocFiles([])
-        }
-      } catch {}
+            )
+            uploadedUrls = uploads.filter((u): u is string => !!u)
+          }
+          const merged = [...existingUrls, ...uploadedUrls]
+          await supabase
+            .from('purchase_orders')
+            .update({ po_file_url: merged.length ? JSON.stringify(merged) : null })
+            .eq('id', po_id)
+          if (uploadedUrls.length) {
+            setForm((prev) => ({ ...prev, po_file_urls: merged }))
+            setPoDocFiles([])
+          }
+        } catch {}
+      }
 
       // Replace lines for this PO
       await supabase.from('purchase_order_lines').delete().eq('purchase_order_id', po_id)
@@ -2288,8 +2392,6 @@ const PurchaseOrders: React.FC = () => {
   const seq = [
     'fn_copack_material_check',
     'allocate_copack_po_operations',        // ✅ NEW main allocator
-    'allocate_copack_po_client_materials',  // optional
-    'allocate_copack_po_ops_dual_pr'
   ]
 
   let finalSummary: any = null
@@ -2334,17 +2436,6 @@ const PurchaseOrders: React.FC = () => {
       return
     }
   } catch {}
-
-  // Create (or ensure) Copack batch for this PO
-  try {
-    const batchRes = await runRpc('fn_auto_create_copack_batch_for_po', poId)
-    if (DEBUG_PO) dbg.batch_creation = batchRes
-    if (batchRes?.status === 'error') {
-      console.error('Batch creation failed:', batchRes)
-    }
-  } catch (err) {
-    console.error('Batch creation RPC error:', err)
-  }
 
   // refresh PO list
   const { data: poRows } = await supabase
@@ -3050,6 +3141,101 @@ const PurchaseOrders: React.FC = () => {
           document.body
         )}
 
+        {notesFilesOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-black/60" onClick={() => !notesFilesSaving && setNotesFilesOpen(null)}></div>
+            <div className="relative z-10 w-full max-w-3xl bg-white rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden">
+              <div className="flex items-center justify-between px-8 py-6 bg-gradient-to-r from-neutral-light to-neutral-light/80 border-b border-neutral-soft/50">
+                <div>
+                  <h3 className="text-xl font-semibold text-neutral-dark">Notes & Files</h3>
+                  <div className="text-sm text-neutral-medium mt-1">{String(notesFilesOpen?.po_number || notesFilesOpen?.id || '')}</div>
+                </div>
+                <button className="p-2 text-neutral-medium hover:text-neutral-dark hover:bg-white/60 rounded-xl" onClick={() => !notesFilesSaving && setNotesFilesOpen(null)} aria-label="Close">✕</button>
+              </div>
+
+              <div className="px-8 py-6 space-y-5">
+                <div className="space-y-2">
+                  <label className="flex items-center text-sm font-medium text-neutral-dark">Notes</label>
+                  <textarea
+                    placeholder="Add notes..."
+                    className="w-full min-h-[110px] px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light resize-none"
+                    value={notesFilesText}
+                    onChange={(e) => setNotesFilesText(e.target.value)}
+                  />
+                </div>
+
+                <div className="space-y-3">
+                  <label className="flex items-center text-sm font-medium text-neutral-dark">
+                    <Upload className="h-5 w-5 mr-3 text-primary-medium" />
+                    Files
+                  </label>
+                  <div
+                    className={`relative border-2 border-dashed rounded-xl p-4 transition-all duration-300 cursor-pointer ${notesFilesDragOver ? 'border-primary-light bg-primary-light/10' : 'border-neutral-soft bg-gradient-to-br from-neutral-light/20 to-white hover:from-primary-light/10 hover:to-primary-medium/5'}`}
+                    onDragOver={(e) => { e.preventDefault(); setNotesFilesDragOver(true) }}
+                    onDragLeave={() => setNotesFilesDragOver(false)}
+                    onDrop={(e) => {
+                      e.preventDefault()
+                      setNotesFilesDragOver(false)
+                      const files = Array.from(e.dataTransfer.files || [])
+                      if (files.length) setNotesFilesNew((prev) => [...prev, ...files])
+                    }}
+                    onClick={() => notesFilesInputRef.current?.click()}
+                  >
+                    <div className="flex items-center justify-between mb-2">
+                      <p className="text-sm text-neutral-medium">PDF, DOCX, XLSX, PPTX, TXT</p>
+                      <button type="button" onClick={() => notesFilesInputRef.current?.click()} className="px-4 py-2 rounded-lg bg-primary-dark hover:bg-primary-medium text-white text-sm font-medium shadow-sm">Browse File</button>
+                    </div>
+
+                    {(notesFilesUrls.length > 0) && (
+                      <div className="space-y-2 mb-3">
+                        {notesFilesUrls.map((url, idx) => (
+                          <div key={`nf-exist-${idx}`} className="flex items-center justify-between bg-white border border-neutral-soft rounded-lg px-4 py-3">
+                            <span className="text-sm text-neutral-dark truncate">{prettyFileName(url)}</span>
+                            <div className="flex items-center gap-2">
+                              <button type="button" className="px-2 py-1 text-xs rounded-md bg-white/90 hover:bg-white border border-neutral-soft shadow-sm" onClick={(e) => { e.stopPropagation(); window.open(url, '_blank') }}>View</button>
+                              <button type="button" className="px-2 py-1 text-xs rounded-md bg-white/90 hover:bg-white border border-neutral-soft shadow-sm" onClick={(e) => { e.stopPropagation(); deleteNotesFile(url) }}>Delete</button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {(notesFilesNew.length > 0) && (
+                      <div className="space-y-2 mb-3">
+                        {notesFilesNew.map((f, idx) => (
+                          <div key={`nf-new-${idx}`} className="flex items-center justify-between bg-white border border-neutral-soft rounded-lg px-4 py-3">
+                            <span className="text-sm text-neutral-dark truncate">{f.name}</span>
+                            <button type="button" className="px-2 py-1 text-xs rounded-md bg-white/90 hover:bg-white border border-neutral-soft shadow-sm" onClick={(e) => { e.stopPropagation(); setNotesFilesNew((prev) => prev.filter((_, i) => i !== idx)) }}>Remove</button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {(notesFilesUrls.length === 0 && notesFilesNew.length === 0) && (
+                      <div className="text-center py-4">
+                        <div className="mx-auto w-10 h-10 bg-primary-light/20 rounded-full flex items-center justify-center mb-2">
+                          <Upload className="h-5 w-5 text-primary-medium" />
+                        </div>
+                        <p className="text-sm text-neutral-dark font-semibold">Drag & drop file here, or click to upload</p>
+                        <p className="text-xs text-neutral-medium">Files will save when you click Save</p>
+                      </div>
+                    )}
+
+                    <input ref={notesFilesInputRef} type="file" multiple onChange={(e)=> setNotesFilesNew(Array.from(e.target.files || []))} accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,image/*" className="hidden" />
+                  </div>
+                </div>
+              </div>
+
+              <div className="px-8 py-5 border-t border-neutral-soft/40 bg-neutral-50 flex justify-end gap-3">
+                <button className="px-4 py-2 rounded-xl border border-neutral-soft text-neutral-700 bg-white hover:bg-white/60" onClick={() => setNotesFilesOpen(null)} disabled={notesFilesSaving}>Cancel</button>
+                <button className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light text-white font-semibold shadow-sm disabled:opacity-60" onClick={saveNotesFiles} disabled={notesFilesSaving}>
+                  {notesFilesSaving ? 'Saving...' : 'Save'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* No Finished Goods Modal */}
         {showNoFg && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -3470,6 +3656,8 @@ const PurchaseOrders: React.FC = () => {
                   const orderedQty = Number(o.quantity ?? 0)
                   const shippedSum = shippedTotals[String(o.id)] ?? null
                   const statusClass = getStatusBadgeClass(o.status)
+                  const nfText = String((o as any)?.notes || '').trim()
+                  const nfFiles = parseUrlArray((o as any)?.po_file_url)
                   
                   // Find this PO's priority rank in the sorted list
                   const brandQueue = sortedForPriority.filter((p:any) => !p.is_copack)
@@ -3510,6 +3698,7 @@ const PurchaseOrders: React.FC = () => {
                           {o.is_rush && !o.is_copack && (
                             <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-orange-100 text-orange-700">RUSH</span>
                           )}
+
                           <button 
                             className="menu-button p-2 text-neutral-medium hover:text-primary-medium rounded-md transition-colors"
                             onClick={(e) => {
@@ -3601,6 +3790,56 @@ const PurchaseOrders: React.FC = () => {
                           </div>
                         )}
                       </div>
+
+                      <div className="mt-3 flex items-center justify-start">
+                        <button
+                          type="button"
+                          className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-semibold border shadow-sm bg-white border-neutral-soft text-neutral-dark hover:border-primary-medium hover:text-primary-medium"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            openNotesFiles(o)
+                          }}
+                        >
+                          <FileText className="h-4 w-4" />
+                          Notes & Files
+                        </button>
+                      </div>
+
+                      {(nfText || (nfFiles && nfFiles.length > 0)) && (
+                        <div className="mt-3 rounded-lg border border-neutral-soft/60 bg-white p-3">
+                          {nfText && (
+                            <div className="text-xs text-neutral-dark">
+                              <span className="font-semibold">Notes:</span>{' '}
+                              <span className="text-neutral-medium">{nfText.length > 140 ? `${nfText.slice(0, 140)}…` : nfText}</span>
+                            </div>
+                          )}
+                          {nfFiles && nfFiles.length > 0 && (
+                            <div className="mt-2">
+                              <div className="text-xs text-neutral-dark">
+                                <span className="font-semibold">Files:</span>{' '}
+                                <span className="text-neutral-medium">{nfFiles.length}</span>
+                              </div>
+                              <div className="mt-2 flex flex-wrap gap-2">
+                                {nfFiles.slice(0, 3).map((url: string, idx: number) => (
+                                  <button
+                                    key={`po-nf-${o.id}-${idx}`}
+                                    type="button"
+                                    className="inline-flex items-center gap-2 px-2.5 py-1 rounded-md text-[11px] border border-neutral-soft bg-neutral-light/30 text-neutral-dark hover:border-primary-medium"
+                                    onClick={(e) => { e.stopPropagation(); window.open(url, '_blank') }}
+                                    title={prettyFileName(url)}
+                                  >
+                                    <span className="truncate max-w-[180px]">{prettyFileName(url)}</span>
+                                    <span className="text-primary-medium">View</span>
+                                  </button>
+                                ))}
+                                {nfFiles.length > 3 && (
+                                  <span className="text-[11px] text-neutral-medium self-center">+{nfFiles.length - 3} more</span>
+                                )}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )}
 
                       {String(o.status) === 'partially_shipped' && Number(o.backorder_qty ?? 0) > 0 && !!o.backorder_eta && (
                         <div className="mt-3 text-[11px] text-neutral-medium">Backorder ETA: {formatDate(o.backorder_eta as any)}</div>
@@ -4049,16 +4288,20 @@ const PurchaseOrders: React.FC = () => {
                     )}
                   </div>
 
-                  {/* Additional Packaging field - after Products section */}
-                  <div className="space-y-2">
-                    <label className="flex items-center text-sm font-medium text-neutral-dark">Notes</label>
-                    <textarea
-                      placeholder="Notes..."
-                      className="w-full min-h-[80px] px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light resize-none"
-                      value={form.additionalPackaging}
-                      onChange={(e)=>setForm({...form, additionalPackaging: e.target.value})}
-                    />
-                  </div>
+                  {isEditOpen?.id && (
+                    <>
+                      {/* Additional Packaging field - after Products section */}
+                      <div className="space-y-2">
+                        <label className="flex items-center text-sm font-medium text-neutral-dark">Notes</label>
+                        <textarea
+                          placeholder="Notes..."
+                          className="w-full min-h-[80px] px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light resize-none"
+                          value={form.additionalPackaging}
+                          onChange={(e)=>setForm({...form, additionalPackaging: e.target.value})}
+                        />
+                      </div>
+                    </>
+                  )}
 
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -4225,91 +4468,93 @@ const PurchaseOrders: React.FC = () => {
                     </button>
                   </div>
 
-                  <div className="space-y-3">
-                    <label className="flex items-center text-sm font-medium text-neutral-dark">
-                      <Upload className="h-5 w-5 mr-3 text-primary-medium" />
-                      Attachments
-                    </label>
-                    <div
-                      className={`relative border-2 border-dashed rounded-xl p-4 transition-all duration-300 cursor-pointer ${poDocDragOver ? 'border-primary-light bg-primary-light/10' : 'border-neutral-soft bg-gradient-to-br from-neutral-light/20 to-white hover:from-primary-light/10 hover:to-primary-medium/5'}`}
-                      onDragOver={(e) => { e.preventDefault(); setPoDocDragOver(true) }}
-                      onDragLeave={() => setPoDocDragOver(false)}
-                      onDrop={(e) => {
-                        e.preventDefault()
-                        setPoDocDragOver(false)
-                        const files = Array.from(e.dataTransfer.files || [])
-                        if (files.length) setPoDocFiles((prev) => [...prev, ...files])
-                      }}
-                      onClick={() => poDocInputRef.current?.click()}
-                    >
-                      <div className="flex items-center justify-between mb-2">
-                        <p className="text-sm text-neutral-medium">PDF, DOCX, XLSX, PPTX, TXT</p>
-                        <button type="button" onClick={() => poDocInputRef.current?.click()} className="px-4 py-2 rounded-lg bg-primary-dark hover:bg-primary-medium text-white text-sm font-medium shadow-sm">Browse File</button>
-                      </div>
+                  {isEditOpen?.id && (
+                    <div className="space-y-3">
+                      <label className="flex items-center text-sm font-medium text-neutral-dark">
+                        <Upload className="h-5 w-5 mr-3 text-primary-medium" />
+                        Attachments
+                      </label>
+                      <div
+                        className={`relative border-2 border-dashed rounded-xl p-4 transition-all duration-300 cursor-pointer ${poDocDragOver ? 'border-primary-light bg-primary-light/10' : 'border-neutral-soft bg-gradient-to-br from-neutral-light/20 to-white hover:from-primary-light/10 hover:to-primary-medium/5'}`}
+                        onDragOver={(e) => { e.preventDefault(); setPoDocDragOver(true) }}
+                        onDragLeave={() => setPoDocDragOver(false)}
+                        onDrop={(e) => {
+                          e.preventDefault()
+                          setPoDocDragOver(false)
+                          const files = Array.from(e.dataTransfer.files || [])
+                          if (files.length) setPoDocFiles((prev) => [...prev, ...files])
+                        }}
+                        onClick={() => poDocInputRef.current?.click()}
+                      >
+                        <div className="flex items-center justify-between mb-2">
+                          <p className="text-sm text-neutral-medium">PDF, DOCX, XLSX, PPTX, TXT</p>
+                          <button type="button" onClick={() => poDocInputRef.current?.click()} className="px-4 py-2 rounded-lg bg-primary-dark hover:bg-primary-medium text-white text-sm font-medium shadow-sm">Browse File</button>
+                        </div>
 
-                      {(Array.isArray(form.po_file_urls) && form.po_file_urls.length > 0) && (
-                        <div className="space-y-2 mb-3">
-                          {form.po_file_urls.map((url, idx) => (
-                            <div key={`po-exist-${idx}`} className="flex items-center justify-between bg-white border border-neutral-soft rounded-lg px-4 py-3">
-                              <span className="text-sm text-neutral-dark truncate">{prettyFileName(url)}</span>
-                              <div className="flex items-center gap-2">
-                                <button type="button" className="px-2 py-1 text-xs rounded-md bg-white/90 hover:bg-white border border-neutral-soft shadow-sm" onClick={(e) => { e.stopPropagation(); window.open(url, '_blank') }}>View</button>
-                                <button
-                                  type="button"
-                                  className="px-2 py-1 text-xs rounded-md bg-white/90 hover:bg-white border border-neutral-soft shadow-sm"
-                                  onClick={async (e) => {
-                                    e.stopPropagation()
-                                    try {
-                                      const next = form.po_file_urls.filter((_, i) => i !== idx)
-                                      setForm((prev) => ({ ...prev, po_file_urls: next }))
-                                      if (isEditOpen?.id) {
-                                        try {
-                                          await supabase.from('purchase_orders').update({ po_file_url: next.length ? JSON.stringify(next) : null }).eq('id', isEditOpen.id)
-                                        } catch {}
-                                      }
+                        {(Array.isArray(form.po_file_urls) && form.po_file_urls.length > 0) && (
+                          <div className="space-y-2 mb-3">
+                            {form.po_file_urls.map((url, idx) => (
+                              <div key={`po-exist-${idx}`} className="flex items-center justify-between bg-white border border-neutral-soft rounded-lg px-4 py-3">
+                                <span className="text-sm text-neutral-dark truncate">{prettyFileName(url)}</span>
+                                <div className="flex items-center gap-2">
+                                  <button type="button" className="px-2 py-1 text-xs rounded-md bg-white/90 hover:bg-white border border-neutral-soft shadow-sm" onClick={(e) => { e.stopPropagation(); window.open(url, '_blank') }}>View</button>
+                                  <button
+                                    type="button"
+                                    className="px-2 py-1 text-xs rounded-md bg-white/90 hover:bg-white border border-neutral-soft shadow-sm"
+                                    onClick={async (e) => {
+                                      e.stopPropagation()
                                       try {
-                                        const marker = '/storage/v1/object/public/ERP_storage/'
-                                        const at = String(url || '').indexOf(marker)
-                                        if (at >= 0) {
-                                          const key = String(url || '').substring(at + marker.length)
-                                          if (key) await supabase.storage.from('ERP_storage').remove([key])
+                                        const next = form.po_file_urls.filter((_, i) => i !== idx)
+                                        setForm((prev) => ({ ...prev, po_file_urls: next }))
+                                        if (isEditOpen?.id) {
+                                          try {
+                                            await supabase.from('purchase_orders').update({ po_file_url: next.length ? JSON.stringify(next) : null }).eq('id', isEditOpen.id)
+                                          } catch {}
                                         }
+                                        try {
+                                          const marker = '/storage/v1/object/public/ERP_storage/'
+                                          const at = String(url || '').indexOf(marker)
+                                          if (at >= 0) {
+                                            const key = String(url || '').substring(at + marker.length)
+                                            if (key) await supabase.storage.from('ERP_storage').remove([key])
+                                          }
+                                        } catch {}
                                       } catch {}
-                                    } catch {}
-                                  }}
-                                >
-                                  Delete
-                                </button>
+                                    }}
+                                  >
+                                    Delete
+                                  </button>
+                                </div>
                               </div>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-
-                      {(poDocFiles.length > 0) && (
-                        <div className="space-y-2 mb-3">
-                          {poDocFiles.map((f, idx) => (
-                            <div key={`po-new-${idx}`} className="flex items-center justify-between bg-white border border-neutral-soft rounded-lg px-4 py-3">
-                              <span className="text-sm text-neutral-dark truncate">{f.name}</span>
-                              <button type="button" className="px-2 py-1 text-xs rounded-md bg-white/90 hover:bg-white border border-neutral-soft shadow-sm" onClick={(e) => { e.stopPropagation(); setPoDocFiles((prev) => prev.filter((_, i) => i !== idx)) }}>Remove</button>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-
-                      {((!form.po_file_urls || form.po_file_urls.length === 0) && poDocFiles.length === 0) && (
-                        <div className="text-center py-4">
-                          <div className="mx-auto w-10 h-10 bg-primary-light/20 rounded-full flex items-center justify-center mb-2">
-                            <Upload className="h-5 w-5 text-primary-medium" />
+                            ))}
                           </div>
-                          <p className="text-sm text-neutral-dark font-semibold">Drag & drop file here, or click to upload</p>
-                          <p className="text-xs text-neutral-medium">Files will save when you click Create/Save</p>
-                        </div>
-                      )}
+                        )}
 
-                      <input ref={poDocInputRef} type="file" multiple onChange={(e)=> setPoDocFiles(Array.from(e.target.files || []))} accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,image/*" className="hidden" />
+                        {(poDocFiles.length > 0) && (
+                          <div className="space-y-2 mb-3">
+                            {poDocFiles.map((f, idx) => (
+                              <div key={`po-new-${idx}`} className="flex items-center justify-between bg-white border border-neutral-soft rounded-lg px-4 py-3">
+                                <span className="text-sm text-neutral-dark truncate">{f.name}</span>
+                                <button type="button" className="px-2 py-1 text-xs rounded-md bg-white/90 hover:bg-white border border-neutral-soft shadow-sm" onClick={(e) => { e.stopPropagation(); setPoDocFiles((prev) => prev.filter((_, i) => i !== idx)) }}>Remove</button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        {((!form.po_file_urls || form.po_file_urls.length === 0) && poDocFiles.length === 0) && (
+                          <div className="text-center py-4">
+                            <div className="mx-auto w-10 h-10 bg-primary-light/20 rounded-full flex items-center justify-center mb-2">
+                              <Upload className="h-5 w-5 text-primary-medium" />
+                            </div>
+                            <p className="text-sm text-neutral-dark font-semibold">Drag & drop file here, or click to upload</p>
+                            <p className="text-xs text-neutral-medium">Files will save when you click Create/Save</p>
+                          </div>
+                        )}
+
+                        <input ref={poDocInputRef} type="file" multiple onChange={(e)=> setPoDocFiles(Array.from(e.target.files || []))} accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,image/*" className="hidden" />
+                      </div>
                     </div>
-                  </div>
+                  )}
 
                   <div className="flex items-center justify-end gap-3 pt-2">
                     <button type="submit" className="px-5 py-2.5 rounded-lg bg-primary-dark hover:bg-primary-medium text-white font-semibold shadow-sm">

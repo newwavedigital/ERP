@@ -109,7 +109,7 @@ const statusChip = (status: string) => {
     case "Scheduled":
       return "bg-blue-100 text-blue-800";
     case "In Progress":
-      return "bg-yellow-100 text-yellow-800";
+      return "bg-amber-100 text-amber-800";
     case "Production Complete":
       return "bg-orange-100 text-orange-800";
     case "Completed":
@@ -527,6 +527,12 @@ const ProductionSchedule: React.FC = () => {
   // ───────── Handle PO click for scheduling
   const handlePoClick = async (po: any) => {
     setSelectedPo(po);
+    const loc = String(po?.location || '').trim()
+    const chosenRoom = (loc && fixedRooms.includes(loc)) ? loc : (fixedRooms[0] || '')
+    if (chosenRoom) {
+      setRoom(chosenRoom)
+      setAssignedLine(chosenRoom)
+    }
     const scheduled = await calculateAlreadyScheduled(po.id);
     setAlreadyScheduled(scheduled);
     const remaining = Number(po.quantity || 0) - scheduled
@@ -760,7 +766,7 @@ const ProductionSchedule: React.FC = () => {
       setSelectedPo(null)
       setScheduledDate('')
       setRoom(fixedRooms[0] || '')
-      setAssignedLine(productionLineNames[0] || '')
+      setAssignedLine(fixedRooms[0] || '')
       setLot('')
       setSamplesReceived('No')
       setSamplesSent('')
@@ -1619,6 +1625,46 @@ const ProductionSchedule: React.FC = () => {
         pushToast({ type: 'error', message: 'Shortages detected. PRs created.' })
         return
       }
+
+      try {
+        const row = (items || []).find(r => String(r.id) === String(id)) as any
+        const poId = row?.sourcePoId ? String(row.sourcePoId) : null
+        const lineName = String(row?.assignedLine || row?.room || '').trim()
+        let lineId: string | null = null
+
+        if (lineName) {
+          try {
+            const { data: ln } = await supabase
+              .from('production_lines')
+              .select('id')
+              .eq('line_name', lineName)
+              .maybeSingle()
+            if (ln?.id) lineId = String(ln.id)
+          } catch {}
+        }
+
+        if (poId) {
+          try {
+            await supabase
+              .from('inventory_reservations')
+              .update({ po_id: poId })
+              .eq('batch_id', castBatchId(id))
+              .eq('status', 'active')
+              .is('po_id', null)
+          } catch {}
+        }
+
+        if (lineId) {
+          try {
+            await supabase
+              .from('inventory_reservations')
+              .update({ line_id: lineId })
+              .eq('batch_id', castBatchId(id))
+              .eq('status', 'active')
+              .is('line_id', null)
+          } catch {}
+        }
+      } catch {}
       // Success path
       try {
         await syncPoStatusFromBatch(id, 'In Progress')
@@ -1806,17 +1852,6 @@ const ProductionSchedule: React.FC = () => {
       pushToast({ type: 'error', message: `Failed to complete batch: ${e?.message || e}` })
     } finally {
       setIsCompleting(false)
-    }
-  }
-
-  const onGeneratePO = async (id: string) => {
-    try {
-      const { error } = await supabase.rpc('fn_generate_po_for_batch_shortages', { p_batch_id: castBatchId(id) })
-      if (error) throw error
-      pushToast({ type: 'success', message: 'Purchase Orders generated for shortages' })
-    } catch (e) {
-      console.warn(e)
-      pushToast({ type: 'error', message: 'Failed to generate purchase orders' })
     }
   }
 
@@ -2119,7 +2154,7 @@ const ProductionSchedule: React.FC = () => {
                   reqs.map((r, i) => {
                     const shortage = Math.max(0, Number(r.qty_required || 0) - Number(r.reserved_qty || 0))
                     return (
-                      <tr key={r.material_id || i} className="border-t border-neutral-soft/30">
+                      <tr key={`${r.material_id || 'material'}-${i}`} className="border-t border-neutral-soft/30">
                         <td className="px-4 py-2 text-neutral-dark">{r.material_name}</td>
                         <td className="px-4 py-2 text-right">{Number(r.qty_required || 0).toLocaleString()}</td>
                         <td className="px-4 py-2 text-right">{r.uom || '-'}</td>
@@ -2600,23 +2635,49 @@ const ProductionSchedule: React.FC = () => {
           <div className="fixed inset-0 z-[1100] flex items-center justify-center p-4">
             <div className="absolute inset-0 bg-black/50" onClick={() => setStartErrorModal(null)}></div>
             <div className="relative z-10 w-full max-w-md bg-white rounded-2xl shadow-2xl border border-neutral-soft/30 overflow-hidden">
-              <div className="px-6 py-4 border-b border-neutral-soft/40 bg-neutral-light/40">
-                <div className="flex items-center justify-between">
-                  <h3 className="text-lg font-semibold text-neutral-dark">Cannot Start Batch</h3>
-                  <button className="text-neutral-medium hover:text-neutral-dark" onClick={() => setStartErrorModal(null)}>✕</button>
+              <div className="px-6 py-4 border-b border-neutral-soft/40 bg-amber-50">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex items-start gap-3">
+                    <div className="w-9 h-9 rounded-full bg-amber-100 text-amber-700 flex items-center justify-center mt-0.5">
+                      <AlertTriangle className="h-5 w-5" />
+                    </div>
+                    <div>
+                      <h3 className="text-lg font-semibold text-neutral-dark">Cannot start this batch yet</h3>
+                      <div className="text-sm text-neutral-medium">Some required details are missing.</div>
+                    </div>
+                  </div>
+                  <button className="p-2 text-neutral-medium hover:text-neutral-dark hover:bg-white/60 rounded-lg" onClick={() => setStartErrorModal(null)}>
+                    <X className="h-5 w-5" />
+                  </button>
                 </div>
               </div>
-              <div className="p-6 space-y-3">
-                <div className="text-sm text-neutral-medium">Batch ID</div>
-                <div className="text-neutral-dark font-semibold">{startErrorModal.batchId}</div>
-                <div className="mt-2 text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg p-3">
-                  {startErrorModal.message || 'A required field is missing. Please update the batch details.'}
+
+              <div className="px-6 py-5 space-y-4">
+                <div className="rounded-xl border border-amber-200 bg-amber-50/60 p-4">
+                  <div className="text-sm font-semibold text-amber-900 mb-1">Why you’re seeing this</div>
+                  <div className="text-sm text-amber-800">
+                    {startErrorModal.message || 'A required field is missing. Please update the batch details before starting.'}
+                  </div>
                 </div>
-                <div className="text-xs text-neutral-medium">Update the missing/required fields (e.g., lot out) before starting this batch.</div>
+
+                <div className="text-sm text-neutral-dark">
+                  <div className="text-xs font-semibold text-neutral-medium uppercase tracking-wide mb-2">Batch ID</div>
+                  <div className="font-mono text-xs bg-neutral-light/40 border border-neutral-soft/50 rounded-lg px-3 py-2 text-neutral-dark break-all">
+                    {startErrorModal.batchId}
+                  </div>
+                </div>
+
+                <div className="text-sm text-neutral-medium">
+                  To proceed, click <span className="font-semibold text-neutral-dark">Update Required Fields</span> and fill in the missing info (e.g. <span className="font-semibold">Lot Out</span>), then try again.
+                </div>
               </div>
               <div className="px-6 py-4 border-t border-neutral-soft/40 bg-white flex items-center justify-end gap-3">
-                <button className="px-4 py-2 rounded-lg border border-neutral-soft text-neutral-dark bg-white hover:border-neutral-medium" onClick={() => setStartErrorModal(null)}>Close</button>
-                <button className="px-5 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold" onClick={() => handleOpenEditFromStartError(startErrorModal.batchId)}>Update Required Fields</button>
+                <button className="px-4 py-2 rounded-lg border border-neutral-soft text-neutral-dark bg-white hover:bg-neutral-light/50" onClick={() => setStartErrorModal(null)}>
+                  Close
+                </button>
+                <button className="px-5 py-2 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-sm font-semibold" onClick={() => handleOpenEditFromStartError(startErrorModal.batchId)}>
+                  Update Required Fields
+                </button>
               </div>
             </div>
           </div>
@@ -3227,12 +3288,12 @@ const ProductionSchedule: React.FC = () => {
                         if (isInProgress || isCompleted) return null
                         return (
                           <button
-                            className="inline-flex items-center px-3 py-1.5 rounded-xl text-[11px] font-semibold border bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100 transition-colors"
+                            className="inline-flex items-center px-3 py-1.5 rounded-xl text-[11px] font-semibold border bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100 transition-colors"
                             disabled={!!(startDisabled[row.id] || shortagesCache[row.id] || prExistsMap[row.id])}
                             title={(qaRequiredMap[row.id] && !qaApprovedMap[row.id]) ? 'QA approval required (start will show notice).' : (allergenConflictMap[row.id] ? 'Allergen conflict will be shown.' : undefined)}
                             onClick={(e) => { e.stopPropagation(); onStartBatch(row.id); }}
                           >
-                            Start
+                            In Progress
                           </button>
                         )
                       })()}
@@ -3265,8 +3326,8 @@ const ProductionSchedule: React.FC = () => {
                       )}
                       {(() => {
                         const st = String((row as any)?.status || '').toLowerCase()
-                        const isCompleted = st === 'completed'
-                        if (isCompleted) return null
+                        const isInProgress = st === 'in progress' || st === 'in_progress'
+                        if (!isInProgress) return null
                         return (
                           <button
                             className="inline-flex items-center px-3 py-1.5 rounded-xl text-[11px] font-semibold border bg-white text-neutral-dark border-neutral-soft/60 hover:bg-neutral-light/40 transition-colors"
@@ -3286,16 +3347,10 @@ const ProductionSchedule: React.FC = () => {
                             className="inline-flex items-center px-3 py-1.5 rounded-xl text-[11px] font-semibold border bg-green-50 text-green-700 border-green-200 hover:bg-green-100 transition-colors"
                             onClick={(e) => { e.stopPropagation(); setCompleteId(row.id); }}
                           >
-                            Complete
+                            Production Complete
                           </button>
                         )
                       })()}
-                      <button
-                        className="inline-flex items-center px-3 py-1.5 rounded-xl text-[11px] font-semibold border bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100 transition-colors"
-                        onClick={(e) => { e.stopPropagation(); onGeneratePO(row.id); }}
-                      >
-                        Auto-PO
-                      </button>
                     </div>
                   </div>
                 </div>
@@ -3351,11 +3406,7 @@ const ProductionSchedule: React.FC = () => {
               if (!row) return null;
               
               const availableStatuses = [];
-              if (row.status === 'Scheduled') {
-                availableStatuses.push('In Progress');
-              } else if (row.status === 'In Progress') {
-                availableStatuses.push('Production Complete');
-              } else if (row.status === 'Production Complete') {
+              if (row.status === 'Production Complete') {
                 availableStatuses.push('Completed', 'Quality Hold');
               }
               
@@ -4362,7 +4413,6 @@ const ProductionSchedule: React.FC = () => {
                       type="date"
                       value={scheduledDate}
                       onChange={(e) => setScheduledDate(e.target.value)}
-                      min={todayLocalISO}
                       disabled={isScheduleFromPoViewOnly}
                       className="w-full px-4 py-3 border border-neutral-soft rounded-lg focus:ring-2 focus:ring-primary-light focus:border-primary-light bg-white text-neutral-dark"
                     />
@@ -4371,25 +4421,11 @@ const ProductionSchedule: React.FC = () => {
                     <label className="block text-sm font-semibold text-neutral-dark mb-2">Production Room</label>
                     <select
                       value={room}
-                      onChange={(e) => setRoom(e.target.value)}
+                      onChange={(e) => { setRoom(e.target.value); setAssignedLine(e.target.value) }}
                       disabled={isScheduleFromPoViewOnly}
                       className="w-full px-4 py-3 border border-neutral-soft rounded-lg bg-white focus:ring-2 focus:ring-primary-light focus:border-primary-light"
                     >
                       {fixedRooms.map((r: string) => (
-                        <option key={r} value={r}>{r}</option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-semibold text-neutral-dark mb-2">Production Line</label>
-                    <select
-                      value={assignedLine}
-                      onChange={(e) => setAssignedLine(e.target.value)}
-                      disabled={isScheduleFromPoViewOnly}
-                      className="w-full px-4 py-3 border border-neutral-soft rounded-lg bg-white focus:ring-2 focus:ring-primary-light focus:border-primary-light"
-                    >
-                      {productionLineNames.map((r: string) => (
                         <option key={r} value={r}>{r}</option>
                       ))}
                     </select>

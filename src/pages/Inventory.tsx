@@ -227,8 +227,28 @@ const Inventory: React.FC = () => {
           setHistoryData([])
         } else {
           const raw = (data as any[]) || []
+          const groupedMap = new Map<string, { po_id: string; line_id: string; qty: number; created_at: string }>()
+          for (const r of raw) {
+            const po_id = (r as any)?.po_id ?? null
+            const line_id = (r as any)?.line_id ?? null
+            const created_at = (r as any)?.created_at ?? null
+            const key = `${String(po_id ?? '')}|${String(line_id ?? '')}|${String(created_at ?? '')}`
+            const prev = groupedMap.get(key)
+            const qty = Number((r as any)?.qty || 0)
+            if (prev) {
+              prev.qty = Number(prev.qty || 0) + qty
+            } else {
+              groupedMap.set(key, {
+                po_id: po_id,
+                line_id: line_id,
+                qty,
+                created_at: created_at,
+              })
+            }
+          }
+          const grouped = Array.from(groupedMap.values())
           // fetch production line names for line_id values
-          const ids = Array.from(new Set(raw.map((r: any) => r.line_id).filter((v: any) => v != null)))
+          const ids = Array.from(new Set(grouped.map((r: any) => r.line_id).filter((v: any) => v != null)))
           let lineMap: Record<string, string> = {}
           if (ids.length) {
             try {
@@ -239,7 +259,7 @@ const Inventory: React.FC = () => {
               lineMap = Object.fromEntries((lines || []).map((l: any) => [String(l.id), String(l.line_name || '')]))
             } catch {}
           }
-          const withNames = raw.map((r: any) => ({ ...r, line_name: lineMap[String(r.line_id)] || null }))
+          const withNames = grouped.map((r: any) => ({ ...r, line_name: lineMap[String(r.line_id)] || null }))
           setHistoryData(withNames)
         }
       } finally {

@@ -565,7 +565,6 @@ const SupplyChainProcurement: React.FC = () => {
       const seq = [
         'fn_copack_material_check',
         'allocate_copack_po_operations',
-        'allocate_copack_po_client_materials',
         'allocate_copack_po_ops_dual_pr',
       ]
 

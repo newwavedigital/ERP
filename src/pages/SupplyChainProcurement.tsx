@@ -60,6 +60,7 @@ const SupplyChainProcurement: React.FC = () => {
   const [missingFormulas, setMissingFormulas] = useState<Array<{ product_name: string; quantity: number }>>([])
   const [approvingId, setApprovingId] = useState<string | null>(null)
   const [copackSummary, setCopackSummary] = useState<any | null>(null)
+  const [movedNotice, setMovedNotice] = useState<{ poId: string; poNumber?: string } | null>(null)
 
   // RPC response typing (subset)
   type AllocationSummary = { status?: string; total_shortfall?: number; lines?: any[] }
@@ -686,6 +687,37 @@ const SupplyChainProcurement: React.FC = () => {
   }, [location.search])
 
   useEffect(() => {
+    try {
+      const sp = new URLSearchParams(String(location.search || ''))
+      const moved = sp.get('moved')
+      const poId = sp.get('poId')
+      if (moved === '1' && poId) {
+        setMovedNotice({ poId: String(poId) })
+        setActiveTab('procurement')
+      }
+    } catch {}
+  }, [location.search])
+
+  useEffect(() => {
+    if (!movedNotice?.poId) return
+    const poId = String(movedNotice.poId)
+    if (!poId) return
+    const found = orders.find((r: any) => String(r?.id) === poId) || null
+    if (found) {
+      setSelectedPo(found)
+      setMovedNotice((prev) => (prev ? { ...prev, poNumber: String((found as any)?.po_number || '') } : prev))
+      try {
+        const sp = new URLSearchParams(String(location.search || ''))
+        sp.delete('moved')
+        sp.delete('poId')
+        const qs = sp.toString()
+        const nextUrl = `${location.pathname}${qs ? `?${qs}` : ''}`
+        window.history.replaceState({}, '', nextUrl)
+      } catch {}
+    }
+  }, [movedNotice?.poId, orders, location.pathname, location.search])
+
+  useEffect(() => {
     if (isWarehouseRole) setActiveTab('shipping')
   }, [isWarehouseRole])
 
@@ -703,6 +735,22 @@ const SupplyChainProcurement: React.FC = () => {
       <div className="p-2 sm:p-4 lg:p-6">
         {copackSummary && (
           <CopackAllocationSummary summary={copackSummary} onClose={() => setCopackSummary(null)} />
+        )}
+        {movedNotice && (
+          <div className="bg-white rounded-xl shadow-md border border-amber-200 p-3 sm:p-4 mb-3">
+            <div className="flex items-start justify-between gap-3">
+              <div className="text-sm text-amber-800">
+                PO{movedNotice.poNumber ? ` #${movedNotice.poNumber}` : ''} moved to Procurement.
+              </div>
+              <button
+                type="button"
+                className="text-xs font-semibold text-amber-800 hover:text-amber-900"
+                onClick={() => setMovedNotice(null)}
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
         )}
         <div className="bg-white rounded-xl shadow-md border border-neutral-soft/20 p-3 sm:p-4 lg:p-6 mb-3 lg:mb-4">
           <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">

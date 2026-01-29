@@ -167,6 +167,19 @@ const PurchaseOrders: React.FC = () => {
   // Brand vs Copack list tabs
   const [poTab, setPoTab] = useState<'brand' | 'copack'>('copack')
 
+  const filteredOrdersForView = useMemo(() => {
+    const q = String(search || '').toLowerCase()
+    return (orders || []).filter((o: any) => {
+      const hit = (o.customer_name || '').toLowerCase().includes(q) || (o.product_name || '').toLowerCase().includes(q)
+      const statusOk = statusFilter === 'All' ? true : o.status === statusFilter
+      const rushOk = rushFilter === 'All' ? true : rushFilter === 'Rush Only' ? !!o.is_rush : !o.is_rush
+      return hit && statusOk && rushOk
+    })
+  }, [orders, search, statusFilter, rushFilter])
+
+  const copackCount = useMemo(() => (filteredOrdersForView || []).filter((o: any) => !!o?.is_copack).length, [filteredOrdersForView])
+  const brandCount = useMemo(() => (filteredOrdersForView || []).filter((o: any) => !o?.is_copack).length, [filteredOrdersForView])
+
   const productNamesSet = useMemo(() => {
     const set = new Set<string>()
     ;(products || []).forEach((p: any) => {
@@ -351,7 +364,9 @@ const PurchaseOrders: React.FC = () => {
   }
 
   function renderPOBanner() {
-    const kind = getPOBannerStatus(orders)
+    const tabLabel = poTab === 'copack' ? 'Co-Pack' : 'Brand'
+    const listForTab = (orders || []).filter((o: any) => (!!o?.is_copack) === (poTab === 'copack'))
+    const kind = getPOBannerStatus(listForTab)
     if (!kind) return null
     const map: Record<Exclude<BannerKind, null>, { cls: string; title: string; desc: string }> = {
       HOLD: {
@@ -382,7 +397,7 @@ const PurchaseOrders: React.FC = () => {
           <div className="flex items-start gap-3">
             <div className="mt-0.5"><AlertTriangle className="h-5 w-5" /></div>
             <div>
-              <div className="text-sm font-semibold">{meta.title}</div>
+              <div className="text-sm font-semibold">{meta.title} ({tabLabel})</div>
               <div className="text-sm opacity-90">{meta.desc}</div>
             </div>
           </div>
@@ -3025,14 +3040,14 @@ const PurchaseOrders: React.FC = () => {
                                     .eq('id', currentOrder.id)
                                   setOpenMenuId(null)
                                   await refreshPOs()
-                                  navigate('/admin/supply-chain-procurement')
+                                  navigate(`/admin/supply-chain-procurement?moved=1&poId=${encodeURIComponent(String(currentOrder.id))}`)
                                 } catch (e: any) {
                                   setToast({ show: true, message: e?.message || 'Failed to move to procurement', kind: 'error' })
                                   setOpenMenuId(null)
                                 }
                               }}
                               disabled={disableMove}
-                              title={disableMove ? 'Already in Procurement/Shipping stage' : 'Move to Procurement'}
+                              title={disableMove ? 'In Procurement/Shipping flow' : 'Move to Procurement'}
                             >
                               <Truck className={`h-4 w-4 ${disableMove ? 'text-neutral-medium' : 'text-primary-medium'}`} />
                               <span>Move to Procurement</span>
@@ -3537,31 +3552,24 @@ const PurchaseOrders: React.FC = () => {
               className={`px-3 py-1.5 text-sm rounded-md ${poTab==='copack' ? 'bg-primary-medium text-white shadow' : 'text-neutral-dark hover:bg-white'}`}
               onClick={() => setPoTab('copack')}
             >
-              Co-Packing
+              Co-Packing ({copackCount})
             </button>
             <button
               className={`px-3 py-1.5 text-sm rounded-md ${poTab==='brand' ? 'bg-primary-medium text-white shadow' : 'text-neutral-dark hover:bg-white'}`}
               onClick={() => setPoTab('brand')}
             >
-              Brands
+              Brands ({brandCount})
             </button>
           </div>
         </div>
           {error && <div className="mb-4 text-sm text-red-600">{error}</div>}
           {loading ? (
             <div className="p-12 text-center text-neutral-medium">Loading…</div>
-          ) : orders.length === 0 ? (
-            <div className="p-12 text-center text-neutral-medium">No purchase orders yet</div>
           ) : (
             <div className="space-y-4">
               {(() => {
-                // First filter the orders
-                const filteredOrders = orders.filter((o:any)=>{
-                  const hit = (o.customer_name||'').toLowerCase().includes(search.toLowerCase()) || (o.product_name||'').toLowerCase().includes(search.toLowerCase())
-                  const statusOk = statusFilter==='All' ? true : o.status===statusFilter
-                  const rushOk = rushFilter==='All' ? true : rushFilter==='Rush Only' ? !!o.is_rush : !o.is_rush
-                  return hit && statusOk && rushOk
-                })
+                // First filter the orders (same source used for tab counts)
+                const filteredOrders = filteredOrdersForView
                 
                 // Create a sorted copy for priority ranking (don't mutate original)
                 const sortedForPriority = [...filteredOrders].sort((a: any, b: any) => {
@@ -3577,6 +3585,15 @@ const PurchaseOrders: React.FC = () => {
                 })
                 
                 const filtered = sortedForPriority.filter((o:any) => (!!o.is_copack) === (poTab === 'copack'))
+                
+                if (filtered.length === 0) {
+                  return (
+                    <div className="p-12 text-center text-neutral-medium">
+                      No {poTab === 'copack' ? 'Co-Pack' : 'Brand'} purchase orders yet
+                    </div>
+                  )
+                }
+                
                 return filtered.map((o:any) => {
                   const orderedQty = Number(o.quantity ?? 0)
                   const shippedSum = shippedTotals[String(o.id)] ?? null
@@ -3599,7 +3616,38 @@ const PurchaseOrders: React.FC = () => {
                             </div>
                             <div className="space-y-1">
                               <div className="text-[11px] uppercase tracking-wide text-neutral-medium">PO #</div>
-                              <div className="text-sm font-semibold text-neutral-dark">{o.po_number || '-'}</div>
+                              <div className="flex items-center gap-2">
+                                <div className="text-sm font-semibold text-neutral-dark">{o.po_number || '-'}</div>
+                                {(() => {
+                                  const st = String(o.status || '').toLowerCase().trim()
+                                  const inProcurement = new Set([
+                                    'move_to_procurement',
+                                    'move to procurement',
+                                    'procurement',
+                                    'ready_to_schedule',
+                                    'ready to schedule',
+                                    'scheduled',
+                                    'in_progress',
+                                    'in progress',
+                                    'qa_hold',
+                                    'qa hold',
+                                    'ready_to_ship',
+                                    'ready to ship',
+                                    'completed',
+                                    'allocated',
+                                    'partial',
+                                    'partially_shipped',
+                                    'shipped',
+                                    'submitted',
+                                  ]).has(st)
+                                  if (!inProcurement) return null
+                                  return (
+                                    <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-sky-50 text-sky-700 border border-sky-200">
+                                      Already Moved to Procurement
+                                    </span>
+                                  )
+                                })()}
+                              </div>
                             </div>
                           </div>
                           {showsPriorityScore(o) && !o.is_copack && (
@@ -3643,7 +3691,7 @@ const PurchaseOrders: React.FC = () => {
                           </button>
                         </div>
                       </div>
-                      <div className={`pt-4 grid grid-cols-1 ${o.is_copack ? 'md:grid-cols-2' : 'md:grid-cols-3'} gap-6`}>
+                      <div className="pt-4 grid grid-cols-1 md:grid-cols-3 gap-6">
                         <div className="space-y-1">
                           <label className="flex items-center text-[11px] font-semibold text-neutral-medium uppercase tracking-wide">
                             <User className="h-4 w-4 mr-2 text-primary-medium" /> Customer
@@ -3665,37 +3713,26 @@ const PurchaseOrders: React.FC = () => {
                             {showsPriorityScore(o) && !o.is_copack && (
                               <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-100 text-amber-700">Competing</span>
                             )}
-                            {o.is_copack && (
-                              <div className="ml-4 flex items-center gap-2">
-                                <Package className="h-4 w-4 text-primary-medium" />
-                                <span className="text-[11px] uppercase tracking-wide text-neutral-medium">Qty</span>
-                                <span className="text-sm font-semibold text-neutral-dark">{Number(o.quantity ?? 0)}</span>
-                              </div>
-                            )}
                           </div>
                         </div>
                         <div className="grid grid-cols-3 gap-6">
-                          {!o.is_copack && (
-                            <div className="md:border-l md:pl-4 border-neutral-soft/60">
-                              <label className="flex items-center text-[11px] font-semibold text-neutral-medium uppercase tracking-wide">
-                                <Package className="h-4 w-4 mr-2 text-primary-medium" /> Qty
-                              </label>
-                              <div className="text-sm font-semibold text-neutral-dark">{Number(o.quantity ?? 0)}</div>
-                            </div>
-                          )}
-                          {!o.is_copack && (
-                            <div className="md:border-l md:pl-4 border-neutral-soft/60">
-                              <label className="flex items-center text-[11px] font-semibold text-neutral-medium uppercase tracking-wide">
-                                <Calendar className="h-4 w-4 mr-2 text-primary-medium" /> Ship Date
-                              </label>
-                              <div className="text-sm font-semibold text-neutral-dark">{o.requested_ship_date || '—'}</div>
-                            </div>
-                          )}
+                          <div className="md:border-l md:pl-4 border-neutral-soft/60">
+                            <label className="flex items-center text-[11px] font-semibold text-neutral-medium uppercase tracking-wide">
+                              <Package className="h-4 w-4 mr-2 text-primary-medium" /> Qty
+                            </label>
+                            <div className="text-sm font-semibold text-neutral-dark">{Number(o.quantity ?? 0)}</div>
+                          </div>
+                          <div className="md:border-l md:pl-4 border-neutral-soft/60">
+                            <label className="flex items-center text-[11px] font-semibold text-neutral-medium uppercase tracking-wide">
+                              <Calendar className="h-4 w-4 mr-2 text-primary-medium" /> Ship Date
+                            </label>
+                            <div className="text-sm font-semibold text-neutral-dark">{o.requested_ship_date || '—'}</div>
+                          </div>
                         </div>
                       </div>
 
                       {/* PO Meta Row */}
-                      <div className={`mt-3 grid grid-cols-1 ${o.is_copack ? 'md:grid-cols-3' : 'md:grid-cols-4'} gap-3 text-[11px] text-neutral-dark`}>
+                      <div className="mt-3 grid grid-cols-1 md:grid-cols-4 gap-3 text-[11px] text-neutral-dark">
                         <div className="flex items-center gap-2 bg-neutral-light/40 border border-neutral-soft/60 rounded-md px-3 py-2">
                           <span className="font-semibold">Allocated</span>
                           <span className="opacity-80">{Number(o.allocated_qty ?? 0)} / {Number(o.quantity ?? 0)}</span>
@@ -3708,12 +3745,10 @@ const PurchaseOrders: React.FC = () => {
                           <span className="font-semibold">Location</span>
                           <span className="opacity-80">{o.location || '—'}</span>
                         </div>
-                        {!o.is_copack && (
-                          <div className="flex items-center gap-2 bg-neutral-light/40 border border-neutral-soft/60 rounded-md px-3 py-2">
-                            <span className="font-semibold">Payment Terms</span>
-                            <span className="opacity-80">{o.payment_terms || '—'}</span>
-                          </div>
-                        )}
+                        <div className="flex items-center gap-2 bg-neutral-light/40 border border-neutral-soft/60 rounded-md px-3 py-2">
+                          <span className="font-semibold">Payment Terms</span>
+                          <span className="opacity-80">{o.payment_terms || '—'}</span>
+                        </div>
                       </div>
 
                       <div className="mt-3 flex items-center justify-between gap-3">

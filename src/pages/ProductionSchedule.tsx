@@ -1,6 +1,6 @@
 // src/pages/ProductionSchedule.tsx
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { useLocation } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { Calendar, X, Plus, Eye, Pencil, Trash2, MoreVertical, AlertTriangle, FileText, Lightbulb, CheckCircle2, Upload } from "lucide-react";
 import { supabase } from "../lib/supabase";
 import { useAuth } from "../contexts/AuthContext";
@@ -176,6 +176,7 @@ const fmtDate = (d?: string | null) => {
 const ProductionSchedule: React.FC = () => {
   const [open, setOpen] = useState(false);
   const location = useLocation()
+  const navigate = useNavigate()
   const { user } = useAuth()
   const [currentUserRole, setCurrentUserRole] = useState<string | null>(null)
   const isScheduleFromPoViewOnly = ['warehouse', 'sales_representative', 'finance', 'procurement', 'supply_chain_procurement'].includes(String(currentUserRole || '').toLowerCase())
@@ -273,6 +274,83 @@ const ProductionSchedule: React.FC = () => {
   const handleOpenMergeModal = (batches: ScheduleItem[]) => {
     setMergeTargets(batches)
     setMergeModalOpen(true)
+  }
+
+  const handleUpdateRequiredFieldsFromStartError = async (batchId: string, message?: string) => {
+    const msg = String(message || '').toLowerCase()
+    const isRawLotInMissing = msg.includes('raw material missing lot_in') || msg.includes('raw material missing lot in')
+    if (!isRawLotInMissing) {
+      await handleOpenEditFromStartError(batchId)
+      return
+    }
+
+    try {
+      const { data } = await supabase
+        .from('lot_traceability')
+        .select('raw_material_name, lot_in')
+        .eq('batch_id', castBatchId(batchId))
+
+      const rows = Array.isArray(data) ? data : []
+      const missing = rows.find((r: any) => !String((r as any)?.lot_in || '').trim())
+      let rawName = String((missing as any)?.raw_material_name || '').trim()
+
+      if (!rawName) {
+        // If lot_traceability rows are not yet created, derive from requirements
+        let reqRows: any[] = []
+        try {
+          const { data: rpcReq, error: rpcErr } = await supabase.rpc('fn_requirements_for_batch', { p_batch_id: castBatchId(batchId) })
+          if (!rpcErr && Array.isArray(rpcReq)) reqRows = rpcReq as any[]
+        } catch {}
+        if (reqRows.length === 0) {
+          try {
+            const { data: sel } = await supabase
+              .from('production_requirements')
+              .select('*')
+              .eq('batch_id', castBatchId(batchId))
+            if (Array.isArray(sel)) reqRows = sel
+          } catch {}
+        }
+        const first = (reqRows || []).find((r: any) => {
+          const nm = String(r.material ?? r.material_name ?? r.product_name ?? '').trim()
+          return nm.length > 0
+        })
+        const names = Array.from(new Set(
+          (reqRows || [])
+            .map((r: any) => String(r.material ?? r.material_name ?? r.product_name ?? '').trim())
+            .filter((x: string) => x.length > 0)
+        ))
+
+        // Prefer the actual missing raw material by checking Inventory lot_number (lot_in)
+        if (names.length) {
+          try {
+            const { data: mats } = await supabase
+              .from('inventory_materials')
+              .select('product_name, lot_number')
+              .in('product_name', names as any)
+
+            const invRows = Array.isArray(mats) ? mats : []
+            const missingInv = invRows.find((m: any) => !String(m?.lot_number || '').trim())
+            if (missingInv?.product_name) {
+              rawName = String(missingInv.product_name).trim()
+            }
+          } catch {}
+        }
+
+        if (!rawName) {
+          rawName = String(first?.material ?? first?.material_name ?? first?.product_name ?? '').trim()
+        }
+      }
+      if (!rawName) {
+        await handleOpenEditFromStartError(batchId)
+        return
+      }
+
+      navigate(`/admin/inventory?focus=1&material=${encodeURIComponent(rawName)}&field=${encodeURIComponent('lot_in')}`)
+    } catch {
+      await handleOpenEditFromStartError(batchId)
+    } finally {
+      setStartErrorModal(null)
+    }
   }
   const handleOpenEditFromStartError = async (batchId: string) => {
     try {
@@ -2660,13 +2738,6 @@ const ProductionSchedule: React.FC = () => {
                   </div>
                 </div>
 
-                <div className="text-sm text-neutral-dark">
-                  <div className="text-xs font-semibold text-neutral-medium uppercase tracking-wide mb-2">Batch ID</div>
-                  <div className="font-mono text-xs bg-neutral-light/40 border border-neutral-soft/50 rounded-lg px-3 py-2 text-neutral-dark break-all">
-                    {startErrorModal.batchId}
-                  </div>
-                </div>
-
                 <div className="text-sm text-neutral-medium">
                   To proceed, click <span className="font-semibold text-neutral-dark">Update Required Fields</span> and fill in the missing info (e.g. <span className="font-semibold">Lot Out</span>), then try again.
                 </div>
@@ -2675,7 +2746,7 @@ const ProductionSchedule: React.FC = () => {
                 <button className="px-4 py-2 rounded-lg border border-neutral-soft text-neutral-dark bg-white hover:bg-neutral-light/50" onClick={() => setStartErrorModal(null)}>
                   Close
                 </button>
-                <button className="px-5 py-2 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-sm font-semibold" onClick={() => handleOpenEditFromStartError(startErrorModal.batchId)}>
+                <button className="px-5 py-2 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-sm font-semibold" onClick={() => handleUpdateRequiredFieldsFromStartError(startErrorModal.batchId, startErrorModal.message)}>
                   Update Required Fields
                 </button>
               </div>

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react'
+import { useLocation } from 'react-router-dom'
 import { Plus, Package, Box, Factory, LineChart, Inbox, Landmark, X, Tag, User, Scale, DollarSign, ClipboardList, Eye, Edit, Trash2, CheckCircle2, Clock, Upload, List, Grid3X3, FileText, RefreshCw, Bell } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../contexts/AuthContext'
@@ -47,6 +48,9 @@ interface RawMaterial {
   cost_per_unit?: string | null
   total_available?: number | null
   created_at?: string | null
+  lot_number?: string | null
+  manufacture_date?: string | null
+  expiry_date?: string | null
   material_file_urls?: string[]
   reserved_qty?: number | null
   reorder_point?: number | null
@@ -64,8 +68,11 @@ interface RawMaterial {
 
 const Inventory: React.FC = () => {
   const { user } = useAuth()
+  const location = useLocation()
   const [currentUserRole, setCurrentUserRole] = useState<string | null>(null)
   const [roleLoading, setRoleLoading] = useState<boolean>(false)
+  const [focusMaterialName, setFocusMaterialName] = useState<string | null>(null)
+  const [focusField, setFocusField] = useState<string | null>(null)
 
   const canManageInventory = useMemo(() => {
     const r = String(currentUserRole || '').toLowerCase()
@@ -173,6 +180,16 @@ const Inventory: React.FC = () => {
   const uomRef = useRef<HTMLDivElement>(null)
   const addDocInputRef = useRef<HTMLInputElement>(null)
   const editDocInputRef = useRef<HTMLInputElement>(null)
+
+  const toDateInputValue = (v: any) => {
+    if (!v) return ''
+    const s = String(v)
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s
+    if (s.includes('T')) return s.split('T')[0]
+    const d = new Date(s)
+    if (Number.isNaN(d.getTime())) return ''
+    return d.toISOString().slice(0, 10)
+  }
 
   // Load user role
   const loadUserRole = async () => {
@@ -396,31 +413,8 @@ const Inventory: React.FC = () => {
           try {
             await supabase.rpc('release_po_reservations', { p_po_id: newRow.id })
             setToast({ show: true, message: 'Reservations released for this PO.' })
-            // refresh materials to reflect reservation release
-            try {
-              const { data, error } = await supabase
-                .from('inventory_materials')
-                .select('id, product_name, category, supplier_id, supplier_name, unit_of_measure, unit_weight, cost_per_unit, total_available, reserved_qty, created_at, material_file_url')
-                .order('product_name', { ascending: true })
-              if (!error) {
-                const rows = (data ?? []) as Array<any>
-                const mapped: any[] = rows.map((r) => ({
-                  id: String(r.id),
-                  product_name: String(r.product_name ?? ''),
-                  category: String(r.category ?? ''),
-                  supplier_id: r.supplier_id ?? null,
-                  supplier_name: r.supplier_name ?? null,
-                  unit_of_measure: r.unit_of_measure ?? null,
-                  unit_weight: r.unit_weight ?? null,
-                  cost_per_unit: r.cost_per_unit ?? null,
-                  total_available: r.total_available ?? null,
-                  reserved_qty: r.reserved_qty ?? 0,
-                  created_at: r.created_at ?? null,
-                  material_file_urls: (() => { try { const v = r.material_file_url; if (!v) return []; const arr = typeof v === 'string' ? JSON.parse(v) : v; return Array.isArray(arr) ? arr : [] } catch { return [] } })(),
-                }))
-                setMaterials(mapped as any)
-              }
-            } catch {}
+            // refresh materials to reflect reservation release (recomputes reserved_qty from inventory_reservations)
+            try { await refreshMaterials() } catch {}
           } catch {}
         }
       })
@@ -437,58 +431,13 @@ const Inventory: React.FC = () => {
           try {
             await supabase.rpc('consume_reservations', { p_batch_id: newRow.id })
             setToast({ show: true, message: 'Raw materials consumed.' })
-            // reload inventory materials inline (minimal duplication to avoid refactor)
-            try {
-              const { data, error } = await supabase
-                .from('inventory_materials')
-                .select('id, product_name, category, supplier_id, supplier_name, unit_of_measure, unit_weight, cost_per_unit, total_available, reserved_qty, created_at')
-                .order('product_name', { ascending: true })
-              if (!error) {
-                const rows = (data ?? []) as Array<any>
-                const mapped: any[] = rows.map((r) => ({
-                  id: String(r.id),
-                  product_name: String(r.product_name ?? ''),
-                  category: String(r.category ?? ''),
-                  supplier_id: r.supplier_id ?? null,
-                  supplier_name: r.supplier_name ?? null,
-                  unit_of_measure: r.unit_of_measure ?? null,
-                  unit_weight: r.unit_weight ?? null,
-                  cost_per_unit: r.cost_per_unit ?? null,
-                  total_available: r.total_available ?? null,
-                  reserved_qty: r.reserved_qty ?? 0,
-                  created_at: r.created_at ?? null,
-                }))
-                setMaterials(mapped as any)
-              }
-            } catch {}
+            // refresh inventory materials (recomputes reserved_qty from inventory_reservations)
+            try { await refreshMaterials() } catch {}
             loadFinished()
           } catch {}
         } else {
           // For other status transitions, still refresh materials to keep reserved/available in sync
-          try {
-            const { data, error } = await supabase
-              .from('inventory_materials')
-              .select('id, product_name, category, supplier_id, supplier_name, unit_of_measure, unit_weight, cost_per_unit, total_available, reserved_qty, created_at, material_file_url')
-              .order('product_name', { ascending: true })
-            if (!error) {
-              const rows = (data ?? []) as Array<any>
-              const mapped: any[] = rows.map((r) => ({
-                id: String(r.id),
-                product_name: String(r.product_name ?? ''),
-                category: String(r.category ?? ''),
-                supplier_id: r.supplier_id ?? null,
-                supplier_name: r.supplier_name ?? null,
-                unit_of_measure: r.unit_of_measure ?? null,
-                unit_weight: r.unit_weight ?? null,
-                cost_per_unit: r.cost_per_unit ?? null,
-                total_available: r.total_available ?? null,
-                reserved_qty: r.reserved_qty ?? 0,
-                created_at: r.created_at ?? null,
-                material_file_urls: (() => { try { const v = r.material_file_url; if (!v) return []; const arr = typeof v === 'string' ? JSON.parse(v) : v; return Array.isArray(arr) ? arr : [] } catch { return [] } })(),
-              }))
-              setMaterials(mapped as any)
-            }
-          } catch {}
+          try { await refreshMaterials() } catch {}
         }
       })
       .subscribe()
@@ -505,6 +454,89 @@ const Inventory: React.FC = () => {
       return () => clearTimeout(t)
     }
   }, [toast.show])
+
+  useEffect(() => {
+    try {
+      // Hash router stores query params in location.search (after #/route?query)
+      let search = String((location as any)?.search || '')
+      if (!search && typeof window !== 'undefined') {
+        const h = String(window.location.hash || '')
+        const q = h.includes('?') ? h.substring(h.indexOf('?')) : ''
+        search = q
+      }
+      const sp = new URLSearchParams(search || '')
+      const focus = sp.get('focus')
+      const material = sp.get('material')
+      const field = sp.get('field')
+      if (focus === '1' && material) {
+        setFocusMaterialName(String(material))
+        setFocusField(field ? String(field) : null)
+      }
+    } catch {}
+  }, [location.search])
+
+  useEffect(() => {
+    if (!focusMaterialName) return
+    if (materialsLoading) return
+    // ensure user lands on Raw Materials tab when coming from ProductionSchedule
+    try { setMainTab('raw') } catch {}
+    const want = String(focusMaterialName || '').toLowerCase().trim()
+    const norm = (s: any) => String(s || '').toLowerCase().trim().replace(/\s+/g, ' ')
+    const target = (materials || []).find((m) => norm((m as any)?.product_name) === norm(want))
+      || (materials || []).find((m) => norm((m as any)?.product_name).includes(norm(want)))
+    if (!target) return
+
+    setEditId(String((target as any).id))
+    setEditForm({
+      product_name: String((target as any).product_name || ''),
+      category: String((target as any).category || ''),
+      supplier_id: String((target as any).supplier_id || ''),
+      supplier_name: String((target as any).supplier_name || ''),
+      unit_of_measure: String((target as any).unit_of_measure || ''),
+      unit_weight: String((target as any).unit_weight || ''),
+      cost_per_unit: String((target as any).cost_per_unit || ''),
+      total_available: String((target as any).total_available ?? ''),
+      lot_number: String((target as any).lot_number ?? ''),
+      manufacture_date: toDateInputValue((target as any).manufacture_date),
+      expiry_date: toDateInputValue((target as any).expiry_date),
+      reorder_point: String((target as any).reorder_point ?? ''),
+      reorder_to_level: String((target as any).reorder_to_level ?? ''),
+      moq: String((target as any).moq ?? ''),
+      eoq: String((target as any).eoq ?? ''),
+      material_file_urls: (target as any).material_file_urls || [],
+    })
+    setEditDocFiles([])
+    setIsEditOpen(true)
+
+    const field = String(focusField || '').toLowerCase().trim()
+    const focusEl = field === 'lot_in' || field === 'lot number' || field === 'lot_number'
+      ? '[data-focus-field="lot_in"]'
+      : field === 'manufacture_date' ? '[data-focus-field="manufacture_date"]'
+      : field === 'expiry_date' ? '[data-focus-field="expiry_date"]'
+      : null
+    if (focusEl) {
+      setTimeout(() => {
+        try {
+          const el = document.querySelector(focusEl) as HTMLElement | null
+          if (el) {
+            el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+            el.focus()
+          }
+        } catch {}
+      }, 200)
+    }
+
+    try {
+      const sp = new URLSearchParams(window.location.search || '')
+      sp.delete('focus')
+      sp.delete('material')
+      sp.delete('field')
+      const next = sp.toString()
+      const url = `${window.location.pathname}${next ? `?${next}` : ''}`
+      window.history.replaceState({}, '', url)
+    } catch {}
+    setFocusMaterialName(null)
+  }, [focusMaterialName, focusField, materialsLoading, materials])
 
   // Auto-Generate PR per spec
   const handleReplenishmentClick = async (material: RawMaterial) => {
@@ -548,11 +580,11 @@ const Inventory: React.FC = () => {
   const refreshMaterials = async () => {
     const { data, error } = await supabase
       .from('inventory_materials')
-      .select('id, product_name, category, supplier_id, supplier_name, unit_of_measure, unit_weight, cost_per_unit, total_available, reserved_qty, reorder_point, reorder_to_level, moq, eoq, created_at, material_file_url')
+      .select('id, product_name, category, supplier_id, supplier_name, unit_of_measure, unit_weight, cost_per_unit, total_available, reserved_qty, reorder_point, reorder_to_level, moq, eoq, created_at, material_file_url, lot_number, manufacture_date, expiry_date')
       .order('product_name', { ascending: true })
     if (error) return
     const rows = (data ?? []) as Array<any>
-    const mapped: RawMaterial[] = rows.map((r) => ({
+    const mappedBase: RawMaterial[] = rows.map((r) => ({
       id: String(r.id),
       product_name: String(r.product_name ?? ''),
       category: String(r.category ?? ''),
@@ -568,8 +600,72 @@ const Inventory: React.FC = () => {
       moq: Number(r.moq ?? 0),
       eoq: Number(r.eoq ?? 0),
       created_at: r.created_at ?? null,
+      lot_number: r.lot_number ?? null,
+      manufacture_date: r.manufacture_date ?? null,
+      expiry_date: r.expiry_date ?? null,
       material_file_urls: (() => { try { const v = r.material_file_url; if (!v) return []; const arr = typeof v === 'string' ? JSON.parse(v) : v; return Array.isArray(arr) ? arr : [] } catch { return [] } })(),
     }))
+
+    // Recompute reserved_qty from live reservations so it resets to 0 when no rows exist.
+    // (Avoid relying on inventory_materials.reserved_qty which can become stale.)
+    let mapped: RawMaterial[] = mappedBase
+    try {
+      const ids = mappedBase.map((m) => m.id).filter(Boolean)
+      const names = Array.from(new Set(mappedBase.map((m) => String(m.product_name || '').trim()).filter(Boolean)))
+
+      const reservedById = new Map<string, number>()
+      const reservedByName = new Map<string, number>()
+
+      if (ids.length) {
+        try {
+          const { data: resById } = await supabase
+            .from('inventory_reservations')
+            .select('material_id, qty, status, is_consumed')
+            .in('material_id', ids as any)
+
+          const rowsId = Array.isArray(resById) ? resById : []
+          for (const r of rowsId) {
+            const st = String((r as any)?.status || 'active').toLowerCase().trim()
+            const consumed = Boolean((r as any)?.is_consumed)
+            if (st !== 'active' || consumed) continue
+            const mid = String((r as any)?.material_id || '').trim()
+            if (!mid) continue
+            const qty = Number((r as any)?.qty || 0)
+            if (!Number.isFinite(qty) || qty <= 0) continue
+            reservedById.set(mid, Number(reservedById.get(mid) || 0) + qty)
+          }
+        } catch {}
+      }
+
+      if (names.length) {
+        try {
+          const { data: resByName } = await supabase
+            .from('inventory_reservations')
+            .select('product_name, qty, status, is_consumed')
+            .in('product_name', names as any)
+
+          const rowsNm = Array.isArray(resByName) ? resByName : []
+          for (const r of rowsNm) {
+            const st = String((r as any)?.status || 'active').toLowerCase().trim()
+            const consumed = Boolean((r as any)?.is_consumed)
+            if (st !== 'active' || consumed) continue
+            const pn = String((r as any)?.product_name || '').trim()
+            if (!pn) continue
+            const qty = Number((r as any)?.qty || 0)
+            if (!Number.isFinite(qty) || qty <= 0) continue
+            reservedByName.set(pn, Number(reservedByName.get(pn) || 0) + qty)
+          }
+        } catch {}
+      }
+
+      mapped = mappedBase.map((m) => {
+        const byId = reservedById.get(String(m.id))
+        const byName = reservedByName.get(String(m.product_name || '').trim())
+        const computed = Number(byId ?? byName ?? 0)
+        return { ...m, reserved_qty: computed }
+      })
+    } catch {}
+
     try {
       const ids = mapped.map(m => m.id)
       let statusRows: any[] = []
@@ -586,6 +682,7 @@ const Inventory: React.FC = () => {
           .in('material_id', ids)
         reqRows = rqs ?? []
       }
+
       const latestReqByMat = new Map<string, any>()
       reqRows.sort((a: any, b: any) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime())
         .forEach((r: any) => { const k = String(r.material_id); if (!latestReqByMat.has(k)) latestReqByMat.set(k, r) })
@@ -648,7 +745,7 @@ const Inventory: React.FC = () => {
       setMaterialsLoading(true)
       const { data, error } = await supabase
       .from('inventory_materials')
-      .select('id, product_name, category, supplier_id, supplier_name, unit_of_measure, unit_weight, cost_per_unit, total_available, reserved_qty, reorder_point, reorder_to_level, moq, eoq, created_at, material_file_url')
+      .select('id, product_name, category, supplier_id, supplier_name, unit_of_measure, unit_weight, cost_per_unit, total_available, reserved_qty, reorder_point, reorder_to_level, moq, eoq, created_at, material_file_url, lot_number, manufacture_date, expiry_date')
       .order('product_name', { ascending: true })
 
       if (error) {
@@ -657,7 +754,7 @@ const Inventory: React.FC = () => {
         return
       }
       const rows = (data ?? []) as Array<any>
-      const mapped: RawMaterial[] = rows.map((r) => ({
+      const mappedBase: RawMaterial[] = rows.map((r) => ({
         id: String(r.id),
         product_name: String(r.product_name ?? ''),
         category: String(r.category ?? ''),
@@ -673,8 +770,72 @@ const Inventory: React.FC = () => {
         moq: Number(r.moq ?? 0),
         eoq: Number(r.eoq ?? 0),
         created_at: r.created_at ?? null,
+        lot_number: r.lot_number ?? null,
+        manufacture_date: r.manufacture_date ?? null,
+        expiry_date: r.expiry_date ?? null,
         material_file_urls: (() => { try { const v = r.material_file_url; if (!v) return []; const arr = typeof v === 'string' ? JSON.parse(v) : v; return Array.isArray(arr) ? arr : [] } catch { return [] } })(),
       }))
+
+      // Recompute reserved_qty from live reservations so it resets to 0 when no rows exist.
+      // (Avoid relying on inventory_materials.reserved_qty which can become stale.)
+      let mapped: RawMaterial[] = mappedBase
+      try {
+        const ids = mappedBase.map((m) => m.id).filter(Boolean)
+        const names = Array.from(new Set(mappedBase.map((m) => String(m.product_name || '').trim()).filter(Boolean)))
+
+        const reservedById = new Map<string, number>()
+        const reservedByName = new Map<string, number>()
+
+        if (ids.length) {
+          try {
+            const { data: resById } = await supabase
+              .from('inventory_reservations')
+              .select('material_id, qty, status, is_consumed')
+              .in('material_id', ids as any)
+
+            const rowsId = Array.isArray(resById) ? resById : []
+            for (const r of rowsId) {
+              const st = String((r as any)?.status || 'active').toLowerCase().trim()
+              const consumed = Boolean((r as any)?.is_consumed)
+              if (st !== 'active' || consumed) continue
+              const mid = String((r as any)?.material_id || '').trim()
+              if (!mid) continue
+              const qty = Number((r as any)?.qty || 0)
+              if (!Number.isFinite(qty) || qty <= 0) continue
+              reservedById.set(mid, Number(reservedById.get(mid) || 0) + qty)
+            }
+          } catch {}
+        }
+
+        // Fallback in case some reservations are missing material_id but have product_name
+        if (names.length) {
+          try {
+            const { data: resByName } = await supabase
+              .from('inventory_reservations')
+              .select('product_name, qty, status, is_consumed')
+              .in('product_name', names as any)
+
+            const rowsNm = Array.isArray(resByName) ? resByName : []
+            for (const r of rowsNm) {
+              const st = String((r as any)?.status || 'active').toLowerCase().trim()
+              const consumed = Boolean((r as any)?.is_consumed)
+              if (st !== 'active' || consumed) continue
+              const pn = String((r as any)?.product_name || '').trim()
+              if (!pn) continue
+              const qty = Number((r as any)?.qty || 0)
+              if (!Number.isFinite(qty) || qty <= 0) continue
+              reservedByName.set(pn, Number(reservedByName.get(pn) || 0) + qty)
+            }
+          } catch {}
+        }
+
+        mapped = mappedBase.map((m) => {
+          const byId = reservedById.get(String(m.id))
+          const byName = reservedByName.get(String(m.product_name || '').trim())
+          const computed = Number(byId ?? byName ?? 0)
+          return { ...m, reserved_qty: computed }
+        })
+      } catch {}
 
       // fetch replenishment status and latest requisition per material
       try {
@@ -1303,7 +1464,7 @@ const Inventory: React.FC = () => {
                                 <span className="ml-2 inline-flex items-center rounded-full bg-blue-100 px-2 py-0.5 text-[11px] font-semibold text-blue-700">
                                   <Bell className="h-3.5 w-3.5 mr-1" /> Pending PR ({m.replenishmentStatus.qty})
                                 </span>
-                              ) : ((Number(m.total_available ?? 0) - Number(m.reserved_qty ?? 0)) <= Number(m.reorder_point ?? 0)) ? (
+                              ) : ((Number(m.total_available ?? 0) - Number((m as any).reserved_qty || 0)) <= Number((m as any).reorder_point || 0)) ? (
                                 <span className="ml-2 inline-flex items-center rounded-full bg-red-100 px-2 py-0.5 text-[11px] font-semibold text-red-700">Replenishment Required</span>
                               ) : null}
                             </td>
@@ -1326,7 +1487,7 @@ const Inventory: React.FC = () => {
                                 </button>
                               </div>
                             </td>
-                            <td className="px-6 py-4 text-sm text-neutral-dark">{Number(m.total_available || 0) - Number(m.reserved_qty || 0)}</td>
+                            <td className="px-6 py-4 text-sm text-neutral-dark">{Number(m.total_available || 0) - Number((m as any).reserved_qty || 0)}</td>
                             <td className="px-6 py-4">
                               <div className="flex items-center justify-center gap-2">
                                 <button type="button" onClick={() => { setViewData(m); setIsViewOpen(true) }} className="p-2 text-primary-medium hover:text-white hover:bg-primary-medium rounded-lg border border-primary-light/30">
@@ -1342,9 +1503,9 @@ const Inventory: React.FC = () => {
                                     unit_weight: m.unit_weight || '',
                                     cost_per_unit: m.cost_per_unit || '',
                                     total_available: String(m.total_available ?? ''),
-                                    lot_number: '',
-                                    manufacture_date: '',
-                                    expiry_date: '',
+                                    lot_number: String((m as any).lot_number ?? ''),
+                                    manufacture_date: toDateInputValue((m as any).manufacture_date),
+                                    expiry_date: toDateInputValue((m as any).expiry_date),
                                     reorder_point: String((m as any).reorder_point ?? ''),
                                     reorder_to_level: String((m as any).reorder_to_level ?? ''),
                                     moq: String((m as any).moq ?? ''),
@@ -1591,9 +1752,9 @@ const Inventory: React.FC = () => {
                                     unit_weight: m.unit_weight || '',
                                     cost_per_unit: m.cost_per_unit || '',
                                     total_available: String(m.total_available ?? ''),
-                                    lot_number: '',
-                                    manufacture_date: '',
-                                    expiry_date: '',
+                                    lot_number: String((m as any).lot_number ?? ''),
+                                    manufacture_date: toDateInputValue((m as any).manufacture_date),
+                                    expiry_date: toDateInputValue((m as any).expiry_date),
                                     reorder_point: String((m as any).reorder_point ?? ''),
                                     reorder_to_level: String((m as any).reorder_to_level ?? ''),
                                     moq: String((m as any).moq ?? ''),
@@ -1933,44 +2094,42 @@ const Inventory: React.FC = () => {
                         {docsLayout === 'list' ? (
                           <div className="space-y-3">
                             {viewData.material_file_urls.map((url, idx) => (
-                              <div key={idx} className="group relative bg-slate-50/50 hover:bg-white border border-slate-200/60 hover:border-primary-200 rounded-2xl p-4 transition-all duration-200 hover:shadow-lg hover:shadow-slate-200/50">
-                                <div className="flex items-center justify-between">
-                                  <div className="flex items-center space-x-4 min-w-0 flex-1">
-                                    {(() => { 
-                                      const meta = getFileMeta(prettyFileName(url)); 
-                                      return (
-                                        <div className={`inline-flex items-center justify-center w-10 h-10 rounded-xl text-xs font-bold ${meta.cls.replace('bg-', 'bg-').replace('text-', 'text-')} border border-current/20`}>
-                                          {meta.label}
-                                        </div>
-                                      )
-                                    })()}
-                                    <div className="min-w-0 flex-1">
-                                      <button
-                                        type="button"
-                                        className="block text-left w-full"
-                                        onClick={() => {
-                                          const lower = url.toLowerCase()
-                                          if (lower.endsWith('.pdf') || lower.endsWith('.png') || lower.endsWith('.jpg') || lower.endsWith('.jpeg')) {
-                                            window.open(url, '_blank')
-                                          } else {
-                                            const viewer = `https://docs.google.com/gview?embedded=1&url=${encodeURIComponent(url)}`
-                                            window.open(viewer, '_blank')
-                                          }
-                                        }}
-                                      >
-                                        <h4 className="text-sm font-semibold text-slate-900 group-hover:text-primary-600 truncate transition-colors">
-                                          {prettyFileName(url)}
-                                        </h4>
-                                        <p className="text-xs text-slate-500 mt-1">Click to open in new tab</p>
-                                      </button>
-                                    </div>
+                              <div key={idx} className="flex items-center justify-between bg-white border border-slate-200/60 hover:border-primary-200 rounded-2xl p-4 transition-all duration-200 hover:shadow-lg hover:shadow-slate-200/50">
+                                <div className="flex items-center gap-3 min-w-0 flex-1">
+                                  {(() => { 
+                                    const meta = getFileMeta(prettyFileName(url)); 
+                                    return (
+                                      <div className={`inline-flex items-center justify-center w-10 h-10 rounded-xl text-xs font-bold ${meta.cls.replace('bg-', 'bg-').replace('text-', 'text-')} border border-current/20`}>
+                                        {meta.label}
+                                      </div>
+                                    )
+                                  })()}
+                                  <div className="min-w-0 flex-1">
+                                    <button
+                                      type="button"
+                                      className="block text-left w-full"
+                                      onClick={() => {
+                                        const lower = url.toLowerCase()
+                                        if (lower.endsWith('.pdf') || lower.endsWith('.png') || lower.endsWith('.jpg') || lower.endsWith('.jpeg')) {
+                                          window.open(url, '_blank')
+                                        } else {
+                                          const viewer = `https://docs.google.com/gview?embedded=1&url=${encodeURIComponent(url)}`
+                                          window.open(viewer, '_blank')
+                                        }
+                                      }}
+                                    >
+                                      <h4 className="text-sm font-semibold text-slate-900 group-hover:text-primary-600 truncate transition-colors">
+                                        {prettyFileName(url)}
+                                      </h4>
+                                      <p className="text-xs text-slate-500 mt-1">Click to open in new tab</p>
+                                    </button>
                                   </div>
-                                  <div className="opacity-0 group-hover:opacity-100 transition-opacity duration-200">
-                                    <div className="w-8 h-8 bg-primary-50 rounded-xl flex items-center justify-center">
-                                      <svg className="w-4 h-4 text-primary-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-                                      </svg>
-                                    </div>
+                                </div>
+                                <div className="opacity-0 group-hover:opacity-100 transition-opacity duration-200">
+                                  <div className="w-8 h-8 bg-primary-50 rounded-xl flex items-center justify-center">
+                                    <svg className="w-4 h-4 text-primary-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                                    </svg>
                                   </div>
                                 </div>
                               </div>
@@ -2017,17 +2176,6 @@ const Inventory: React.FC = () => {
                           </div>
                         )}
                       </div>
-                    </div>
-                  )}
-
-                  {/* No Documents Message */}
-                  {(!Array.isArray(viewData.material_file_urls) || viewData.material_file_urls.length === 0) && (
-                    <div className="text-center py-12">
-                      <div className="mx-auto w-16 h-16 bg-neutral-100 rounded-full flex items-center justify-center mb-4">
-                        <Upload className="h-8 w-8 text-neutral-400" />
-                      </div>
-                      <h3 className="text-lg font-medium text-neutral-900 mb-2">No Documents</h3>
-                      <p className="text-neutral-500">This material doesn't have any documents attached.</p>
                     </div>
                   )}
                 </div>
@@ -2151,12 +2299,25 @@ const Inventory: React.FC = () => {
                   {/* Lot Traceability (Edit) */}
                   <div className="mt-2 border-t border-neutral-soft pt-6">
                     <h3 className="text-lg font-semibold text-neutral-dark mb-4">Lot Traceability</h3>
+                    {focusField && (
+                      <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-lg">
+                        <div className="flex items-center gap-2">
+                          <div className="w-4 h-4 rounded-full bg-amber-400 flex items-center justify-center">
+                            <span className="text-white text-xs font-bold">!</span>
+                          </div>
+                          <p className="text-sm font-medium text-amber-800">
+                            These lot traceability fields are required to complete production batches. Please fill in all highlighted fields.
+                          </p>
+                        </div>
+                      </div>
+                    )}
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                       <div className="space-y-2">
                         <label className="text-sm font-medium text-neutral-dark">Lot Number</label>
                         <input
                           type="text"
-                          className="w-full px-4 py-3 border border-neutral-soft rounded-lg"
+                          data-focus-field="lot_in"
+                          className={`w-full px-4 py-3 border border-neutral-soft rounded-lg ${focusField ? 'ring-2 ring-amber-400 bg-amber-50/40 border-amber-300' : ''}`}
                           value={editForm.lot_number}
                           onChange={(e)=>setEditForm({ ...editForm, lot_number: e.target.value })}
                         />
@@ -2165,7 +2326,8 @@ const Inventory: React.FC = () => {
                         <label className="text-sm font-medium text-neutral-dark">Manufacture Date</label>
                         <input
                           type="date"
-                          className="w-full px-4 py-3 border border-neutral-soft rounded-lg"
+                          data-focus-field="manufacture_date"
+                          className={`w-full px-4 py-3 border border-neutral-soft rounded-lg ${focusField ? 'ring-2 ring-amber-400 bg-amber-50/40 border-amber-300' : ''}`}
                           value={editForm.manufacture_date}
                           onChange={(e)=>setEditForm({ ...editForm, manufacture_date: e.target.value })}
                         />
@@ -2174,7 +2336,8 @@ const Inventory: React.FC = () => {
                         <label className="text-sm font-medium text-neutral-dark">Expiry Date</label>
                         <input
                           type="date"
-                          className="w-full px-4 py-3 border border-neutral-soft rounded-lg"
+                          data-focus-field="expiry_date"
+                          className={`w-full px-4 py-3 border border-neutral-soft rounded-lg ${focusField ? 'ring-2 ring-amber-400 bg-amber-50/40 border-amber-300' : ''}`}
                           value={editForm.expiry_date}
                           onChange={(e)=>setEditForm({ ...editForm, expiry_date: e.target.value })}
                         />

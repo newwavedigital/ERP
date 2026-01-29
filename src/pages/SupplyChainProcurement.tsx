@@ -841,6 +841,12 @@ const SupplyChainProcurement: React.FC = () => {
                 <div className="text-xs text-neutral-medium">{orders.length} PO(s)</div>
               </div>
 
+              <div className="px-3 sm:px-4 lg:px-6 py-2 border-b border-neutral-soft/40 bg-white">
+                <div className="text-xs text-neutral-medium">
+                  Reminder: Click a PO below to view the materials calculation and breakdown.
+                </div>
+              </div>
+
               <div className="p-3 sm:p-4 lg:p-6">
                 {loading ? (
                   <div className="text-sm text-neutral-medium">Loading…</div>
@@ -992,15 +998,22 @@ const SupplyChainProcurement: React.FC = () => {
 
                       {calcBreakdown.length > 0 && (
                         <div className="rounded-xl border border-neutral-soft/40 bg-white overflow-hidden">
-                          <div className="px-3 sm:px-4 py-2 border-b border-neutral-soft/40 bg-neutral-light/20 flex items-center justify-between gap-3">
+                          <div className="px-3 sm:px-4 py-2 border-b border-neutral-soft/40 bg-neutral-light/20 flex items-start justify-between gap-3">
                             <div className="text-xs font-semibold text-neutral-dark">Calculation Details</div>
-                            <button
-                              type="button"
-                              onClick={() => setShowCalcBreakdown((v) => !v)}
-                              className="text-xs font-semibold text-primary-medium hover:text-primary-dark"
-                            >
-                              {showCalcBreakdown ? 'Hide' : 'Show'}
-                            </button>
+                            <div className="flex flex-col items-end">
+                              <button
+                                type="button"
+                                onClick={() => setShowCalcBreakdown((v) => !v)}
+                                className="text-xs font-semibold text-primary-medium hover:text-primary-dark"
+                              >
+                                {showCalcBreakdown ? 'Hide' : 'Show'}
+                              </button>
+                              <div className="mt-1 text-[11px] text-neutral-medium text-right max-w-[260px]">
+                                {showCalcBreakdown
+                                  ? 'Full breakdown is shown below. Click Hide to collapse.'
+                                  : 'Want to see the full breakdown? Click Show.'}
+                              </div>
+                            </div>
                           </div>
 
                           {showCalcBreakdown && (

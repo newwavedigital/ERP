@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react'
 import { useLocation } from 'react-router-dom'
-import { Plus, Package, Box, Factory, LineChart, Inbox, Landmark, X, Tag, User, Scale, DollarSign, ClipboardList, Eye, Edit, Trash2, CheckCircle2, Clock, Upload, List, Grid3X3, FileText, RefreshCw, Bell } from 'lucide-react'
+import { Plus, Package, Box, Factory, LineChart, Inbox, Landmark, X, Tag, User, Scale, DollarSign, ClipboardList, Eye, Edit, Trash2, CheckCircle2, Clock, Upload, List, Grid3X3, FileText, RefreshCw, Bell, Search, ShieldAlert, MessageSquare } from 'lucide-react'
+import * as XLSX from 'xlsx'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../contexts/AuthContext'
 
@@ -39,6 +40,7 @@ interface Supplier {
 
 interface RawMaterial {
   id: string
+  inventory_id?: string | null
   product_name: string
   category: string
   supplier_id?: string | null
@@ -47,16 +49,22 @@ interface RawMaterial {
   unit_weight?: string | null
   cost_per_unit?: string | null
   total_available?: number | null
+  comments?: string | null
   created_at?: string | null
   lot_number?: string | null
   manufacture_date?: string | null
   expiry_date?: string | null
   material_file_urls?: string[]
   reserved_qty?: number | null
+  sku?: string | null
   reorder_point?: number | null
   reorder_to_level?: number | null
   moq?: number | null
   eoq?: number | null
+  is_client_supplied?: boolean
+  client_id?: string | null
+  qa_hold?: boolean
+  qa_hold_reason?: string | null
   replenishmentStatus?: {
     hasPending: boolean
     qty: number
@@ -64,6 +72,10 @@ interface RawMaterial {
     reqStatus: string | null
     reqCreatedAt?: string | null
   } | null
+}
+
+type UploadMappedRow = {
+  [dbColumn: string]: string
 }
 
 const Inventory: React.FC = () => {
@@ -107,6 +119,7 @@ const Inventory: React.FC = () => {
     unit_weight: '',
     cost_per_unit: '',
     total_available: '',
+    comments: '',
     lot_number: '',
     manufacture_date: '',
     expiry_date: '',
@@ -145,7 +158,7 @@ const Inventory: React.FC = () => {
   const [replLoading, setReplLoading] = useState<boolean>(false)
   const [prModalFor, setPrModalFor] = useState<RawMaterial | null>(null)
   const [isGenerating, setIsGenerating] = useState<boolean>(false)
-  const [replRpcData, setReplRpcData] = useState<any | null>(null)
+  const [replRpcData] = useState<any | null>(null)
   const [rawForm, setRawForm] = useState({
     name: '',
     category: '',
@@ -180,6 +193,112 @@ const Inventory: React.FC = () => {
   const uomRef = useRef<HTMLDivElement>(null)
   const addDocInputRef = useRef<HTMLInputElement>(null)
   const editDocInputRef = useRef<HTMLInputElement>(null)
+  const uploadExcelInputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    const loadSuppliers = async () => {
+      try {
+        if (!supabase) {
+          setSuppliersError('Supabase not configured')
+          setSuppliersLoading(false)
+          return
+        }
+        setSuppliersLoading(true)
+        setSuppliersError(null)
+        const { data, error } = await supabase
+          .from('suppliers')
+          .select('id, company_name')
+          .order('company_name', { ascending: true })
+
+        if (error) {
+          setSuppliersError('Cannot load suppliers')
+          setSuppliers([])
+          setSuppliersLoading(false)
+          return
+        }
+
+        const rows = (data ?? []) as Array<{ id: string; company_name: string | null }>
+        const items: Supplier[] = rows
+          .map((r) => ({ id: String(r.id), name: String(r.company_name ?? '').trim() }))
+          .filter((r) => r.id && r.name.length > 0)
+        setSuppliers(items)
+        setSuppliersLoading(false)
+      } catch {
+        setSuppliersError('Cannot load suppliers')
+        setSuppliers([])
+        setSuppliersLoading(false)
+      }
+    }
+    loadSuppliers()
+  }, [])
+
+  const [isUploadExcelOpen, setIsUploadExcelOpen] = useState<boolean>(false)
+  const [uploadExcelDragOver, setUploadExcelDragOver] = useState<boolean>(false)
+  const [uploadExcelFiles, setUploadExcelFiles] = useState<File[]>([])
+  const [uploadExcelHeaders, setUploadExcelHeaders] = useState<string[]>([])
+  const [uploadExcelRows, setUploadExcelRows] = useState<Array<Record<string, string>>>([])
+  const [uploadExcelParseLoading, setUploadExcelParseLoading] = useState<boolean>(false)
+  const [uploadExcelParseError, setUploadExcelParseError] = useState<string | null>(null)
+  const [uploadExcelMapping, setUploadExcelMapping] = useState<Record<string, string>>({})
+  const [uploadExcelMappedPreview, setUploadExcelMappedPreview] = useState<UploadMappedRow[]>([])
+  const [uploadExcelImportLoading, setUploadExcelImportLoading] = useState<boolean>(false)
+  const [uploadExcelImportError, setUploadExcelImportError] = useState<string | null>(null)
+  const [uploadExcelPreviewLimit, setUploadExcelPreviewLimit] = useState<number>(10)
+  const [uploadExcelFieldSearch, setUploadExcelFieldSearch] = useState<string>('')
+  const [uploadExcelShowColumns, setUploadExcelShowColumns] = useState<boolean>(false)
+
+  const inventoryMaterialsDbColumns = useMemo(() => {
+    return [
+      'id',
+      'inventory_id',
+      'product_name',
+      'category',
+      'supplier_id',
+      'supplier_name',
+      'unit_of_measure',
+      'unit_weight',
+      'cost_per_unit',
+      'total_available',
+      'comments',
+      'created_at',
+      'reserved_qty',
+      'sku',
+      'reorder_point',
+      'reorder_to_level',
+      'moq',
+      'eoq',
+      'is_client_supplied',
+      'client_id',
+      'qa_hold',
+      'qa_hold_reason',
+      'material_file_url',
+      'lot_number',
+      'manufacture_date',
+      'expiry_date',
+    ] as const
+  }, [])
+
+  const inventoryMaterialsUploadDbColumns = useMemo(() => {
+    return (inventoryMaterialsDbColumns as unknown as string[])
+      .filter((c) =>
+        c !== 'id' && c !== 'supplier_id' && c !== 'supplier_name' && c !== 'reserved_qty' && c !== 'material_file_url' && c !== 'created_at'
+      )
+  }, [inventoryMaterialsDbColumns])
+
+  const inventoryMaterialsDbColumnLabel = (col: string) => {
+    const raw = String(col || '').trim()
+    if (!raw) return ''
+    const acronyms = new Set(['id', 'sku', 'uom', 'moq', 'eoq', 'qa'])
+    return raw
+      .split('_')
+      .filter(Boolean)
+      .map((w) => {
+        const lw = w.toLowerCase()
+        if (acronyms.has(lw)) return lw.toUpperCase()
+        return lw.charAt(0).toUpperCase() + lw.slice(1)
+      })
+      .join(' ')
+  }
 
   const toDateInputValue = (v: any) => {
     if (!v) return ''
@@ -191,6 +310,383 @@ const Inventory: React.FC = () => {
     return d.toISOString().slice(0, 10)
   }
 
+  const parseCsvLine = (line: string) => {
+    const out: string[] = []
+    let cur = ''
+    let inQuotes = false
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i]
+      if (ch === '"') {
+        if (inQuotes && line[i + 1] === '"') {
+          cur += '"'
+          i++
+          continue
+        }
+        inQuotes = !inQuotes
+        continue
+      }
+      if (ch === ',' && !inQuotes) {
+        out.push(cur)
+        cur = ''
+        continue
+      }
+      cur += ch
+    }
+    out.push(cur)
+    return out.map((s) => s.trim())
+  }
+
+  const detectHeaderRow = (matrix: string[][]) => {
+    const want = ['location', 'expires', 'comment', 'id', 'item', 'moved', 'lot', 'bbd', 'expiry', 'qty', 'quantity', 'uom', 'unit']
+    const norm = (s: any) => String(s || '').toLowerCase().trim().replace(/\s+/g, ' ').replace(/_/g, ' ')
+    const scoreRow = (row: string[]) => {
+      const raw = (row || []).map((c) => String(c || '').trim())
+      const nonEmpty = raw.filter(Boolean)
+      if (!nonEmpty.length) return 0
+      let hits = 0
+      for (const c of nonEmpty) {
+        const n = norm(c)
+        for (const w of want) {
+          if (n === w || n.includes(w)) { hits++; break }
+        }
+      }
+      return nonEmpty.length * 2 + hits * 5
+    }
+
+    let bestIdx = 0
+    let bestScore = -1
+    const maxScan = Math.min(50, matrix.length)
+    for (let i = 0; i < maxScan; i++) {
+      const s = scoreRow(matrix[i] || [])
+      if (s > bestScore) { bestScore = s; bestIdx = i }
+    }
+    const rawHeaders = (matrix[bestIdx] || []).map((h) => String(h || '').trim())
+    const seen = new Map<string, number>()
+    const headers = rawHeaders.map((h, idx) => {
+      const base = h || `__COL_${idx + 1}`
+      const n = (seen.get(base) || 0) + 1
+      seen.set(base, n)
+      return n === 1 ? base : `${base}_${n}`
+    })
+    return { headerIndex: bestIdx, headers }
+  }
+
+  const closeUploadExcelModal = () => {
+    setIsUploadExcelOpen(false)
+    setUploadExcelDragOver(false)
+    setUploadExcelFiles([])
+    setUploadExcelHeaders([])
+    setUploadExcelRows([])
+    setUploadExcelParseLoading(false)
+    setUploadExcelParseError(null)
+    setUploadExcelMapping({})
+    setUploadExcelMappedPreview([])
+    setUploadExcelImportLoading(false)
+    setUploadExcelImportError(null)
+    setUploadExcelFieldSearch('')
+    setUploadExcelShowColumns(false)
+  }
+
+  const handleUploadExcelFiles = async (files: File[]) => {
+    setUploadExcelFiles(files)
+    setUploadExcelHeaders([])
+    setUploadExcelRows([])
+    setUploadExcelParseError(null)
+    setUploadExcelMapping({})
+    setUploadExcelMappedPreview([])
+    setUploadExcelFieldSearch('')
+    setUploadExcelShowColumns(false)
+    if (!files || files.length === 0) return
+
+    const f = files[0]
+    const name = String(f?.name || '')
+    const ext = name.toLowerCase().includes('.') ? name.toLowerCase().split('.').pop() || '' : ''
+
+    setUploadExcelParseLoading(true)
+    try {
+      let headers: string[] = []
+      let rows: Array<Record<string, string>> = []
+
+      if (ext === 'csv') {
+        const text = await f.text()
+        const rawLines = String(text || '')
+          .replace(/\r\n/g, '\n')
+          .replace(/\r/g, '\n')
+          .split('\n')
+
+        const matrix: string[][] = rawLines
+          .map((ln) => parseCsvLine(String(ln || '')))
+          .filter((cells) => Array.isArray(cells) && cells.some((c) => String(c || '').trim().length > 0))
+
+        if (!matrix.length) {
+          setUploadExcelParseError('CSV file is empty')
+          return
+        }
+
+        const detected = detectHeaderRow(matrix)
+        headers = detected.headers
+        const start = detected.headerIndex + 1
+        rows = []
+        for (let i = start; i < matrix.length; i++) {
+          const cells = matrix[i] || []
+          if (!cells.some((c) => String(c || '').trim().length > 0)) continue
+          const rec: Record<string, string> = {}
+          for (let c = 0; c < headers.length; c++) {
+            rec[headers[c]] = String(cells[c] ?? '').trim()
+          }
+          rows.push(rec)
+        }
+      } else if (ext === 'xlsx' || ext === 'xls') {
+        const ab = await f.arrayBuffer()
+        const wb = XLSX.read(ab, { type: 'array' })
+        const sheetName = String(wb.SheetNames?.[0] || '')
+        if (!sheetName) {
+          setUploadExcelParseError('Excel file has no sheets')
+          return
+        }
+        const ws = wb.Sheets[sheetName]
+        const arr = XLSX.utils.sheet_to_json<any[]>(ws, { header: 1, raw: false, defval: '' }) as any[][]
+        const clean: string[][] = (arr || [])
+          .map((r) => (Array.isArray(r) ? r.map((c) => String(c ?? '').trim()) : []))
+          .filter((r) => r.some((c) => String(c || '').trim().length > 0))
+        if (!clean.length) {
+          setUploadExcelParseError('Excel sheet is empty')
+          return
+        }
+        const detected = detectHeaderRow(clean)
+        headers = detected.headers
+        const start = detected.headerIndex + 1
+        rows = []
+        for (let i = start; i < clean.length; i++) {
+          const r = clean[i] || []
+          const rec: Record<string, string> = {}
+          for (let c = 0; c < headers.length; c++) {
+            rec[headers[c]] = String(r[c] ?? '').trim()
+          }
+          rows.push(rec)
+        }
+      } else {
+        setUploadExcelParseError('Unsupported file type. Please upload .csv, .xlsx, or .xls')
+        return
+      }
+
+      setUploadExcelHeaders(headers)
+      setUploadExcelRows(rows)
+      // Do not auto-select mappings on upload; user can manually map or use Auto-Map buttons.
+      setUploadExcelMapping({})
+    } catch {
+      setUploadExcelParseError('Failed to read/parse file')
+    } finally {
+      setUploadExcelParseLoading(false)
+    }
+  }
+
+  const mapUploadedRowsToInventoryFields = () => {
+    const mapped: UploadMappedRow[] = (uploadExcelRows || []).map((r) => {
+      const out: UploadMappedRow = {}
+      for (const dbCol of inventoryMaterialsUploadDbColumns as unknown as string[]) {
+        const excelCol = String((uploadExcelMapping as any)?.[dbCol] || '')
+        if (!excelCol) continue
+        out[dbCol] = String((r as any)?.[excelCol] ?? '').trim()
+      }
+      return out
+    })
+    setUploadExcelMappedPreview(mapped)
+    return mapped
+  }
+
+  const autoMapExcelExact = () => {
+    const norm = (s: any) => String(s || '').toLowerCase().trim().replace(/\s+/g, ' ').replace(/_/g, ' ')
+    const headers = uploadExcelHeaders || []
+    const byNorm = new Map(headers.map((h) => [norm(h), h]))
+
+    const synonyms: Record<string, string[]> = {
+      product_name: ['item moved', 'item'],
+      unit_of_measure: ['uom', 'unit of measure'],
+      total_available: ['qty in location', 'qty', 'quantity'],
+      expiry_date: ['bbd', 'bbd date', 'best before date', 'expiry', 'expiry date'],
+      lot_number: ['lot', 'lot number'],
+      inventory_id: ['inventory id', 'inventory_id', 'id'],
+      comments: ['comments', 'comment', 'remarks', 'note', 'notes'],
+    }
+
+    const next: Record<string, string> = {}
+    for (const dbCol of inventoryMaterialsUploadDbColumns as unknown as string[]) {
+      const keys = [String(dbCol), ...(synonyms[String(dbCol)] || [])]
+      let hit: string | undefined
+      for (const k of keys) {
+        hit = byNorm.get(norm(k))
+        if (hit) break
+      }
+      if (hit) next[String(dbCol)] = hit
+    }
+    setUploadExcelMapping(next)
+    setUploadExcelMappedPreview([])
+  }
+
+  const autoMapExcelAll = () => {
+    const norm = (s: any) => String(s || '').toLowerCase().trim().replace(/\s+/g, ' ').replace(/_/g, ' ')
+    const headers = uploadExcelHeaders || []
+    const candidates = headers.map((h) => ({ h, n: norm(h) }))
+
+    const synonyms: Record<string, string[]> = {
+      product_name: ['item moved', 'item'],
+      unit_of_measure: ['uom', 'unit of measure'],
+      total_available: ['qty in location', 'qty', 'quantity'],
+      expiry_date: ['bbd', 'bbd date', 'best before date', 'expiry', 'expiry date'],
+      lot_number: ['lot', 'lot number'],
+      inventory_id: ['inventory id', 'inventory_id', 'id'],
+      comments: ['comments', 'comment', 'remarks', 'note', 'notes'],
+    }
+
+    const next: Record<string, string> = {}
+    for (const dbCol of inventoryMaterialsUploadDbColumns as unknown as string[]) {
+      const wants = [String(dbCol), ...(synonyms[String(dbCol)] || [])].map((w) => norm(w)).filter(Boolean)
+      if (!wants.length) continue
+
+      let best: string | null = null
+      let bestScore = -1
+      for (const cand of candidates) {
+        if (!cand.n) continue
+        for (const want of wants) {
+          const exact = cand.n === want
+          const contains = cand.n.includes(want) || want.includes(cand.n)
+          if (!exact && !contains) continue
+          const score = exact ? 1000 : Math.min(cand.n.length, want.length)
+          if (score > bestScore) {
+            bestScore = score
+            best = cand.h
+          }
+        }
+      }
+      if (best) next[String(dbCol)] = best
+    }
+    setUploadExcelMapping(next)
+    setUploadExcelMappedPreview([])
+  }
+
+  const addMaterialsFromMappedExcel = async () => {
+    if (uploadExcelImportLoading) return
+    setUploadExcelImportError(null)
+
+    if (!uploadExcelRows || uploadExcelRows.length === 0) {
+      setUploadExcelImportError('No rows found to import')
+      return
+    }
+
+    const mappedRows = (uploadExcelRows || []).map((r) => {
+      const out: Record<string, any> = {}
+      for (const dbCol of inventoryMaterialsUploadDbColumns as unknown as string[]) {
+        if (dbCol === 'id' || dbCol === 'created_at') continue
+        const excelCol = String((uploadExcelMapping as any)?.[dbCol] || '')
+        if (!excelCol) continue
+        const raw = String((r as any)?.[excelCol] ?? '').trim()
+
+        const nullTokens = new Set(['#n/a', 'n/a', 'na', 'null', 'none', '-', '—', ''])
+        const isNullLike = (v: string) => {
+          const t = String(v || '').trim().toLowerCase()
+          return nullTokens.has(t)
+        }
+
+        if (dbCol === 'inventory_id' && isNullLike(raw)) continue
+        if (!raw) continue
+
+        const numCols = new Set([
+          'unit_weight',
+          'cost_per_unit',
+          'total_available',
+          'reserved_qty',
+          'reorder_point',
+          'client_id',
+          'reorder_to_level',
+          'moq',
+          'eoq',
+        ])
+        const dateCols = new Set(['expiry_date', 'manufacture_date'])
+        const boolCols = new Set(['is_client_supplied', 'qa_hold'])
+
+        if (boolCols.has(dbCol)) {
+          const v = raw.toLowerCase()
+          out[dbCol] = v === '1' || v === 'true' || v === 'yes' || v === 'y'
+        } else if (numCols.has(dbCol)) {
+          const cleaned = raw.replace(/,/g, '')
+          const n = Number(cleaned)
+          out[dbCol] = Number.isFinite(n) ? n : raw
+        } else if (dateCols.has(dbCol)) {
+          if (isNullLike(raw)) continue
+          const d = new Date(raw)
+          if (Number.isNaN(d.getTime())) continue
+          // Guard against Excel placeholder/invalid dates (ex: 1/0/1900)
+          const yr = d.getUTCFullYear()
+          if (yr <= 1901) continue
+          out[dbCol] = d.toISOString().slice(0, 10)
+        } else {
+          out[dbCol] = raw
+        }
+      }
+
+      // Force supplier fields to be blank for Excel imports to avoid FK constraint violations
+      out.supplier_id = null
+      out.supplier_name = null
+
+      return out
+    }).filter((r) => Object.keys(r).length > 0)
+
+    // IMPORTANT: Postgres upsert fails with "ON CONFLICT DO UPDATE command cannot affect row a second time"
+    // if the same conflict key (inventory_id) appears multiple times in a single upsert batch.
+    // So we dedupe rows by inventory_id (keep the last occurrence / latest values).
+    const dedupedRows = (() => {
+      const byInvId = new Map<string, Record<string, any>>()
+      const noInvId: Array<Record<string, any>> = []
+      for (const row of mappedRows) {
+        const inv = row?.inventory_id
+        const invKey = inv == null ? '' : String(inv).trim()
+        if (!invKey) {
+          noInvId.push(row)
+          continue
+        }
+        const prev = byInvId.get(invKey)
+        if (!prev) {
+          byInvId.set(invKey, row)
+          continue
+        }
+        // Merge: later row overrides earlier row (but don't overwrite with undefined)
+        const merged: Record<string, any> = { ...prev }
+        for (const [k, v] of Object.entries(row)) {
+          if (v !== undefined) merged[k] = v
+        }
+        byInvId.set(invKey, merged)
+      }
+      return [...noInvId, ...Array.from(byInvId.values())]
+    })()
+
+    if (!dedupedRows.length) {
+      setUploadExcelImportError('No mapped values to import. Please map at least one field.')
+      return
+    }
+
+    setUploadExcelImportLoading(true)
+    try {
+      const chunkSize = 500
+      for (let i = 0; i < dedupedRows.length; i += chunkSize) {
+        const chunk = dedupedRows.slice(i, i + chunkSize)
+        const { error } = await supabase
+          .from('inventory_materials')
+          .upsert(chunk, { onConflict: 'inventory_id' })
+        if (error) throw error
+      }
+      setToast({ show: true, message: `Imported ${dedupedRows.length} material row(s)` })
+      try { await loadMaterials({ silent: true }) } catch {}
+      closeUploadExcelModal()
+    } catch (e: any) {
+      const msg = String(e?.message || 'Failed to import materials')
+      setUploadExcelImportError(msg)
+    } finally {
+      setUploadExcelImportLoading(false)
+    }
+  }
+
+// ...
   // Load user role
   const loadUserRole = async () => {
     if (!user?.id) {
@@ -414,7 +910,7 @@ const Inventory: React.FC = () => {
             await supabase.rpc('release_po_reservations', { p_po_id: newRow.id })
             setToast({ show: true, message: 'Reservations released for this PO.' })
             // refresh materials to reflect reservation release (recomputes reserved_qty from inventory_reservations)
-            try { await refreshMaterials() } catch {}
+            try { await loadMaterials({ silent: true }) } catch {}
           } catch {}
         }
       })
@@ -432,12 +928,12 @@ const Inventory: React.FC = () => {
             await supabase.rpc('consume_reservations', { p_batch_id: newRow.id })
             setToast({ show: true, message: 'Raw materials consumed.' })
             // refresh inventory materials (recomputes reserved_qty from inventory_reservations)
-            try { await refreshMaterials() } catch {}
+            try { await loadMaterials({ silent: true }) } catch {}
             loadFinished()
           } catch {}
         } else {
           // For other status transitions, still refresh materials to keep reserved/available in sync
-          try { await refreshMaterials() } catch {}
+          try { await loadMaterials({ silent: true }) } catch {}
         }
       })
       .subscribe()
@@ -446,7 +942,28 @@ const Inventory: React.FC = () => {
       if (poChannel) supabase?.removeChannel(poChannel)
       if (batchChannel) supabase?.removeChannel(batchChannel)
     }
-  }, [loadFinished])
+  }, [])
+
+  useEffect(() => {
+    if (toast.show) {
+      const t = setTimeout(() => setToast({ show: false, message: '' }), 2500)
+      return () => clearTimeout(t)
+    }
+  }, [toast.show])
+
+  useEffect(() => {
+    if (isUploadExcelOpen) {
+      const t = setTimeout(() => setUploadExcelDragOver(false), 100)
+      return () => clearTimeout(t)
+    }
+  }, [isUploadExcelOpen])
+
+  useEffect(() => {
+    if (toast.show) {
+      const t = setTimeout(() => setToast({ show: false, message: '' }), 2500)
+      return () => clearTimeout(t)
+    }
+  }, [toast.show])
 
   useEffect(() => {
     if (toast.show) {
@@ -496,6 +1013,7 @@ const Inventory: React.FC = () => {
       unit_weight: String((target as any).unit_weight || ''),
       cost_per_unit: String((target as any).cost_per_unit || ''),
       total_available: String((target as any).total_available ?? ''),
+      comments: String((target as any).comments ?? ''),
       lot_number: String((target as any).lot_number ?? ''),
       manufacture_date: toDateInputValue((target as any).manufacture_date),
       expiry_date: toDateInputValue((target as any).expiry_date),
@@ -549,43 +1067,42 @@ const Inventory: React.FC = () => {
     setIsGenerating(true)
     try {
       const { data, error } = await supabase.rpc('fn_replenishment_check', { p_material_id: material.id })
-      if (error) {
-        setToast({ show: true, message: error.message || 'Failed to generate PR' })
-        return
-      }
-      if (!data) {
-        setToast({ show: true, message: 'No response from replenishment function' })
-        return
-      }
+      if (error) throw error
       const status = String(data.status || '')
-      if (status === 'no_action') {
-        setToast({ show: true, message: String(data.message || 'Stock above reorder point') })
-        return
-      }
-      if (status === 'created') {
-        setReplModalFor(material)
-        setReplRpcData(data)
-        setToast({ show: true, message: 'Purchase Requisition processed' })
-        // refresh materials + statuses
-        try { await refreshMaterials() } catch {}
+      if (status && status.toLowerCase().includes('created')) {
+        setToast({ show: true, message: 'Purchase Requisition Created' })
+      } else if (status && status.toLowerCase().includes('not') ) {
+        setToast({ show: true, message: 'Stock level above reorder point' })
       } else {
-        setToast({ show: true, message: String(data.message || 'No PR created') })
+        setToast({ show: true, message: 'Purchase Requisition processed' })
       }
+    } catch (e) {
+      setToast({ show: true, message: 'Failed to generate PR' })
     } finally {
       setIsGenerating(false)
     }
   }
 
   // Helper to refresh inventory + status
-  const refreshMaterials = async () => {
+  async function loadMaterials(opts?: { silent?: boolean }) {
+    if (!supabase) return
+    const silent = Boolean(opts?.silent)
+    if (!silent) setMaterialsLoading(true)
+
     const { data, error } = await supabase
       .from('inventory_materials')
-      .select('id, product_name, category, supplier_id, supplier_name, unit_of_measure, unit_weight, cost_per_unit, total_available, reserved_qty, reorder_point, reorder_to_level, moq, eoq, created_at, material_file_url, lot_number, manufacture_date, expiry_date')
+      .select('id, inventory_id, product_name, category, supplier_id, supplier_name, unit_of_measure, unit_weight, cost_per_unit, total_available, comments, reserved_qty, sku, reorder_point, reorder_to_level, moq, eoq, is_client_supplied, client_id, qa_hold, qa_hold_reason, created_at, material_file_url, lot_number, manufacture_date, expiry_date')
       .order('product_name', { ascending: true })
-    if (error) return
+
+    if (error) {
+      if (!silent) setMaterialsLoading(false)
+      return
+    }
+
     const rows = (data ?? []) as Array<any>
     const mappedBase: RawMaterial[] = rows.map((r) => ({
       id: String(r.id),
+      inventory_id: r.inventory_id ?? null,
       product_name: String(r.product_name ?? ''),
       category: String(r.category ?? ''),
       supplier_id: r.supplier_id ?? null,
@@ -594,11 +1111,17 @@ const Inventory: React.FC = () => {
       unit_weight: r.unit_weight ?? null,
       cost_per_unit: r.cost_per_unit ?? null,
       total_available: Number(r.total_available ?? 0),
+      comments: r.comments ?? null,
       reserved_qty: Number(r.reserved_qty ?? 0),
+      sku: r.sku ?? null,
       reorder_point: Number(r.reorder_point ?? 0),
       reorder_to_level: Number(r.reorder_to_level ?? 0),
       moq: Number(r.moq ?? 0),
       eoq: Number(r.eoq ?? 0),
+      is_client_supplied: Boolean(r.is_client_supplied ?? false),
+      client_id: r.client_id ?? null,
+      qa_hold: Boolean(r.qa_hold ?? false),
+      qa_hold_reason: r.qa_hold_reason ?? null,
       created_at: r.created_at ?? null,
       lot_number: r.lot_number ?? null,
       manufacture_date: r.manufacture_date ?? null,
@@ -606,54 +1129,65 @@ const Inventory: React.FC = () => {
       material_file_urls: (() => { try { const v = r.material_file_url; if (!v) return []; const arr = typeof v === 'string' ? JSON.parse(v) : v; return Array.isArray(arr) ? arr : [] } catch { return [] } })(),
     }))
 
-    // Recompute reserved_qty from live reservations so it resets to 0 when no rows exist.
-    // (Avoid relying on inventory_materials.reserved_qty which can become stale.)
     let mapped: RawMaterial[] = mappedBase
     try {
       const ids = mappedBase.map((m) => m.id).filter(Boolean)
       const names = Array.from(new Set(mappedBase.map((m) => String(m.product_name || '').trim()).filter(Boolean)))
+
+      const chunkArray = <T,>(arr: T[], chunkSize: number): T[][] => {
+        const out: T[][] = []
+        const size = Math.max(1, Math.floor(chunkSize || 1))
+        for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size))
+        return out
+      }
 
       const reservedById = new Map<string, number>()
       const reservedByName = new Map<string, number>()
 
       if (ids.length) {
         try {
-          const { data: resById } = await supabase
-            .from('inventory_reservations')
-            .select('material_id, qty, status, is_consumed')
-            .in('material_id', ids as any)
+          const idChunks = chunkArray(ids as any[], 150)
+          for (const chunk of idChunks) {
+            const { data: resById } = await supabase
+              .from('inventory_reservations')
+              .select('material_id, qty, status, is_consumed')
+              .in('material_id', chunk as any)
 
-          const rowsId = Array.isArray(resById) ? resById : []
-          for (const r of rowsId) {
-            const st = String((r as any)?.status || 'active').toLowerCase().trim()
-            const consumed = Boolean((r as any)?.is_consumed)
-            if (st !== 'active' || consumed) continue
-            const mid = String((r as any)?.material_id || '').trim()
-            if (!mid) continue
-            const qty = Number((r as any)?.qty || 0)
-            if (!Number.isFinite(qty) || qty <= 0) continue
-            reservedById.set(mid, Number(reservedById.get(mid) || 0) + qty)
+            const rowsId = Array.isArray(resById) ? resById : []
+            for (const r of rowsId) {
+              const st = String((r as any)?.status || 'active').toLowerCase().trim()
+              const consumed = Boolean((r as any)?.is_consumed)
+              if (st !== 'active' || consumed) continue
+              const mid = String((r as any)?.material_id || '').trim()
+              if (!mid) continue
+              const qty = Number((r as any)?.qty || 0)
+              if (!Number.isFinite(qty) || qty <= 0) continue
+              reservedById.set(mid, Number(reservedById.get(mid) || 0) + qty)
+            }
           }
         } catch {}
       }
 
       if (names.length) {
         try {
-          const { data: resByName } = await supabase
-            .from('inventory_reservations')
-            .select('product_name, qty, status, is_consumed')
-            .in('product_name', names as any)
+          const nameChunks = chunkArray(names as any[], 150)
+          for (const chunk of nameChunks) {
+            const { data: resByName } = await supabase
+              .from('inventory_reservations')
+              .select('product_name, qty, status, is_consumed')
+              .in('product_name', chunk as any)
 
-          const rowsNm = Array.isArray(resByName) ? resByName : []
-          for (const r of rowsNm) {
-            const st = String((r as any)?.status || 'active').toLowerCase().trim()
-            const consumed = Boolean((r as any)?.is_consumed)
-            if (st !== 'active' || consumed) continue
-            const pn = String((r as any)?.product_name || '').trim()
-            if (!pn) continue
-            const qty = Number((r as any)?.qty || 0)
-            if (!Number.isFinite(qty) || qty <= 0) continue
-            reservedByName.set(pn, Number(reservedByName.get(pn) || 0) + qty)
+            const rowsNm = Array.isArray(resByName) ? resByName : []
+            for (const r of rowsNm) {
+              const st = String((r as any)?.status || 'active').toLowerCase().trim()
+              const consumed = Boolean((r as any)?.is_consumed)
+              if (st !== 'active' || consumed) continue
+              const pn = String((r as any)?.product_name || '').trim()
+              if (!pn) continue
+              const qty = Number((r as any)?.qty || 0)
+              if (!Number.isFinite(qty) || qty <= 0) continue
+              reservedByName.set(pn, Number(reservedByName.get(pn) || 0) + qty)
+            }
           }
         } catch {}
       }
@@ -671,16 +1205,28 @@ const Inventory: React.FC = () => {
       let statusRows: any[] = []
       let reqRows: any[] = []
       if (ids.length) {
-        const { data: s } = await supabase
-          .from('raw_material_replenishment_status')
-          .select('material_id, has_pending_pr, pending_qty')
-          .in('material_id', ids)
-        statusRows = s ?? []
-        const { data: rqs } = await supabase
-          .from('raw_material_requisitions')
-          .select('id, material_id, status, suggested_qty, created_at')
-          .in('material_id', ids)
-        reqRows = rqs ?? []
+        try {
+          const chunkSize = 150
+          for (let i = 0; i < ids.length; i += chunkSize) {
+            const chunk = ids.slice(i, i + chunkSize)
+            const { data: s } = await supabase
+              .from('raw_material_replenishment_status')
+              .select('material_id, has_pending_pr, pending_qty')
+              .in('material_id', chunk)
+            statusRows = statusRows.concat((s ?? []) as any[])
+          }
+        } catch {}
+        try {
+          const chunkSize = 150
+          for (let i = 0; i < ids.length; i += chunkSize) {
+            const chunk = ids.slice(i, i + chunkSize)
+            const { data: rqs } = await supabase
+              .from('raw_material_requisitions')
+              .select('id, material_id, status, suggested_qty, created_at')
+              .in('material_id', chunk)
+            reqRows = reqRows.concat((rqs ?? []) as any[])
+          }
+        } catch {}
       }
 
       const latestReqByMat = new Map<string, any>()
@@ -705,197 +1251,45 @@ const Inventory: React.FC = () => {
     } catch {
       setMaterials(mapped)
     }
+
+    if (!silent) setMaterialsLoading(false)
   }
 
-  // Load suppliers from Supabase on mount (reference: Products.tsx customer select)
   useEffect(() => {
-    const loadSuppliers = async () => {
-      if (!supabase) {
-        setSuppliersLoading(false)
-        setSuppliersError('Supabase not configured')
-        return
-      }
-      setSuppliersLoading(true)
-      setSuppliersError(null)
-      const { data, error } = await supabase
-        .from('suppliers')
-        .select('id, company_name')
-        .order('company_name', { ascending: true })
-
-      if (error) {
-        console.error('Failed to fetch suppliers', error)
-        setSuppliersError('Cannot load suppliers')
-        setSuppliersLoading(false)
-        return
-      }
-      const rows = (data ?? []) as Array<{ id: string; company_name: string | null }>
-      const items: Supplier[] = rows
-        .map((r) => ({ id: String(r.id), name: String(r.company_name ?? '').trim() }))
-        .filter((r) => r.id && r.name.length > 0)
-      setSuppliers(items)
-      setSuppliersLoading(false)
-    }
-    loadSuppliers()
-  }, [])
-
-  // Load raw materials and subscribe to realtime updates
-  useEffect(() => {
-    const loadMaterials = async () => {
-      if (!supabase) return
-      setMaterialsLoading(true)
-      const { data, error } = await supabase
-      .from('inventory_materials')
-      .select('id, product_name, category, supplier_id, supplier_name, unit_of_measure, unit_weight, cost_per_unit, total_available, reserved_qty, reorder_point, reorder_to_level, moq, eoq, created_at, material_file_url, lot_number, manufacture_date, expiry_date')
-      .order('product_name', { ascending: true })
-
-      if (error) {
-        console.error('Failed to fetch materials', error)
-        setMaterialsLoading(false)
-        return
-      }
-      const rows = (data ?? []) as Array<any>
-      const mappedBase: RawMaterial[] = rows.map((r) => ({
-        id: String(r.id),
-        product_name: String(r.product_name ?? ''),
-        category: String(r.category ?? ''),
-        supplier_id: r.supplier_id ?? null,
-        supplier_name: r.supplier_name ?? null,
-        unit_of_measure: r.unit_of_measure ?? null,
-        unit_weight: r.unit_weight ?? null,
-        cost_per_unit: r.cost_per_unit ?? null,
-        total_available: Number(r.total_available ?? 0),
-        reserved_qty: Number(r.reserved_qty ?? 0),
-        reorder_point: Number(r.reorder_point ?? 0),
-        reorder_to_level: Number(r.reorder_to_level ?? 0),
-        moq: Number(r.moq ?? 0),
-        eoq: Number(r.eoq ?? 0),
-        created_at: r.created_at ?? null,
-        lot_number: r.lot_number ?? null,
-        manufacture_date: r.manufacture_date ?? null,
-        expiry_date: r.expiry_date ?? null,
-        material_file_urls: (() => { try { const v = r.material_file_url; if (!v) return []; const arr = typeof v === 'string' ? JSON.parse(v) : v; return Array.isArray(arr) ? arr : [] } catch { return [] } })(),
-      }))
-
-      // Recompute reserved_qty from live reservations so it resets to 0 when no rows exist.
-      // (Avoid relying on inventory_materials.reserved_qty which can become stale.)
-      let mapped: RawMaterial[] = mappedBase
-      try {
-        const ids = mappedBase.map((m) => m.id).filter(Boolean)
-        const names = Array.from(new Set(mappedBase.map((m) => String(m.product_name || '').trim()).filter(Boolean)))
-
-        const reservedById = new Map<string, number>()
-        const reservedByName = new Map<string, number>()
-
-        if (ids.length) {
-          try {
-            const { data: resById } = await supabase
-              .from('inventory_reservations')
-              .select('material_id, qty, status, is_consumed')
-              .in('material_id', ids as any)
-
-            const rowsId = Array.isArray(resById) ? resById : []
-            for (const r of rowsId) {
-              const st = String((r as any)?.status || 'active').toLowerCase().trim()
-              const consumed = Boolean((r as any)?.is_consumed)
-              if (st !== 'active' || consumed) continue
-              const mid = String((r as any)?.material_id || '').trim()
-              if (!mid) continue
-              const qty = Number((r as any)?.qty || 0)
-              if (!Number.isFinite(qty) || qty <= 0) continue
-              reservedById.set(mid, Number(reservedById.get(mid) || 0) + qty)
-            }
-          } catch {}
-        }
-
-        // Fallback in case some reservations are missing material_id but have product_name
-        if (names.length) {
-          try {
-            const { data: resByName } = await supabase
-              .from('inventory_reservations')
-              .select('product_name, qty, status, is_consumed')
-              .in('product_name', names as any)
-
-            const rowsNm = Array.isArray(resByName) ? resByName : []
-            for (const r of rowsNm) {
-              const st = String((r as any)?.status || 'active').toLowerCase().trim()
-              const consumed = Boolean((r as any)?.is_consumed)
-              if (st !== 'active' || consumed) continue
-              const pn = String((r as any)?.product_name || '').trim()
-              if (!pn) continue
-              const qty = Number((r as any)?.qty || 0)
-              if (!Number.isFinite(qty) || qty <= 0) continue
-              reservedByName.set(pn, Number(reservedByName.get(pn) || 0) + qty)
-            }
-          } catch {}
-        }
-
-        mapped = mappedBase.map((m) => {
-          const byId = reservedById.get(String(m.id))
-          const byName = reservedByName.get(String(m.product_name || '').trim())
-          const computed = Number(byId ?? byName ?? 0)
-          return { ...m, reserved_qty: computed }
-        })
-      } catch {}
-
-      // fetch replenishment status and latest requisition per material
-      try {
-        const ids = mapped.map(m => m.id)
-        let statusRows: any[] = []
-        let reqRows: any[] = []
-        if (ids.length) {
-          try {
-            const { data: s } = await supabase
-              .from('raw_material_replenishment_status')
-              .select('material_id, has_pending_pr, pending_qty')
-              .in('material_id', ids)
-            statusRows = s ?? []
-          } catch {}
-          try {
-            const { data: rqs } = await supabase
-              .from('raw_material_requisitions')
-              .select('id, material_id, status, suggested_qty, created_at')
-              .in('material_id', ids)
-            reqRows = rqs ?? []
-          } catch {}
-        }
-        const latestReqByMat = new Map<string, any>()
-        reqRows.sort((a: any, b: any) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime())
-          .forEach((r: any) => { const k = String(r.material_id); if (!latestReqByMat.has(k)) latestReqByMat.set(k, r) })
-        const statusByMat = new Map(statusRows.map((s: any) => [String(s.material_id), s]))
-        const withStatus = mapped.map(m => {
-          const s: any = statusByMat.get(m.id) || {}
-          const rq: any = latestReqByMat.get(m.id) || {}
-          return {
-            ...m,
-            replenishmentStatus: {
-              hasPending: Boolean(s.has_pending_pr ?? (rq.status && String(rq.status).toLowerCase() !== 'closed' && String(rq.status).toLowerCase() !== 'canceled')),
-              qty: Number(s.pending_qty ?? rq.suggested_qty ?? 0),
-              reqId: (rq.id != null ? String(rq.id) : null),
-              reqStatus: rq.status != null ? String(rq.status) : null,
-              reqCreatedAt: rq.created_at ?? null,
-            }
-          }
-        })
-        setMaterials(withStatus)
-      } catch {
-        setMaterials(mapped)
-      }
-      setMaterialsLoading(false)
-    }
-
     loadMaterials()
     const channel = supabase
       ?.channel('inventory-live')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'inventory_materials' }, () => {
-        loadMaterials()
+        loadMaterials({ silent: true })
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'inventory_reservations' }, () => {
-        loadMaterials()
+        loadMaterials({ silent: true })
       })
       .subscribe()
 
     return () => {
       if (channel) supabase?.removeChannel(channel)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (mainTab !== 'raw' && mainTab !== 'packaging') return
+    if (subTab !== 'list') return
+    loadMaterials({ silent: true })
+  }, [mainTab, subTab])
+
+  useEffect(() => {
+    const onFocus = () => {
+      try { loadMaterials({ silent: true }) } catch {}
+    }
+    const onVis = () => {
+      if (document.visibilityState === 'visible') onFocus()
+    }
+    window.addEventListener('focus', onFocus)
+    document.addEventListener('visibilitychange', onVis)
+    return () => {
+      window.removeEventListener('focus', onFocus)
+      document.removeEventListener('visibilitychange', onVis)
     }
   }, [])
 
@@ -906,6 +1300,132 @@ const Inventory: React.FC = () => {
   const packagingMaterials = useMemo(() => {
     return (materials || []).filter((m) => String(m?.category || '').toLowerCase() === 'packaging')
   }, [materials])
+
+  const sanitizeTextCell = (v: any) => {
+    const raw = String(v ?? '').trim()
+    if (!raw) return '—'
+    const t = raw.toLowerCase()
+    const nullTokens = new Set(['#n/a', 'n/a', 'na', 'null', 'none', '-', '—'])
+    if (nullTokens.has(t)) return '—'
+    return raw
+  }
+
+  const inventoryIdSortValue = (v: any) => {
+    const raw = String(v ?? '').trim()
+    if (!raw) return Number.POSITIVE_INFINITY
+    const digits = raw.replace(/\D+/g, '')
+    const n = digits ? Number(digits) : Number.NaN
+    if (!Number.isFinite(n)) return Number.POSITIVE_INFINITY
+    return n
+  }
+
+  const [rawMaterialsPageSize, setRawMaterialsPageSize] = useState<number>(10)
+  const [rawMaterialsPageIndex, setRawMaterialsPageIndex] = useState<number>(0)
+  const [rawMaterialsSearch, setRawMaterialsSearch] = useState<string>('')
+  const [rawMaterialsSelectedIds, setRawMaterialsSelectedIds] = useState<Record<string, boolean>>({})
+  const [rawMaterialsDeleteLoading, setRawMaterialsDeleteLoading] = useState<boolean>(false)
+
+  const filteredRawMaterials = useMemo(() => {
+    const q = String(rawMaterialsSearch || '').trim().toLowerCase()
+    const list = rawMaterials || []
+    const filtered = !q
+      ? list
+      : list.filter((m) => {
+      const fields = [
+        String((m as any)?.inventory_id ?? ''),
+        String((m as any)?.product_name || ''),
+        String((m as any)?.category || ''),
+        String((m as any)?.supplier_name || ''),
+        String((m as any)?.unit_of_measure || ''),
+        String((m as any)?.lot_number || ''),
+      ]
+      return fields.some((f) => f.toLowerCase().includes(q))
+    })
+
+    return [...filtered].sort((a, b) => {
+      const av = inventoryIdSortValue((a as any)?.inventory_id)
+      const bv = inventoryIdSortValue((b as any)?.inventory_id)
+      if (av !== bv) return av - bv
+      const as = String((a as any)?.inventory_id ?? '')
+      const bs = String((b as any)?.inventory_id ?? '')
+      if (as !== bs) return as.localeCompare(bs)
+      return String((a as any)?.product_name ?? '').localeCompare(String((b as any)?.product_name ?? ''))
+    })
+  }, [rawMaterials, rawMaterialsSearch])
+
+  useEffect(() => {
+    setRawMaterialsPageIndex(0)
+  }, [rawMaterialsPageSize, rawMaterialsSearch, rawMaterials.length])
+
+  const rawMaterialsTotalPages = useMemo(() => {
+    const size = Number(rawMaterialsPageSize || 10)
+    if (size <= 0) return 1
+    return Math.max(1, Math.ceil((filteredRawMaterials?.length || 0) / size))
+  }, [filteredRawMaterials?.length, rawMaterialsPageSize])
+
+  const pagedRawMaterials = useMemo(() => {
+    const list = filteredRawMaterials || []
+    const size = Number(rawMaterialsPageSize || 10)
+    if (size <= 0) return list
+    const page = Math.min(Math.max(0, rawMaterialsPageIndex), Math.max(0, rawMaterialsTotalPages - 1))
+    const start = page * size
+    return list.slice(start, start + size)
+  }, [filteredRawMaterials, rawMaterialsPageIndex, rawMaterialsPageSize, rawMaterialsTotalPages])
+
+  const rawMaterialsSelectedCount = useMemo(() => {
+    return Object.values(rawMaterialsSelectedIds || {}).filter(Boolean).length
+  }, [rawMaterialsSelectedIds])
+
+  const rawMaterialsAllOnPageSelected = useMemo(() => {
+    const pageIds = (pagedRawMaterials || []).map((m) => String((m as any)?.id || '')).filter(Boolean)
+    if (!pageIds.length) return false
+    return pageIds.every((id) => Boolean((rawMaterialsSelectedIds as any)?.[id]))
+  }, [pagedRawMaterials, rawMaterialsSelectedIds])
+
+  const toggleRawMaterialSelected = (id: string, next?: boolean) => {
+    const key = String(id || '').trim()
+    if (!key) return
+    setRawMaterialsSelectedIds((prev) => {
+      const cur = { ...(prev || {}) }
+      const v = (next !== undefined) ? Boolean(next) : !Boolean(cur[key])
+      if (v) cur[key] = true
+      else delete cur[key]
+      return cur
+    })
+  }
+
+  const toggleRawMaterialsSelectAllOnPage = (next: boolean) => {
+    const pageIds = (pagedRawMaterials || []).map((m) => String((m as any)?.id || '')).filter(Boolean)
+    setRawMaterialsSelectedIds((prev) => {
+      const cur = { ...(prev || {}) }
+      for (const id of pageIds) {
+        if (next) cur[id] = true
+        else delete cur[id]
+      }
+      return cur
+    })
+  }
+
+  const deleteSelectedRawMaterials = async () => {
+    if (!canManageInventory) return
+    if (rawMaterialsDeleteLoading) return
+    const ids = Object.entries(rawMaterialsSelectedIds || {}).filter(([, v]) => Boolean(v)).map(([k]) => k)
+    if (!ids.length) return
+    const ok = window.confirm(`Delete ${ids.length} selected material(s)? This cannot be undone.`)
+    if (!ok) return
+    setRawMaterialsDeleteLoading(true)
+    try {
+      const { error } = await supabase.from('inventory_materials').delete().in('id', ids as any)
+      if (error) throw error
+      setRawMaterialsSelectedIds({})
+      setToast({ show: true, message: `Deleted ${ids.length} material(s)` })
+      try { await loadMaterials({ silent: true }) } catch {}
+    } catch (e: any) {
+      setToast({ show: true, message: String(e?.message || 'Failed to delete selected materials') })
+    } finally {
+      setRawMaterialsDeleteLoading(false)
+    }
+  }
 
   const titleByTab = {
     raw: 'Raw Materials',
@@ -918,6 +1438,70 @@ const Inventory: React.FC = () => {
     packaging: 'Update Inventory',
     finished: 'Add Finished Good',
   } as const
+
+  const uploadExcelPreviewColumns = useMemo(() => {
+    const cols = (inventoryMaterialsUploadDbColumns as unknown as string[])
+      .filter((dbCol) => !!String((uploadExcelMapping as any)?.[dbCol] || '').trim())
+    return cols.slice(0, 8)
+  }, [inventoryMaterialsUploadDbColumns, uploadExcelMapping])
+
+  const [packagingPageSize, setPackagingPageSize] = useState<number>(10)
+  const [packagingPageIndex, setPackagingPageIndex] = useState<number>(0)
+  const [packagingSearch, setPackagingSearch] = useState<string>('')
+
+  const filteredPackagingMaterials = useMemo(() => {
+    const q = String(packagingSearch || '').trim().toLowerCase()
+    const list = packagingMaterials || []
+    const filtered = !q
+      ? list
+      : list.filter((m) => {
+      const fields = [
+        String((m as any)?.inventory_id ?? ''),
+        String((m as any)?.product_name || ''),
+        String((m as any)?.category || ''),
+        String((m as any)?.supplier_name || ''),
+        String((m as any)?.unit_of_measure || ''),
+        String((m as any)?.unit_weight || ''),
+        String((m as any)?.cost_per_unit || ''),
+        String((m as any)?.total_available ?? ''),
+        String((m as any)?.lot_number || ''),
+      ]
+      return fields.some((f) => f.toLowerCase().includes(q))
+    })
+
+    return [...filtered].sort((a, b) => {
+      const av = inventoryIdSortValue((a as any)?.inventory_id)
+      const bv = inventoryIdSortValue((b as any)?.inventory_id)
+      if (av !== bv) return av - bv
+      const as = String((a as any)?.inventory_id ?? '')
+      const bs = String((b as any)?.inventory_id ?? '')
+      if (as !== bs) return as.localeCompare(bs)
+      return String((a as any)?.product_name ?? '').localeCompare(String((b as any)?.product_name ?? ''))
+    })
+  }, [packagingMaterials, packagingSearch])
+
+  useEffect(() => {
+    setPackagingPageIndex(0)
+  }, [packagingPageSize, packagingSearch])
+
+  const packagingTotalPages = useMemo(() => {
+    if (!packagingPageSize) return 1
+    const total = filteredPackagingMaterials.length
+    return Math.max(1, Math.ceil(total / packagingPageSize))
+  }, [filteredPackagingMaterials.length, packagingPageSize])
+
+  useEffect(() => {
+    setPackagingPageIndex((p) => {
+      const max = Math.max(0, packagingTotalPages - 1)
+      return Math.min(p, max)
+    })
+  }, [packagingTotalPages])
+
+  const pagedPackagingMaterials = useMemo(() => {
+    if (!packagingPageSize) return filteredPackagingMaterials
+    const start = packagingPageIndex * packagingPageSize
+    return filteredPackagingMaterials.slice(start, start + packagingPageSize)
+  }, [filteredPackagingMaterials, packagingPageIndex, packagingPageSize])
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-neutral-light/30 to-neutral-soft/20">
@@ -1019,7 +1603,7 @@ const Inventory: React.FC = () => {
                   <div className="px-6 py-4 flex items-center justify-end gap-3 border-t border-neutral-soft/50">
                     <button className="px-4 py-2 rounded-lg border border-neutral-soft" onClick={() => !replLoading && setReplModalFor(null)}>Cancel</button>
                     <button
-                      className="px-5 py-2 rounded-lg bg-primary-dark hover:bg-primary-medium text-white text-sm disabled:opacity-60"
+                      className="px-5 py-2.5 rounded-lg bg-primary-dark hover:bg-primary-medium text-white text-sm disabled:opacity-60"
                       disabled={replLoading}
                       onClick={async () => {
                         if (!replModalFor) return
@@ -1052,7 +1636,7 @@ const Inventory: React.FC = () => {
             {/* PR Details Modal */}
             {prModalFor && (
               <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-                <div className="absolute inset-0 bg-black/50" onClick={() => setPrModalFor(null)} />
+                <div className="absolute inset-0 bg-black/50" onClick={() => setPrModalFor(null)}></div>
                 <div className="relative z-10 w-full max-w-2xl bg-white rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden">
                   <div className="px-6 py-4 bg-gradient-to-r from-neutral-light to-neutral-light/80 border-b border-neutral-soft/50 flex items-center justify-between">
                     <div className="text-lg font-semibold text-neutral-dark">Replenishment Details</div>
@@ -1118,7 +1702,7 @@ const Inventory: React.FC = () => {
             {isHistoryOpen && (
               <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
                 <div className="absolute inset-0 bg-black/50" onClick={() => setIsHistoryOpen(false)}></div>
-                <div className="relative z-10 w-full max-w-3xl bg-white rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden flex flex-col">
+                <div className="relative z-10 w-full max-w-3xl max-h-[88vh] bg-white rounded-2xl shadow-2xl border border-neutral-soft/20 overflow-hidden flex flex-col">
                   <div className="flex items-center justify-between px-8 py-6 bg-gradient-to-r from-neutral-light to-neutral-light/80 border-b border-neutral-soft/50">
                     <div>
                       <h2 className="text-2xl font-semibold text-neutral-dark">Reservation History – {selectedMaterial}</h2>
@@ -1137,7 +1721,7 @@ const Inventory: React.FC = () => {
                       <div className="overflow-x-auto">
                         <table className="min-w-full">
                           <thead>
-                            <tr className="bg-gradient-to-r from-neutral-light/60 via-neutral-light/40 to-neutral-soft/30 border-b-2 border-neutral-soft/50">
+                            <tr className="bg-gradient-to-r from-neutral-light/60 via-neutral-light/40 to-neutral-soft/30 border-b border-neutral-soft/50">
                               <th className="px-6 py-3 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">Production Line</th>
                               <th className="px-6 py-3 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">Quantity Reserved</th>
                               <th className="px-6 py-3 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">Date Created</th>
@@ -1162,10 +1746,267 @@ const Inventory: React.FC = () => {
                 </div>
               </div>
             )}
+            {isUploadExcelOpen && (
+              <div className="fixed inset-0 z-[70] flex items-center justify-center p-4">
+                <div className="absolute inset-0 bg-black/60" onClick={closeUploadExcelModal}></div>
+                <div className="relative z-10 w-full max-w-4xl max-h-[88vh] bg-white rounded-2xl shadow-2xl border border-neutral-soft/30 overflow-hidden flex flex-col">
+                  <div className="flex items-center justify-between px-6 py-4 border-b border-neutral-soft/40 bg-white">
+                    <div>
+                      <h4 className="text-lg font-semibold text-neutral-dark">Upload Inventory Excel</h4>
+                      <div className="text-xs text-neutral-medium mt-0.5">Choose which Excel column maps to each database field.</div>
+                    </div>
+                    <button className="p-2" onClick={closeUploadExcelModal}><X className="h-5 w-5"/></button>
+                  </div>
+
+                  <div className="p-6 flex-1 overflow-y-auto">
+                    <input
+                      ref={uploadExcelInputRef}
+                      type="file"
+                      className="hidden"
+                      accept=".xls,.xlsx,.csv"
+                      onChange={(e) => {
+                        const files = Array.from(e.target.files || [])
+                        handleUploadExcelFiles(files)
+                      }}
+                    />
+
+                    {uploadExcelParseError && (
+                      <div className="mb-4 rounded-lg border border-rose-200 bg-rose-50 text-rose-700 text-xs px-3 py-2">
+                        {uploadExcelParseError}
+                      </div>
+                    )}
+
+                    {uploadExcelImportError && (
+                      <div className="mb-4 rounded-lg border border-rose-200 bg-rose-50 text-rose-700 text-xs px-3 py-2">
+                        {uploadExcelImportError}
+                      </div>
+                    )}
+
+                    {uploadExcelParseLoading ? (
+                      <div className="w-full rounded-2xl border border-neutral-soft/60 bg-neutral-light/20 p-10 text-center text-sm text-neutral-medium">
+                        Reading file…
+                      </div>
+                    ) : uploadExcelHeaders.length > 0 ? (
+                      <div className="space-y-5">
+                        <div className="rounded-xl border border-neutral-soft/60 bg-white overflow-hidden">
+                          <div className="px-4 py-3 border-b border-neutral-soft/60 bg-white">
+                            <div className="flex flex-col gap-3">
+                              <div className="flex items-center justify-between gap-3 flex-wrap">
+                                <div className="text-[12px] font-semibold text-neutral-dark">Column Mapping</div>
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <button
+                                    type="button"
+                                    className="px-4 py-2 rounded-lg text-sm font-semibold bg-emerald-100 text-emerald-700 hover:bg-emerald-200"
+                                    onClick={autoMapExcelExact}
+                                  >
+                                    Auto-Map Exact
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="px-4 py-2 rounded-lg text-sm font-semibold bg-amber-100 text-amber-700 hover:bg-amber-200"
+                                    onClick={autoMapExcelAll}
+                                  >
+                                    Auto-Map All
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className={`px-4 py-2 rounded-lg text-sm font-semibold border ${uploadExcelShowColumns ? 'border-primary-light bg-primary-light/10 text-primary-medium' : 'border-neutral-soft bg-white text-neutral-dark hover:bg-neutral-light/40'}`}
+                                    onClick={() => setUploadExcelShowColumns((v) => !v)}
+                                  >
+                                    Show Excel Columns
+                                  </button>
+                                </div>
+                              </div>
+
+                              <div className="flex items-center justify-between gap-3 flex-wrap">
+                                <div className="relative flex-1 min-w-[240px]">
+                                  <Search className="h-4 w-4 text-neutral-medium absolute left-3 top-1/2 -translate-y-1/2" />
+                                  <input
+                                    className="w-full border border-neutral-soft rounded-lg pl-9 pr-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-primary-light focus:border-primary-light"
+                                    placeholder="Search fields..."
+                                    value={uploadExcelFieldSearch}
+                                    onChange={(e) => setUploadExcelFieldSearch(e.target.value)}
+                                  />
+                                </div>
+                              </div>
+
+                              {uploadExcelShowColumns && (
+                                <div className="rounded-lg border border-neutral-soft bg-neutral-light/20 p-3">
+                                  <div className="text-[11px] font-semibold text-neutral-dark mb-2">Excel Columns ({uploadExcelHeaders.length})</div>
+                                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-1">
+                                    {uploadExcelHeaders.map((h, idx) => (
+                                      <div key={`${idx}-${h}`} className="text-[11px] text-neutral-dark truncate" title={String(h || '').trim() || '(Blank)'}>
+                                        {String(h || '').trim() || '(Blank)'}
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                          <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+                            {(inventoryMaterialsUploadDbColumns as unknown as string[])
+                              .filter((dbCol) => {
+                                const q = String(uploadExcelFieldSearch || '').trim().toLowerCase()
+                                if (!q) return true
+                                const label = String(inventoryMaterialsDbColumnLabel(dbCol) || '').toLowerCase()
+                                const raw = String(dbCol || '').toLowerCase()
+                                return label.includes(q) || raw.includes(q)
+                              })
+                              .map((dbCol) => (
+                              <div key={dbCol} className="space-y-1">
+                                <div className="text-xs font-semibold text-neutral-dark">{inventoryMaterialsDbColumnLabel(dbCol)}</div>
+                                <select
+                                  className="w-full border border-neutral-soft rounded-lg px-3 py-2 text-sm bg-white mt-2"
+                                  value={uploadExcelMapping[String(dbCol)] || ''}
+                                  onChange={(e) => {
+                                    const v = e.target.value
+                                    setUploadExcelMapping((prev: Record<string, string>) => ({ ...prev, [String(dbCol)]: v }))
+                                    setUploadExcelMappedPreview([])
+                                  }}
+                                >
+                                  <option value="">Select Excel Column…</option>
+                                  {uploadExcelHeaders.map((h, idx) => (
+                                    <option key={`${idx}-${h}`} value={h}>{String(h || '').trim() || '(Blank)'}</option>
+                                  ))}
+                                </select>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div className="flex items-center justify-end gap-2">
+                          <button
+                            type="button"
+                            className="px-4 py-2 rounded-lg border border-neutral-soft text-neutral-dark text-sm hover:bg-neutral-light/40 disabled:opacity-60"
+                            disabled={uploadExcelImportLoading}
+                            onClick={() => addMaterialsFromMappedExcel()}
+                          >
+                            {uploadExcelImportLoading ? 'Adding…' : 'Add Material'}
+                          </button>
+                          <button
+                            type="button"
+                            className="px-4 py-2 rounded-lg bg-primary-dark hover:bg-primary-medium text-white text-sm"
+                            onClick={() => mapUploadedRowsToInventoryFields()}
+                          >
+                            Generate Preview
+                          </button>
+                        </div>
+
+                        {uploadExcelMappedPreview.length > 0 && (
+                          <div className="rounded-xl border border-neutral-soft/60 bg-white overflow-hidden">
+                            <div className="px-4 py-3 border-b border-neutral-soft/60 flex items-center justify-between gap-3">
+                              <div className="text-[12px] font-semibold text-neutral-dark">
+                                Preview ({uploadExcelPreviewLimit === 0 ? 'All' : `first ${uploadExcelPreviewLimit}`} rows)
+                                <span className="ml-2 text-[11px] font-medium text-neutral-medium">Total: {uploadExcelMappedPreview.length}</span>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <div className="text-[11px] text-neutral-medium">Rows to show</div>
+                                <select
+                                  className="border border-neutral-soft rounded-md px-2 py-1 text-[11px] bg-white"
+                                  value={String(uploadExcelPreviewLimit)}
+                                  onChange={(e) => setUploadExcelPreviewLimit(Number(e.target.value))}
+                                >
+                                  <option value="10">10</option>
+                                  <option value="25">25</option>
+                                  <option value="50">50</option>
+                                  <option value="100">100</option>
+                                  <option value="0">All</option>
+                                </select>
+                              </div>
+                            </div>
+                            <div className="p-4 overflow-x-auto">
+                              <table className="min-w-full">
+                                <thead>
+                                  <tr className="bg-neutral-light/40 border-b border-neutral-soft/60">
+                                    {uploadExcelPreviewColumns.map((dbCol) => (
+                                      <th key={dbCol} className="px-3 py-2 text-left text-[11px] font-bold uppercase tracking-wider text-neutral-dark">{inventoryMaterialsDbColumnLabel(dbCol)}</th>
+                                    ))}
+                                  </tr>
+                                </thead>
+                                <tbody className="divide-y divide-neutral-soft/40">
+                                  {uploadExcelMappedPreview.slice(0, uploadExcelPreviewLimit === 0 ? uploadExcelMappedPreview.length : uploadExcelPreviewLimit).map((r, idx) => (
+                                    <tr key={idx} className="hover:bg-neutral-light/20">
+                                      {uploadExcelPreviewColumns.map((dbCol) => (
+                                        <td key={dbCol} className="px-3 py-2 text-sm text-neutral-dark">{String((r as any)?.[dbCol] ?? '') || '—'}</td>
+                                      ))}
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div
+                        className={`w-full rounded-2xl border-2 border-dashed p-10 sm:p-14 flex flex-col items-center justify-center text-center transition-all cursor-pointer ${uploadExcelDragOver ? 'border-primary-medium bg-primary-light/10' : 'border-neutral-soft bg-neutral-light/20 hover:bg-neutral-light/30'}`}
+                        onClick={() => uploadExcelInputRef.current?.click()}
+                        onDragEnter={(e) => { e.preventDefault(); e.stopPropagation(); setUploadExcelDragOver(true) }}
+                        onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); setUploadExcelDragOver(true) }}
+                        onDragLeave={(e) => { e.preventDefault(); e.stopPropagation(); setUploadExcelDragOver(false) }}
+                        onDrop={(e) => {
+                          e.preventDefault()
+                          e.stopPropagation()
+                          setUploadExcelDragOver(false)
+                          const files = Array.from(e.dataTransfer?.files || [])
+                          handleUploadExcelFiles(files)
+                        }}
+                      >
+                        <div className="w-14 h-14 rounded-2xl bg-white border border-neutral-soft/60 shadow-sm flex items-center justify-center">
+                          <Upload className="h-6 w-6 text-primary-medium" />
+                        </div>
+                        <div className="mt-4 text-sm font-semibold text-neutral-dark">Drop Excel/CSV file here</div>
+                        <div className="mt-1 text-xs text-neutral-medium">Supported: .xlsx, .xls, .csv</div>
+                        <div className="mt-4 inline-flex items-center gap-2 text-xs font-semibold text-primary-medium">
+                          <Inbox className="h-4 w-4" /> Click to choose a file
+                        </div>
+                      </div>
+                    )}
+
+                    {uploadExcelFiles.length > 0 && (
+                      <div className="mt-6 rounded-xl border border-neutral-soft/60 bg-white overflow-hidden">
+                        <div className="px-4 py-3 border-b border-neutral-soft/60 text-[12px] font-semibold text-neutral-dark">Selected File(s)</div>
+                        <div className="p-4 space-y-2">
+                          {uploadExcelFiles.map((f, idx) => (
+                            <div key={`${f.name}-${idx}`} className="text-sm text-neutral-dark flex items-center justify-between gap-3">
+                              <div className="min-w-0">
+                                <div className="truncate font-medium" title={f.name}>{f.name}</div>
+                                <div className="text-[11px] text-neutral-medium">{Math.max(1, Math.round((f.size || 0) / 1024))} KB</div>
+                              </div>
+                              <button
+                                type="button"
+                                className="text-xs font-semibold text-accent-danger hover:text-rose-700"
+                                onClick={() => setUploadExcelFiles((prev) => prev.filter((_, i) => i !== idx))}
+                              >
+                                Remove
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="px-6 py-4 flex items-center justify-end gap-3 border-t border-neutral-soft/40 bg-white">
+                    <button className="px-5 py-2.5 rounded-xl border border-neutral-soft text-neutral-dark hover:bg-neutral-light/60 transition-all" onClick={closeUploadExcelModal}>Close</button>
+                  </div>
+                </div>
+              </div>
+            )}
+
             {mainTab !== 'finished' && canManageInventory && (
-              <button onClick={() => { if (mainTab==='raw') setIsAddRawOpen(true) }} className="inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm text-white bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light shadow-md">
-                <Plus className="h-4 w-4" /> {addLabelByTab[mainTab]}
-              </button>
+              <>
+                <button
+                  onClick={() => setIsUploadExcelOpen(true)}
+                  className="inline-flex items-center gap-2 border border-neutral-soft rounded-lg px-4 py-2 text-sm bg-white hover:border-neutral-medium hover:bg-neutral-light/40 text-neutral-dark"
+                >
+                  <Upload className="h-4 w-4 text-primary-medium" /> Upload Inventory Excel
+                </button>
+                <button onClick={() => { if (mainTab==='raw') setIsAddRawOpen(true) }} className="inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm text-white bg-gradient-to-r from-primary-dark to-primary-medium hover:from-primary-medium hover:to-primary-light shadow-md">
+                  <Plus className="h-4 w-4" /> {addLabelByTab[mainTab]}
+                </button>
+              </>
             )}
             {!canViewInventory && !roleLoading && (
               <div className="text-sm text-neutral-medium">
@@ -1292,8 +2133,8 @@ const Inventory: React.FC = () => {
                           <td className="px-6 py-4 text-sm text-neutral-dark">{(item as any).lot_number || '—'}</td>
                           <td className="px-6 py-4 text-sm text-neutral-dark">{fmtDate(item.manufacture_date)}</td>
                           <td className="px-6 py-4 text-sm text-neutral-dark">{fmtDate(item.expiry_date)}</td>
-                          <td className="px-6 py-4 text-sm text-neutral-dark text-right font-mono tabular-nums">{nf.format(Number(item.available_qty || 0))}</td>
-                          <td className="px-6 py-4 text-sm text-neutral-dark text-right font-mono tabular-nums">{nf.format(allocated)}</td>
+                          <td className="px-6 py-4 text-sm text-neutral-dark">{nf.format(Number(item.available_qty || 0))}</td>
+                          <td className="px-6 py-4 text-sm text-neutral-dark">{nf.format(allocated)}</td>
                           <td className="px-6 py-4 text-center">
                             {qaHold ? (
                               <div className="flex flex-col items-center gap-1">
@@ -1378,33 +2219,24 @@ const Inventory: React.FC = () => {
                               <div key={g} className="mb-5">
                                 <div className="px-6 pb-2 text-[11px] font-bold tracking-wider uppercase text-neutral-medium">{g}</div>
                                 <div className="space-y-2">
-                                  {groups[g].map((r) => {
-                                    const created = new Date(r.created_at)
-                                    const qty = r.quantity != null ? nf.format(r.quantity) : '—'
-                                    const remainingRaw = (r.backorder_qty != null ? Number(r.backorder_qty) : ((r.quantity != null && r.allocated_qty != null) ? (Number(r.quantity) - Number(r.allocated_qty)) : null))
-                                    const remaining = (remainingRaw != null ? Math.max(0, remainingRaw) : null)
-                                    const t = tone(String(r.status||''))
-                                    const name = r.customer_name || '—'
-                                    const initials = name.trim().split(/\s+/).slice(0,2).map(s=>s[0]).join('').toUpperCase() || '—'
-                                    return (
-                                      <div key={r.id} className="mx-4 rounded-xl border border-neutral-soft/60 bg-white shadow-sm hover:shadow-md transition-shadow">
-                                        <div className="px-6 py-4 flex items-center justify-between gap-4">
-                                          <div className="flex items-center gap-3 min-w-0">
-                                            <div className="w-8 h-8 rounded-full bg-primary-light/20 text-primary-dark flex items-center justify-center text-xs font-bold flex-shrink-0">{initials}</div>
-                                            <div className="min-w-0">
-                                              <div className="text-[15px] font-semibold text-neutral-900 truncate">{name}</div>
-                                              <div className="mt-0.5 text-xs text-neutral-medium">{df.format(created)}</div>
-                                            </div>
-                                          </div>
-                                          <div className="flex items-center gap-3 flex-shrink-0">
-                                            <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] font-semibold border bg-${t}-50 text-${t}-700 border-${t}-200`}>{r.status || '—'}</span>
-                                            <span className="text-sm text-neutral-900 font-mono tabular-nums">Qty: {qty}</span>
-                                            <span className="text-sm text-neutral-900 font-mono tabular-nums">Remaining: {remaining != null ? nf.format(remaining) : '—'}</span>
+                                  {groups[g].map((r) => (
+                                    <div key={r.id} className="mx-4 rounded-xl border border-neutral-soft/60 bg-white shadow-sm hover:shadow-md transition-shadow">
+                                      <div className="px-6 py-4 flex items-center justify-between gap-4">
+                                        <div className="flex items-center gap-3 min-w-0">
+                                          <div className="w-8 h-8 bg-primary-light/20 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0">{String(r.customer_name || '').trim().split(/\s+/).filter(Boolean).slice(0,2).map(s=>s[0]).join('').toUpperCase() || '—'}</div>
+                                          <div className="min-w-0">
+                                            <div className="text-[15px] font-semibold text-neutral-900 truncate">{r.customer_name}</div>
+                                            <div className="mt-0.5 text-xs text-neutral-medium">{df.format(new Date(r.created_at))}</div>
                                           </div>
                                         </div>
+                                        <div className="flex items-center gap-3 flex-shrink-0">
+                                          <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] font-semibold border bg-${tone(String(r.status || ''))}-50 text-${tone(String(r.status || ''))}-700 border-${tone(String(r.status || ''))}-200`}>{r.status || '—'}</span>
+                                          <span className="text-sm text-neutral-900 font-mono tabular-nums">Qty: {nf.format(Number(r.quantity || 0))}</span>
+                                          <span className="text-sm text-neutral-900 font-mono tabular-nums">Remaining: {nf.format(Number(r.quantity || 0) - Number(r.allocated_qty || 0))}</span>
+                                        </div>
                                       </div>
-                                    )
-                                  })}
+                                    </div>
+                                  ))}
                                 </div>
                               </div>
                             ))}
@@ -1438,10 +2270,69 @@ const Inventory: React.FC = () => {
                       <h3 className="text-lg font-semibold text-neutral-dark">Packaging Inventory</h3>
                     </div>
                   </div>
+                  <div className="px-6 py-3 border-b border-neutral-soft/40 bg-white flex items-center justify-between gap-4">
+                    <div className="flex items-center gap-3 flex-1 min-w-0 flex-wrap">
+                      <input
+                        className="border border-neutral-soft rounded-lg px-4 py-2 text-sm bg-white w-full sm:w-[320px] md:w-[420px] lg:w-[520px] focus:outline-none focus:ring-2 focus:ring-primary-light focus:border-primary-light"
+                        placeholder="Search materials…"
+                        value={packagingSearch}
+                        onChange={(e) => setPackagingSearch(e.target.value)}
+                      />
+                      <select
+                        className="border border-neutral-soft rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-primary-light focus:border-primary-light"
+                        value={String(packagingPageSize)}
+                        onChange={(e) => setPackagingPageSize(Number(e.target.value))}
+                      >
+                        <option value="10">10</option>
+                        <option value="20">20</option>
+                        <option value="50">50</option>
+                        <option value="100">100</option>
+                        <option value="500">500</option>
+                        <option value="1000">1000</option>
+                        <option value="0">All</option>
+                      </select>
+                      <button
+                        type="button"
+                        className={`px-3 py-2 rounded-lg border text-sm font-semibold ${packagingPageIndex <= 0 ? 'border-neutral-soft text-neutral-medium opacity-50 cursor-not-allowed' : 'border-primary-light text-primary-medium hover:bg-primary-light/20'}`}
+                        disabled={packagingPageIndex <= 0}
+                        onClick={() => setPackagingPageIndex(0)}
+                      >
+                        First
+                      </button>
+                      <button
+                        type="button"
+                        className={`px-3 py-2 rounded-lg border text-sm font-semibold ${packagingPageIndex <= 0 ? 'border-neutral-soft text-neutral-medium opacity-50 cursor-not-allowed' : 'border-primary-light text-primary-medium hover:bg-primary-light/20'}`}
+                        disabled={packagingPageIndex <= 0}
+                        onClick={() => setPackagingPageIndex((p) => Math.max(0, p - 1))}
+                      >
+                        Prev
+                      </button>
+                      <div className="text-sm text-neutral-medium px-1">
+                        Page {Math.min(packagingTotalPages, packagingPageIndex + 1)} of {packagingTotalPages}
+                      </div>
+                      <button
+                        type="button"
+                        className={`px-3 py-2 rounded-lg border text-sm font-semibold ${packagingPageIndex >= packagingTotalPages - 1 ? 'border-neutral-soft text-neutral-medium opacity-50 cursor-not-allowed' : 'border-primary-light text-primary-medium hover:bg-primary-light/20'}`}
+                        disabled={packagingPageIndex >= packagingTotalPages - 1}
+                        onClick={() => setPackagingPageIndex((p) => Math.min(packagingTotalPages - 1, p + 1))}
+                      >
+                        Next
+                      </button>
+                    </div>
+                    <button
+                      type="button"
+                      className="text-sm font-semibold text-primary-medium hover:text-primary-dark hover:underline whitespace-nowrap"
+                      onClick={() => { try { loadMaterials() } catch {} }}
+                    >
+                      Refresh
+                    </button>
+                  </div>
+
                   <div className="overflow-x-auto">
                     <table className="min-w-full">
                       <thead>
                         <tr className="bg-gradient-to-r from-neutral-light/60 via-neutral-light/40 to-neutral-soft/30 border-b-2 border-neutral-soft/50">
+                          <th className="px-6 py-4 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">Inventory ID</th>
                           <th className="px-6 py-4 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">Product</th>
                           <th className="px-6 py-4 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">Category</th>
                           <th className="px-6 py-4 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">Supplier</th>
@@ -1455,11 +2346,28 @@ const Inventory: React.FC = () => {
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-neutral-soft/20">
-                        {packagingMaterials.map((m) => (
+                        {pagedPackagingMaterials.map((m) => (
                           <React.Fragment key={m.id}>
                           <tr className="hover:bg-neutral-light/20 transition">
+                            <td className="px-6 py-4 text-sm text-neutral-dark">{sanitizeTextCell((m as any).inventory_id)}</td>
                             <td className="px-6 py-4 text-sm text-neutral-dark font-medium">
-                              {m.product_name}
+                              {sanitizeTextCell(m.product_name)}
+                              <div className="mt-2 flex flex-wrap items-center gap-2">
+                                {Boolean((m as any).is_client_supplied) ? (
+                                  <span className="inline-flex items-center rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] font-semibold text-emerald-700 border border-emerald-200">
+                                    Client Supplied
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-700 border border-slate-200">
+                                    Company Supplied
+                                  </span>
+                                )}
+                                {Boolean((m as any).qa_hold) ? (
+                                  <span className="inline-flex items-center rounded-full bg-rose-100 px-2 py-0.5 text-[11px] font-semibold text-rose-700 border border-rose-200">
+                                    QA Hold
+                                  </span>
+                                ) : null}
+                              </div>
                               {m.replenishmentStatus?.hasPending ? (
                                 <span className="ml-2 inline-flex items-center rounded-full bg-blue-100 px-2 py-0.5 text-[11px] font-semibold text-blue-700">
                                   <Bell className="h-3.5 w-3.5 mr-1" /> Pending PR ({m.replenishmentStatus.qty})
@@ -1468,11 +2376,11 @@ const Inventory: React.FC = () => {
                                 <span className="ml-2 inline-flex items-center rounded-full bg-red-100 px-2 py-0.5 text-[11px] font-semibold text-red-700">Replenishment Required</span>
                               ) : null}
                             </td>
-                            <td className="px-6 py-4 text-sm text-neutral-dark">{m.category || '—'}</td>
-                            <td className="px-6 py-4 text-sm text-neutral-dark">{m.supplier_name || '—'}</td>
-                            <td className="px-6 py-4 text-sm text-neutral-dark">{m.unit_of_measure || '—'}</td>
-                            <td className="px-6 py-4 text-sm text-neutral-dark">{m.unit_weight || '—'}</td>
-                            <td className="px-6 py-4 text-sm text-neutral-dark">{m.cost_per_unit || '—'}</td>
+                            <td className="px-6 py-4 text-sm text-neutral-dark">{sanitizeTextCell(m.category)}</td>
+                            <td className="px-6 py-4 text-sm text-neutral-dark">{sanitizeTextCell(m.supplier_name)}</td>
+                            <td className="px-6 py-4 text-sm text-neutral-dark">{sanitizeTextCell(m.unit_of_measure)}</td>
+                            <td className="px-6 py-4 text-sm text-neutral-dark">{sanitizeTextCell(m.unit_weight)}</td>
+                            <td className="px-6 py-4 text-sm text-neutral-dark">{sanitizeTextCell(m.cost_per_unit)}</td>
                             <td className="px-6 py-4 text-sm text-neutral-dark">{m.total_available || '—'}</td>
                             <td className="px-6 py-4 text-sm text-neutral-dark">
                               <div className="flex items-center gap-2">
@@ -1503,6 +2411,7 @@ const Inventory: React.FC = () => {
                                     unit_weight: m.unit_weight || '',
                                     cost_per_unit: m.cost_per_unit || '',
                                     total_available: String(m.total_available ?? ''),
+                                    comments: String((m as any).comments ?? ''),
                                     lot_number: String((m as any).lot_number ?? ''),
                                     manufacture_date: toDateInputValue((m as any).manufacture_date),
                                     expiry_date: toDateInputValue((m as any).expiry_date),
@@ -1687,10 +2596,89 @@ const Inventory: React.FC = () => {
                       <h3 className="text-lg font-semibold text-neutral-dark">Raw Materials Inventory</h3>
                     </div>
                   </div>
+                  <div className="px-6 py-3 border-b border-neutral-soft/40 bg-white flex items-center justify-between gap-4">
+                    <div className="flex items-center gap-3 flex-1 min-w-0 flex-wrap">
+                      <input
+                        className="border border-neutral-soft rounded-lg px-4 py-2 text-sm bg-white w-full sm:w-[320px] md:w-[420px] lg:w-[520px] focus:outline-none focus:ring-2 focus:ring-primary-light focus:border-primary-light"
+                        placeholder="Search materials…"
+                        value={rawMaterialsSearch}
+                        onChange={(e) => setRawMaterialsSearch(e.target.value)}
+                      />
+                      <select
+                        className="border border-neutral-soft rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-primary-light focus:border-primary-light"
+                        value={String(rawMaterialsPageSize)}
+                        onChange={(e) => setRawMaterialsPageSize(Number(e.target.value))}
+                      >
+                        <option value="10">10</option>
+                        <option value="20">20</option>
+                        <option value="50">50</option>
+                        <option value="100">100</option>
+                        <option value="500">500</option>
+                        <option value="1000">1000</option>
+                        <option value="0">All</option>
+                      </select>
+                      <button
+                        type="button"
+                        className={`px-3 py-2 rounded-lg border text-sm font-semibold ${rawMaterialsPageIndex <= 0 ? 'border-neutral-soft text-neutral-medium opacity-50 cursor-not-allowed' : 'border-primary-light text-primary-medium hover:bg-primary-light/20'}`}
+                        disabled={rawMaterialsPageIndex <= 0}
+                        onClick={() => setRawMaterialsPageIndex(0)}
+                      >
+                        First
+                      </button>
+                      <button
+                        type="button"
+                        className={`px-3 py-2 rounded-lg border text-sm font-semibold ${rawMaterialsPageIndex <= 0 ? 'border-neutral-soft text-neutral-medium opacity-50 cursor-not-allowed' : 'border-primary-light text-primary-medium hover:bg-primary-light/20'}`}
+                        disabled={rawMaterialsPageIndex <= 0}
+                        onClick={() => setRawMaterialsPageIndex((p) => Math.max(0, p - 1))}
+                      >
+                        Prev
+                      </button>
+                      <div className="text-sm text-neutral-medium px-1">
+                        Page {Math.min(rawMaterialsTotalPages, rawMaterialsPageIndex + 1)} of {rawMaterialsTotalPages}
+                      </div>
+                      <button
+                        type="button"
+                        className={`px-3 py-2 rounded-lg border text-sm font-semibold ${rawMaterialsPageIndex >= rawMaterialsTotalPages - 1 ? 'border-neutral-soft text-neutral-medium opacity-50 cursor-not-allowed' : 'border-primary-light text-primary-medium hover:bg-primary-light/20'}`}
+                        disabled={rawMaterialsPageIndex >= rawMaterialsTotalPages - 1}
+                        onClick={() => setRawMaterialsPageIndex((p) => Math.min(rawMaterialsTotalPages - 1, p + 1))}
+                      >
+                        Next
+                      </button>
+                    </div>
+                    <button
+                      type="button"
+                      className="text-sm font-semibold text-primary-medium hover:text-primary-dark hover:underline whitespace-nowrap"
+                      onClick={() => { try { loadMaterials() } catch {} }}
+                    >
+                      Refresh
+                    </button>
+                  </div>
+
+                  {canManageInventory && (
+                    <div className="px-6 py-3 border-b border-neutral-soft/40 bg-white flex items-center justify-between gap-3">
+                      <div className="text-sm text-neutral-medium">Selected: {rawMaterialsSelectedCount}</div>
+                      <button
+                        type="button"
+                        disabled={rawMaterialsSelectedCount === 0 || rawMaterialsDeleteLoading}
+                        onClick={deleteSelectedRawMaterials}
+                        className={`px-4 py-2 rounded-lg border text-sm font-semibold ${rawMaterialsSelectedCount === 0 || rawMaterialsDeleteLoading ? 'border-neutral-soft text-neutral-medium opacity-50 cursor-not-allowed' : 'border-accent-danger text-accent-danger hover:bg-accent-danger hover:text-white'}`}
+                      >
+                        {rawMaterialsDeleteLoading ? `Deleting (${rawMaterialsSelectedCount})…` : `Delete Selected (${rawMaterialsSelectedCount})`}
+                      </button>
+                    </div>
+                  )}
                   <div className="overflow-x-auto">
                     <table className="min-w-full">
                       <thead>
                         <tr className="bg-gradient-to-r from-neutral-light/60 via-neutral-light/40 to-neutral-soft/30 border-b-2 border-neutral-soft/50">
+                          <th className="px-4 py-4 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">
+                            <input
+                              type="checkbox"
+                              checked={rawMaterialsAllOnPageSelected}
+                              onChange={(e) => toggleRawMaterialsSelectAllOnPage(e.target.checked)}
+                            />
+                          </th>
+                          <th className="px-6 py-4 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">Inventory ID</th>
                           <th className="px-6 py-4 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">Product</th>
                           <th className="px-6 py-4 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">Category</th>
                           <th className="px-6 py-4 text-left text-xs font-bold text-neutral-dark uppercase tracking-wider">Supplier</th>
@@ -1704,206 +2692,143 @@ const Inventory: React.FC = () => {
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-neutral-soft/20">
-                        {rawMaterials.map((m) => (
+                        {pagedRawMaterials.map((m) => (
                           <React.Fragment key={m.id}>
-                          <tr className="hover:bg-neutral-light/20 transition">
-                            <td className="px-6 py-4 text-sm text-neutral-dark font-medium">
-                              {m.product_name}
-                              {m.replenishmentStatus?.hasPending ? (
-                                <span className="ml-2 inline-flex items-center rounded-full bg-blue-100 px-2 py-0.5 text-[11px] font-semibold text-blue-700">
-                                  <Bell className="h-3.5 w-3.5 mr-1" /> Pending PR ({m.replenishmentStatus.qty})
-                                </span>
-                              ) : ((Number(m.total_available ?? 0) - Number(m.reserved_qty ?? 0)) <= Number(m.reorder_point ?? 0)) ? (
-                                <span className="ml-2 inline-flex items-center rounded-full bg-red-100 px-2 py-0.5 text-[11px] font-semibold text-red-700">Replenishment Required</span>
-                              ) : null}
-                            </td>
-                            <td className="px-6 py-4 text-sm text-neutral-dark">{m.category || '—'}</td>
-                            <td className="px-6 py-4 text-sm text-neutral-dark">{m.supplier_name || '—'}</td>
-                            <td className="px-6 py-4 text-sm text-neutral-dark">{m.unit_of_measure || '—'}</td>
-                            <td className="px-6 py-4 text-sm text-neutral-dark">{m.unit_weight || '—'}</td>
-                            <td className="px-6 py-4 text-sm text-neutral-dark">{m.cost_per_unit || '—'}</td>
-                            <td className="px-6 py-4 text-sm text-neutral-dark">{m.total_available || '—'}</td>
-                            <td className="px-6 py-4 text-sm text-neutral-dark">
-                              <div className="flex items-center gap-2">
-                                <span>{(m as any).reserved_qty ?? 0}</span>
-                                <button
-                                  type="button"
-                                  className="p-1.5 rounded-md border border-neutral-soft hover:border-neutral-medium hover:bg-neutral-light/40 text-neutral-medium hover:text-neutral-dark"
-                                  title="View reservation history"
-                                  onClick={() => { setSelectedMaterial(m.product_name); setIsHistoryOpen(true) }}
-                                >
-                                  <Clock className="h-4 w-4" />
-                                </button>
-                              </div>
-                            </td>
-                            <td className="px-6 py-4 text-sm text-neutral-dark">{Number(m.total_available || 0) - Number(m.reserved_qty || 0)}</td>
-                            <td className="px-6 py-4">
-                              <div className="flex items-center justify-center gap-2">
-                                <button type="button" onClick={() => { setViewData(m); setIsViewOpen(true) }} className="p-2 text-primary-medium hover:text-white hover:bg-primary-medium rounded-lg border border-primary-light/30">
-                                  <Eye className="h-4 w-4" />
-                                </button>
-                                {canManageInventory && (
-                                  <button type="button" onClick={() => { setEditId(m.id); setEditForm({
-                                    product_name: m.product_name || '',
-                                    category: m.category || '',
-                                    supplier_id: m.supplier_id || '',
-                                    supplier_name: m.supplier_name || '',
-                                    unit_of_measure: m.unit_of_measure || '',
-                                    unit_weight: m.unit_weight || '',
-                                    cost_per_unit: m.cost_per_unit || '',
-                                    total_available: String(m.total_available ?? ''),
-                                    lot_number: String((m as any).lot_number ?? ''),
-                                    manufacture_date: toDateInputValue((m as any).manufacture_date),
-                                    expiry_date: toDateInputValue((m as any).expiry_date),
-                                    reorder_point: String((m as any).reorder_point ?? ''),
-                                    reorder_to_level: String((m as any).reorder_to_level ?? ''),
-                                    moq: String((m as any).moq ?? ''),
-                                    eoq: String((m as any).eoq ?? ''),
-                                    material_file_urls: (m as any).material_file_urls || [],
-                                  }); setEditDocFiles([]); setIsEditOpen(true) }} className="p-2 text-neutral-medium hover:text-white hover:bg-neutral-medium rounded-lg border border-neutral-soft">
-                                    <Edit className="h-4 w-4" />
-                                  </button>
-                                )}
-                                {(() => {
-                                  const hasPending = Boolean(m.replenishmentStatus?.hasPending)
-                                  const net = Number(m.total_available || 0) - Number((m as any).reserved_qty || 0)
-                                  const rp = Number((m as any).reorder_point || 0)
-                                  if (hasPending) {
-                                    return (
-                                      <button type="button" onClick={() => setOpenReplFor(openReplFor === m.id ? null : m.id)} className="px-3 py-1.5 text-xs inline-flex items-center gap-1 rounded-lg border border-primary-light text-primary-medium hover:bg-primary-light/20">
-                                        <ClipboardList className="h-4 w-4" /> View PR Details
-                                      </button>
-                                    )
-                                  }
-                                  if (net <= rp && canManageInventory) {
-                                    return (
-                                      <button type="button" onClick={() => handleReplenishmentClick(m)} className="px-3 py-1.5 text-xs inline-flex items-center gap-1 rounded-lg border border-primary-light text-primary-medium hover:bg-primary-light/20">
-                                        <ClipboardList className="h-4 w-4" /> Auto-Generate PR
-                                      </button>
-                                    )
-                                  }
-                                  return null
-                                })()}
-                                {canManageInventory && (
-                                  <button type="button" onClick={() => { setDeleteTarget(m); setIsDeleteOpen(true) }} className="p-2 text-accent-danger hover:text-white hover:bg-accent-danger rounded-lg border border-accent-danger/30">
-                                    <Trash2 className="h-4 w-4" />
-                                  </button>
-                                )}
-                              </div>
-                            </td>
-                          </tr>
-                          {openReplFor === m.id && (
-                            <tr>
-                              <td colSpan={10} className="px-6 py-5 bg-gradient-to-br from-neutral-light/30 to-neutral-soft/20">
-                                <div className="rounded-2xl bg-white border border-neutral-soft/40 shadow-lg p-6">
-                                  <div className="flex items-center justify-between mb-6">
-                                    <div className="flex items-center gap-3">
-                                      <div className="p-2 rounded-lg bg-primary-light/20">
-                                        <Package className="h-5 w-5 text-primary-medium" />
-                                      </div>
-                                      <div>
-                                        <div className="text-lg font-semibold text-neutral-dark">Replenishment Panel</div>
-                                        <div className="text-xs text-neutral-medium">Material: {m.product_name}</div>
-                                      </div>
-                                    </div>
-                                    {m.replenishmentStatus?.hasPending ? (
-                                      <span className="inline-flex items-center px-3 py-1.5 rounded-full text-sm font-semibold bg-blue-100 text-blue-700 border border-blue-200">
-                                        <Bell className="h-4 w-4 mr-2"/> Pending PR ({m.replenishmentStatus.qty})
-                                      </span>
-                                    ) : (() => { const net = Number(m.total_available || 0) - Number(m.reserved_qty || 0); const rp = Number(m.reorder_point || 0); return net <= rp ? (
-                                      <span className="inline-flex items-center px-3 py-1.5 rounded-full text-sm font-semibold bg-red-100 text-red-700 border border-red-200">Replenishment Required</span>
-                                    ) : null })()}
-                                  </div>
-
-                                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                                    <div className="space-y-4">
-                                      <div className="rounded-xl border border-neutral-soft bg-gradient-to-r from-neutral-light/40 to-white p-4">
-                                        <div className="text-xs font-semibold text-neutral-dark uppercase tracking-wider mb-3 border-b border-neutral-soft/60 pb-2">Current Stock</div>
-                                        <div className="space-y-3">
-                                          <div className="flex items-center justify-between">
-                                            <span className="text-sm text-neutral-medium">Total Available</span>
-                                            <span className="text-lg font-semibold text-neutral-dark">{m.total_available ?? '0'}</span>
-                                          </div>
-                                          <div className="flex items-center justify-between">
-                                            <span className="text-sm text-neutral-medium">Reserved Qty</span>
-                                            <span className="text-lg font-semibold text-neutral-dark">{m.reserved_qty ?? 0}</span>
-                                          </div>
-                                          <div className="flex items-center justify-between pt-2 border-t border-neutral-soft/60">
-                                            <span className="text-sm font-semibold text-neutral-dark">Net Available</span>
-                                            <span className="text-xl font-semibold text-neutral-dark">{Number(m.total_available || 0) - Number(m.reserved_qty || 0)}</span>
-                                          </div>
-                                          <div className="flex items-center justify-between">
-                                            <span className="text-sm text-neutral-medium">Reorder Point</span>
-                                            <span className="text-lg font-semibold text-neutral-dark">{m.reorder_point ?? '—'}</span>
-                                          </div>
-                                        </div>
-                                      </div>
-                                    </div>
-
-                                    <div className="space-y-4">
-                                      <div className="rounded-xl border border-neutral-soft bg-gradient-to-r from-white to-neutral-light/40 p-4">
-                                        <div className="text-xs font-semibold text-neutral-dark uppercase tracking-wider mb-3 border-b border-neutral-soft/60 pb-2">Ordering Parameters</div>
-                                        <div className="space-y-3">
-                                          <div className="flex items-center justify-between">
-                                            <span className="text-sm text-neutral-medium">Reorder To Level</span>
-                                            <span className="text-lg font-semibold text-neutral-dark">{m.reorder_to_level ?? '—'}</span>
-                                          </div>
-                                          <div className="flex items-center justify-between">
-                                            <span className="text-sm text-neutral-medium">MOQ</span>
-                                            <span className="text-lg font-semibold text-neutral-dark">{m.moq ?? '—'}</span>
-                                          </div>
-                                          <div className="flex items-center justify-between">
-                                            <span className="text-sm text-neutral-medium">EOQ</span>
-                                            <span className="text-lg font-semibold text-neutral-dark">{m.eoq ?? '—'}</span>
-                                          </div>
-                                        </div>
-                                      </div>
-                                    </div>
-                                  </div>
-
-                                  {m.replenishmentStatus?.hasPending && (
-                                    <div className="mt-6 p-4 bg-blue-50 rounded-xl border border-blue-200">
-                                      <div className="flex items-start gap-3">
-                                        <div className="p-1.5 rounded-lg bg-blue-200">
-                                          <Bell className="h-4 w-4 text-blue-700" />
-                                        </div>
-                                        <div className="flex-1">
-                                          <div className="font-semibold text-blue-800 mb-1">Pending Requisition</div>
-                                          <div className="grid grid-cols-2 gap-4 text-sm">
-                                            <div><span className="text-neutral-medium">Qty:</span> <span className="font-semibold text-neutral-dark">{m.replenishmentStatus.qty}</span></div>
-                                            <div><span className="text-neutral-medium">Status:</span> <span className="font-semibold text-neutral-dark">{m.replenishmentStatus.reqStatus || '—'}</span></div>
-                                          </div>
-                                        </div>
-                                      </div>
-                                    </div>
+                            <tr className={`hover:bg-neutral-light/20 transition ${rawMaterialsSelectedIds[String(m.id)] ? 'bg-primary-light/10 ring-1 ring-primary-light/30' : ''}`}>
+                              <td className="px-4 py-4 text-sm text-neutral-dark">
+                                <input
+                                  type="checkbox"
+                                  checked={Boolean(rawMaterialsSelectedIds[String(m.id)])}
+                                  onChange={(e) => toggleRawMaterialSelected(String(m.id), e.target.checked)}
+                                />
+                              </td>
+                              <td className="px-6 py-4 text-sm text-neutral-dark">{sanitizeTextCell((m as any).inventory_id)}</td>
+                              <td className="px-6 py-4 text-sm text-neutral-dark font-medium">
+                                {sanitizeTextCell(m.product_name)}
+                                <div className="mt-2 flex flex-wrap items-center gap-2">
+                                  {Boolean((m as any).is_client_supplied) ? (
+                                    <span className="inline-flex items-center rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] font-semibold text-emerald-700 border border-emerald-200">
+                                      Client Supplied
+                                    </span>
+                                  ) : (
+                                    <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-700 border border-slate-200">
+                                      Company Supplied
+                                    </span>
                                   )}
-
-                                  <div className="mt-6 pt-4 border-t border-neutral-soft/60 flex items-center justify-end">
-                                    {(() => {
-                                      const hasPending = Boolean(m.replenishmentStatus?.hasPending)
-                                      const net = Number(m.total_available || 0) - Number(m.reserved_qty || 0)
-                                      const rp = Number(m.reorder_point || 0)
-                                      if (hasPending) {
-                                        return (
-                                          <button type="button" onClick={() => setPrModalFor(m)} className="px-4 py-2.5 text-sm inline-flex items-center gap-2 rounded-xl border-2 border-primary-medium text-primary-medium hover:bg-primary-medium hover:text-white transition-all duration-200 font-semibold">
-                                            <ClipboardList className="h-4 w-4" /> View PR Details
-                                          </button>
-                                        )
-                                      }
-                                      if (net <= rp && canManageInventory) {
-                                        return (
-                                          <button type="button" disabled={isGenerating} onClick={() => handleReplenishmentClick(m)} className={`px-4 py-2.5 text-sm inline-flex items-center gap-2 rounded-xl border-2 border-primary-medium text-primary-medium hover:bg-primary-medium hover:text-white transition-all duration-200 font-semibold ${isGenerating ? 'opacity-60 cursor-not-allowed' : ''}`}>
-                                            <ClipboardList className="h-4 w-4" /> Auto-Generate PR
-                                          </button>
-                                        )
-                                      }
-                                      return null
-                                    })()}
-                                  </div>
+                                  {Boolean((m as any).qa_hold) ? (
+                                    <span className="inline-flex items-center rounded-full bg-rose-100 px-2 py-0.5 text-[11px] font-semibold text-rose-700 border border-rose-200">
+                                      QA Hold
+                                    </span>
+                                  ) : null}
+                                </div>
+                                {m.replenishmentStatus?.hasPending ? (
+                                  <span className="ml-2 inline-flex items-center rounded-full bg-blue-100 px-2 py-0.5 text-[11px] font-semibold text-blue-700">
+                                    <Bell className="h-3.5 w-3.5 mr-1" /> Pending PR ({m.replenishmentStatus.qty})
+                                  </span>
+                                ) : ((Number(m.total_available ?? 0) - Number((m as any).reserved_qty ?? 0)) <= Number((m as any).reorder_point ?? 0)) ? (
+                                  <span className="ml-2 inline-flex items-center rounded-full bg-red-100 px-2 py-0.5 text-[11px] font-semibold text-red-700">Replenishment Required</span>
+                                ) : null}
+                              </td>
+                              <td className="px-6 py-4 text-sm text-neutral-dark">{sanitizeTextCell(m.category)}</td>
+                              <td className="px-6 py-4 text-sm text-neutral-dark">{sanitizeTextCell(m.supplier_name)}</td>
+                              <td className="px-6 py-4 text-sm text-neutral-dark">{sanitizeTextCell(m.unit_of_measure)}</td>
+                              <td className="px-6 py-4 text-sm text-neutral-dark">{sanitizeTextCell(m.unit_weight)}</td>
+                              <td className="px-6 py-4 text-sm text-neutral-dark">{sanitizeTextCell(m.cost_per_unit)}</td>
+                              <td className="px-6 py-4 text-sm text-neutral-dark">{sanitizeTextCell(m.total_available)}</td>
+                              <td className="px-6 py-4 text-sm text-neutral-dark">
+                                <div className="flex items-center gap-2">
+                                  <span>{(m as any).reserved_qty ?? 0}</span>
+                                  <button
+                                    type="button"
+                                    className="p-1.5 rounded-md border border-neutral-soft hover:border-neutral-medium hover:bg-neutral-light/40 text-neutral-medium hover:text-neutral-dark"
+                                    title="View reservation history"
+                                    onClick={() => { setSelectedMaterial(m.product_name); setIsHistoryOpen(true) }}
+                                  >
+                                    <Clock className="h-4 w-4" />
+                                  </button>
+                                </div>
+                              </td>
+                              <td className="px-6 py-4 text-sm text-neutral-dark">{Number(m.total_available || 0) - Number((m as any).reserved_qty || 0)}</td>
+                              <td className="px-6 py-4">
+                                <div className="flex items-center justify-center gap-2">
+                                  <button type="button" onClick={() => { setViewData(m); setIsViewOpen(true) }} className="p-2 text-primary-medium hover:text-white hover:bg-primary-medium rounded-lg border border-primary-light/30">
+                                    <Eye className="h-4 w-4" />
+                                  </button>
+                                  {canManageInventory && (
+                                    <button type="button" onClick={() => { setEditId(m.id); setEditForm({
+                                      product_name: m.product_name || '',
+                                      category: m.category || '',
+                                      supplier_id: m.supplier_id || '',
+                                      supplier_name: m.supplier_name || '',
+                                      unit_of_measure: m.unit_of_measure || '',
+                                      unit_weight: m.unit_weight || '',
+                                      cost_per_unit: m.cost_per_unit || '',
+                                      total_available: String(m.total_available ?? ''),
+                                      comments: String((m as any).comments ?? ''),
+                                      lot_number: String((m as any).lot_number ?? ''),
+                                      manufacture_date: toDateInputValue((m as any).manufacture_date),
+                                      expiry_date: toDateInputValue((m as any).expiry_date),
+                                      reorder_point: String((m as any).reorder_point ?? ''),
+                                      reorder_to_level: String((m as any).reorder_to_level ?? ''),
+                                      moq: String((m as any).moq ?? ''),
+                                      eoq: String((m as any).eoq ?? ''),
+                                      material_file_urls: (m as any).material_file_urls || [],
+                                    }); setEditDocFiles([]); setIsEditOpen(true) }} className="p-2 text-neutral-medium hover:text-white hover:bg-neutral-medium rounded-lg border border-neutral-soft">
+                                      <Edit className="h-4 w-4" />
+                                    </button>
+                                  )}
+                                  {(() => {
+                                    const hasPending = Boolean(m.replenishmentStatus?.hasPending)
+                                    const net = Number(m.total_available || 0) - Number((m as any).reserved_qty || 0)
+                                    const rp = Number((m as any).reorder_point || 0)
+                                    if (hasPending) {
+                                      return (
+                                        <button type="button" onClick={() => setOpenReplFor(openReplFor === m.id ? null : m.id)} className="px-3 py-1.5 text-xs inline-flex items-center gap-1 rounded-lg border border-primary-light text-primary-medium hover:bg-primary-light/20">
+                                          <ClipboardList className="h-4 w-4" /> View PR Details
+                                        </button>
+                                      )
+                                    }
+                                    if (net <= rp && canManageInventory) {
+                                      return (
+                                        <button type="button" onClick={() => handleReplenishmentClick(m)} className="px-3 py-1.5 text-xs inline-flex items-center gap-1 rounded-lg border border-primary-light text-primary-medium hover:bg-primary-light/20">
+                                          <ClipboardList className="h-4 w-4" /> Auto-Generate PR
+                                        </button>
+                                      )
+                                    }
+                                    return null
+                                  })()}
+                                  {canManageInventory && (
+                                    <button type="button" onClick={() => { setDeleteTarget(m); setIsDeleteOpen(true) }} className="p-2 text-accent-danger hover:text-white hover:bg-accent-danger rounded-lg border border-accent-danger/30">
+                                      <Trash2 className="h-4 w-4" />
+                                    </button>
+                                  )}
                                 </div>
                               </td>
                             </tr>
-                          )}
+                            {openReplFor === m.id && (
+                              <tr>
+                                <td colSpan={12} className="px-6 py-5 bg-gradient-to-br from-neutral-light/30 to-neutral-soft/20">
+                                  <div className="rounded-2xl bg-white border border-neutral-soft/40 shadow-lg p-6">
+                                    <div className="flex items-center justify-between mb-6">
+                                      <div className="flex items-center gap-3">
+                                        <div className="p-2 rounded-lg bg-primary-light/20">
+                                          <Package className="h-5 w-5 text-primary-medium" />
+                                        </div>
+                                        <div>
+                                          <div className="text-lg font-semibold text-neutral-dark">Replenishment Panel</div>
+                                          <div className="text-xs text-neutral-medium">Material: {m.product_name}</div>
+                                        </div>
+                                      </div>
+                                      {m.replenishmentStatus?.hasPending ? (
+                                        <span className="inline-flex items-center px-3 py-1.5 rounded-full text-sm font-semibold bg-blue-100 text-blue-700 border border-blue-200">
+                                          <Bell className="h-4 w-4 mr-2"/> Pending PR ({m.replenishmentStatus.qty})
+                                        </span>
+                                      ) : null}
+                                    </div>
+                                  </div>
+                                </td>
+                              </tr>
+                            )}
                           </React.Fragment>
                         ))}
                       </tbody>
@@ -1979,6 +2904,10 @@ const Inventory: React.FC = () => {
                     {/* Content Section */}
                     <div className="p-6">
                       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                        <div className="bg-gradient-to-br from-neutral-50 to-white p-4 rounded-2xl border border-neutral-200/60 md:col-span-2 lg:col-span-3">
+                          <div className="text-xs font-semibold text-neutral-500 uppercase tracking-wider mb-2">Product Name</div>
+                          <div className="text-neutral-800 font-medium text-lg">{viewData.product_name || '—'}</div>
+                        </div>
                         <div className="bg-gradient-to-br from-neutral-50 to-white p-4 rounded-2xl border border-neutral-200/60">
                           <div className="text-xs font-semibold text-neutral-500 uppercase tracking-wider mb-2">Category</div>
                           <div className="text-neutral-800 font-medium text-lg">{viewData.category || '—'}</div>
@@ -1997,11 +2926,44 @@ const Inventory: React.FC = () => {
                         </div>
                         <div className="bg-gradient-to-br from-neutral-50 to-white p-4 rounded-2xl border border-neutral-200/60">
                           <div className="text-xs font-semibold text-neutral-500 uppercase tracking-wider mb-2">Cost per Unit</div>
-                          <div className="text-neutral-800 font-medium text-lg">{viewData.cost_per_unit ? `$${viewData.cost_per_unit}` : '—'}</div>
+                          <div className="text-neutral-800 font-medium text-lg">{viewData.cost_per_unit || '—'}</div>
+                        </div>
+                        <div className="bg-gradient-to-br from-neutral-50 to-white p-4 rounded-2xl border border-neutral-200/60 md:col-span-2 lg:col-span-3">
+                          <div className="text-xs font-semibold text-neutral-500 uppercase tracking-wider mb-2">Total Available</div>
+                          <div className="text-neutral-800 font-medium text-lg">{(viewData as any).total_available ?? '—'}</div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mb-8 bg-white rounded-3xl border border-neutral-200/80 shadow-[0_4px_20px_rgba(0,0,0,0.08)] overflow-hidden">
+                    {/* Header Section */}
+                    <div className="relative bg-gradient-to-r from-slate-50 via-neutral-50 to-slate-50/80 border-b border-neutral-200/60 px-6 py-5">
+                      <div className="flex items-center space-x-4">
+                        <div className="w-10 h-10 bg-gradient-to-br from-primary-500/10 to-primary-600/20 rounded-2xl flex items-center justify-center">
+                          <Landmark className="w-5 h-5 text-primary-600" />
+                        </div>
+                        <div>
+                          <h3 className="text-base font-semibold text-slate-900 tracking-tight">Lot Traceability</h3>
+                          <p className="text-sm text-slate-500 mt-0.5">Lot number and dates</p>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Content Section */}
+                    <div className="p-6">
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                        <div className="bg-gradient-to-br from-neutral-50 to-white p-4 rounded-2xl border border-neutral-200/60">
+                          <div className="text-xs font-semibold text-neutral-500 uppercase tracking-wider mb-2">Lot Number</div>
+                          <div className="text-neutral-800 font-medium text-lg">{(viewData as any).lot_number || '—'}</div>
                         </div>
                         <div className="bg-gradient-to-br from-neutral-50 to-white p-4 rounded-2xl border border-neutral-200/60">
-                          <div className="text-xs font-semibold text-neutral-500 uppercase tracking-wider mb-2">Total Available</div>
-                          <div className="text-neutral-800 font-medium text-lg">{viewData.total_available || '—'}</div>
+                          <div className="text-xs font-semibold text-neutral-500 uppercase tracking-wider mb-2">Manufacture Date</div>
+                          <div className="text-neutral-800 font-medium text-lg">{(viewData as any).manufacture_date || '—'}</div>
+                        </div>
+                        <div className="bg-gradient-to-br from-neutral-50 to-white p-4 rounded-2xl border border-neutral-200/60">
+                          <div className="text-xs font-semibold text-neutral-500 uppercase tracking-wider mb-2">Expiry Date</div>
+                          <div className="text-neutral-800 font-medium text-lg">{(viewData as any).expiry_date || '—'}</div>
                         </div>
                       </div>
                     </div>
@@ -2024,7 +2986,11 @@ const Inventory: React.FC = () => {
 
                     {/* Content Section */}
                     <div className="p-6">
-                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                        <div className="bg-gradient-to-br from-neutral-50 to-white p-4 rounded-2xl border border-neutral-200/60">
+                          <div className="text-xs font-semibold text-neutral-500 uppercase tracking-wider mb-2">Reorder Point</div>
+                          <div className="text-neutral-800 font-medium text-lg">{(viewData as any).reorder_point ?? '—'}</div>
+                        </div>
                         <div className="bg-gradient-to-br from-neutral-50 to-white p-4 rounded-2xl border border-neutral-200/60">
                           <div className="text-xs font-semibold text-neutral-500 uppercase tracking-wider mb-2">Reorder To Level</div>
                           <div className="text-neutral-800 font-medium text-lg">{viewData.reorder_to_level || '—'}</div>
@@ -2036,6 +3002,105 @@ const Inventory: React.FC = () => {
                         <div className="bg-gradient-to-br from-neutral-50 to-white p-4 rounded-2xl border border-neutral-200/60">
                           <div className="text-xs font-semibold text-neutral-500 uppercase tracking-wider mb-2">EOQ</div>
                           <div className="text-neutral-800 font-medium text-lg">{viewData.eoq || '—'}</div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mb-8 bg-white rounded-3xl border border-neutral-200/80 shadow-[0_4px_20px_rgba(0,0,0,0.08)] overflow-hidden">
+                    <div className="relative bg-gradient-to-r from-slate-50 via-neutral-50 to-slate-50/80 border-b border-neutral-200/60 px-6 py-5">
+                      <div className="flex items-center space-x-4">
+                        <div className="w-10 h-10 bg-gradient-to-br from-primary-500/10 to-primary-600/20 rounded-2xl flex items-center justify-center">
+                          <User className="w-5 h-5 text-primary-600" />
+                        </div>
+                        <div>
+                          <h3 className="text-base font-semibold text-slate-900 tracking-tight">Client Supply</h3>
+                          <p className="text-sm text-slate-500 mt-0.5">Client-supplied status</p>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="p-6">
+                      <div className="flex items-center justify-between gap-4 bg-gradient-to-br from-neutral-50 to-white p-4 rounded-2xl border border-neutral-200/60">
+                        <div>
+                          <div className="text-xs font-semibold text-neutral-500 uppercase tracking-wider mb-2">Is Client Supplied</div>
+                          <div className="text-neutral-800 font-medium text-lg">{Boolean((viewData as any).is_client_supplied) ? 'Yes' : 'No'}</div>
+                        </div>
+                        {Boolean((viewData as any).is_client_supplied) ? (
+                          <span className="inline-flex items-center rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold text-emerald-700 border border-emerald-200">
+                            Client Supplied
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700 border border-slate-200">
+                            Company Supplied
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mb-8 bg-white rounded-3xl border border-neutral-200/80 shadow-[0_4px_20px_rgba(0,0,0,0.08)] overflow-hidden">
+                    <div className="relative bg-gradient-to-r from-slate-50 via-neutral-50 to-slate-50/80 border-b border-neutral-200/60 px-6 py-5">
+                      <div className="flex items-center space-x-4">
+                        <div className="w-10 h-10 bg-gradient-to-br from-primary-500/10 to-primary-600/20 rounded-2xl flex items-center justify-center">
+                          <ShieldAlert className="w-5 h-5 text-primary-600" />
+                        </div>
+                        <div>
+                          <h3 className="text-base font-semibold text-slate-900 tracking-tight">Quality Status</h3>
+                          <p className="text-sm text-slate-500 mt-0.5">QA hold and reason</p>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="p-6">
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div className="bg-gradient-to-br from-neutral-50 to-white p-4 rounded-2xl border border-neutral-200/60">
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <div className="text-xs font-semibold text-neutral-500 uppercase tracking-wider mb-2">QA Hold</div>
+                              <div className="text-neutral-800 font-medium text-lg">{Boolean((viewData as any).qa_hold) ? 'Yes' : 'No'}</div>
+                            </div>
+                            {Boolean((viewData as any).qa_hold) ? (
+                              <span className="inline-flex items-center rounded-full bg-rose-100 px-3 py-1 text-xs font-semibold text-rose-700 border border-rose-200">
+                                QA Hold
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold text-emerald-700 border border-emerald-200">
+                                Released
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="bg-gradient-to-br from-neutral-50 to-white p-4 rounded-2xl border border-neutral-200/60">
+                          <div className="text-xs font-semibold text-neutral-500 uppercase tracking-wider mb-2">QA Hold Reason</div>
+                          <div className="text-neutral-800 font-medium text-lg break-words">
+                            {Boolean((viewData as any).qa_hold)
+                              ? ((viewData as any).qa_hold_reason || '—')
+                              : '—'}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mb-8 bg-white rounded-3xl border border-neutral-200/80 shadow-[0_4px_20px_rgba(0,0,0,0.08)] overflow-hidden">
+                    <div className="relative bg-gradient-to-r from-slate-50 via-neutral-50 to-slate-50/80 border-b border-neutral-200/60 px-6 py-5">
+                      <div className="flex items-center space-x-4">
+                        <div className="w-10 h-10 bg-gradient-to-br from-primary-500/10 to-primary-600/20 rounded-2xl flex items-center justify-center">
+                          <MessageSquare className="w-5 h-5 text-primary-600" />
+                        </div>
+                        <div>
+                          <h3 className="text-base font-semibold text-slate-900 tracking-tight">Comments</h3>
+                          <p className="text-sm text-slate-500 mt-0.5">Additional notes</p>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="p-6">
+                      <div className="bg-gradient-to-br from-neutral-50 to-white p-4 rounded-2xl border border-neutral-200/60">
+                        <div className="text-neutral-800 font-medium text-sm whitespace-pre-wrap break-words">
+                          {(viewData as any).comments ? String((viewData as any).comments) : '—'}
                         </div>
                       </div>
                     </div>
